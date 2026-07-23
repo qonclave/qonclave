@@ -194,15 +194,31 @@ Write-Ok "Interpreter is ARM64"
 # --- 4. Virtual environment + geniex --------------------------------------
 Write-Step "Creating virtual environment at $VenvDir"
 $VenvPython = Join-Path $VenvDir 'Scripts\python.exe'
-if ((Test-Path $VenvPython) -and (Test-ArmPython $VenvPython)) {
+$VenvCfg    = Join-Path $VenvDir 'pyvenv.cfg'
+
+function Test-VenvComplete {
+    # A venv is only usable if BOTH python.exe and pyvenv.cfg exist. python.exe
+    # looks for pyvenv.cfg next to itself (or one dir up) to know it's running
+    # inside a venv; a missing pyvenv.cfg ("no pyvenv.cfg file" errors) means
+    # venv creation was interrupted/partial, even if python.exe got copied.
+    (Test-Path $VenvPython) -and (Test-Path $VenvCfg)
+}
+
+if ((Test-VenvComplete) -and (Test-ArmPython $VenvPython)) {
     Write-Ok "venv already exists and matches Python $PythonVersion, reusing it"
 } else {
     if (Test-Path $VenvDir) {
-        Write-Warn "Existing venv at $VenvDir is missing or built from a different Python version; rebuilding it."
+        Write-Warn "Existing venv at $VenvDir is missing/incomplete or built from a different Python version; rebuilding it."
         Remove-Item -Recurse -Force $VenvDir
     }
     & $pythonExe -m venv $VenvDir
-    if (-not (Test-Path $VenvPython)) { throw "venv creation failed: $VenvPython not found" }
+    if ($LASTEXITCODE -ne 0) {
+        throw "venv creation failed (python -m venv exited $LASTEXITCODE). Check disk space and permissions for $VenvDir."
+    }
+    if (-not (Test-VenvComplete)) {
+        $missing = if (-not (Test-Path $VenvPython)) { $VenvPython } else { $VenvCfg }
+        throw "venv creation reported success but is incomplete: $missing is missing. Delete $VenvDir and re-run."
+    }
     Write-Ok "venv created from $pythonExe"
 }
 
