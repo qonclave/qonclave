@@ -1,5 +1,5 @@
-<#
-    setup_project.ps1 — clone Qonclave, install its deps, and run the hub.
+﻿<#
+    setup_project.ps1 - clone Qonclave, install its deps, and run the hub.
 
     Uses the GenieX venv's python (so geniex is importable and reasoning works).
     Idempotent: re-clones only if the repo folder is missing; re-installs deps

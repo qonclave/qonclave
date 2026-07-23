@@ -1,5 +1,5 @@
-<#
-    setup_geniex.ps1  —  Snapdragon X (Windows ARM64) bootstrap for GenieX
+﻿<#
+    setup_geniex.ps1  -  Snapdragon X (Windows ARM64) bootstrap for GenieX
 
     Run this at the start of every fresh cloud session. It is idempotent:
     already-installed steps are skipped, so re-runs are quick.
@@ -10,7 +10,7 @@
          Version-agnostic to whatever is already on the box: an older Python
          (e.g. 3.9), a newer one, or an x64 build is ignored (never reused,
          never removed) and 3.13.3 is installed fresh, side-by-side.
-      3. Confirms the interpreter is ARM64 (not AMD64/x86_64 — GenieX has no x64 wheel).
+      3. Confirms the interpreter is ARM64 (not AMD64/x86_64 - GenieX has no x64 wheel).
       4. Creates the geniex-env virtual environment FROM that exact Python
          version and installs `geniex` from PyPI into it.
       5. Verifies the install by importing geniex and printing its version.
@@ -43,7 +43,7 @@ $PythonVersion   = '3.13.3'
 $PythonUrl       = "https://www.python.org/ftp/python/$PythonVersion/python-$PythonVersion-arm64.exe"
 $VenvDir         = Join-Path $PSScriptRoot 'geniex-env'
 # Exact major.minor required, derived from $PythonVersion (e.g. "3.13.3" -> 3, 13).
-# Any OTHER Python found on the box — older OR newer, ARM64 or not — is ignored;
+# Any OTHER Python found on the box - older OR newer, ARM64 or not - is ignored;
 # this script always ensures exactly this minor version is installed and uses
 # it to build the venv, so behavior is agnostic to whatever's already there.
 $RequiredMajor, $RequiredMinor = $PythonVersion.Split('.')[0..1] | ForEach-Object { [int]$_ }
@@ -87,7 +87,7 @@ function Test-ArmPython($exe) {
     # 3.9, a newer 3.14, an x64 build, or the Store stub are all rejected the
     # same way, and a fresh install of the required version is triggered.
     if (-not $exe -or -not (Test-Path $exe)) { return $false }
-    # Skip the Microsoft Store "App execution alias" stub — it is NOT python; it
+    # Skip the Microsoft Store "App execution alias" stub - it is NOT python; it
     # just prints "Python was not found; run without arguments to install from
     # the Microsoft Store" and exits. Lives under ...\WindowsApps\.
     if ($exe -match '\\WindowsApps\\') { return $false }
@@ -103,11 +103,11 @@ function Get-ArmPython {
     # Resolve python.exe by ABSOLUTE PATH, not PATH env var (which is stale right
     # after a fresh install). Scans known install roots + py launcher + PATH, and
     # ignores the Microsoft Store stub. Only returns a match for the exact
-    # required version (see Test-ArmPython) — any other installed Python,
+    # required version (see Test-ArmPython) - any other installed Python,
     # older or newer, is treated as absent and triggers a fresh install below.
     $candidates = @()
 
-    # 1. py launcher (if present) — ask specifically for the required version,
+    # 1. py launcher (if present) - ask specifically for the required version,
     #    then fall back to "any 3.x" so Test-ArmPython can reject mismatches.
     if (Get-Command py -ErrorAction SilentlyContinue) {
         foreach ($sel in @("-$RequiredMajor.$RequiredMinor", '-3')) {
@@ -146,7 +146,7 @@ if ($pythonExe) {
     Write-Ok "ARM64 Python $PythonVersion found: $pythonExe"
 } else {
     Write-Host "    No ARM64 Python $RequiredMajor.$RequiredMinor found (an older/newer/x64 Python may be" -ForegroundColor Yellow
-    Write-Host "    present but is ignored) — installing $PythonVersion fresh, side-by-side." -ForegroundColor Yellow
+    Write-Host "    present but is ignored) - installing $PythonVersion fresh, side-by-side." -ForegroundColor Yellow
     Write-Host "    Downloading ARM64 Python installer: $PythonUrl"
     $installer = Join-Path $env:TEMP "python-$PythonVersion-arm64.exe"
     Invoke-WebRequest -Uri $PythonUrl -OutFile $installer
@@ -156,7 +156,7 @@ if ($pythonExe) {
     # Refresh PATH for current session (best-effort; we resolve by absolute path anyway)
     $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
                 [System.Environment]::GetEnvironmentVariable('Path','User')
-    # Re-scan install folders directly — PATH is often stale immediately post-install.
+    # Re-scan install folders directly - PATH is often stale immediately post-install.
     $pythonExe = Get-ArmPython
     if (-not $pythonExe) {
         throw ("ARM64 Python $PythonVersion still not detected after install. Expected under " +
