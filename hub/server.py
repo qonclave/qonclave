@@ -65,7 +65,8 @@ def create_app() -> Flask:
 
     @app.get("/health")
     def health():
-        log.info("GET /health from %s", request.remote_addr)
+        # debug-level: the test pages poll this every 15s; don't spam the console
+        log.debug("GET /health from %s", request.remote_addr)
         return jsonify({
             "status": "ok",
             "service": "qonclave-hub",
@@ -99,8 +100,11 @@ def main():
     args = parser.parse_args()
 
     # Quiet werkzeug's access log unless --verbose. Our qonclave.hub logs
-    # (events, alerts, warnings) stay at INFO either way.
+    # (events, alerts, warnings) stay at INFO either way; --verbose also turns
+    # on our own debug lines (e.g. per-request /health).
     logging.getLogger("werkzeug").setLevel(logging.INFO if args.verbose else logging.WARNING)
+    if args.verbose:
+        logging.getLogger("qonclave").setLevel(logging.DEBUG)
 
     log.info("=" * 60)
     log.info("Qonclave hub starting on http://%s:%s", args.host, args.port)
