@@ -121,13 +121,16 @@ function Get-ArmPython {
     # older or newer, is treated as absent and triggers a fresh install below.
     $candidates = @()
 
-    # 1. py launcher (if present) - ask specifically for the required version,
-    #    then fall back to "any 3.x" so Test-ArmPython can reject mismatches.
+    # 1. py launcher (if present) - ask it where the interpreter lives.
+    #    Use `-3` (any Python 3); version filtering happens in Test-ArmPython.
+    #    Do NOT ask for the exact version (e.g. "-3.13") here: when that exact
+    #    version isn't installed, some py.exe builds print "No suitable Python
+    #    runtime found" via a direct console write that bypasses PowerShell's
+    #    stderr redirection (2>$null doesn't catch it), which is confusing
+    #    noise even though it's harmless and already handled via $LASTEXITCODE.
     if (Get-Command py -ErrorAction SilentlyContinue) {
-        foreach ($sel in @("-$RequiredMajor.$RequiredMinor", '-3')) {
-            $p = (& py $sel -c "import sys; print(sys.executable)" 2>$null)
-            if ($LASTEXITCODE -eq 0 -and $p) { $candidates += $p.Trim() }
-        }
+        $p = (& py -3 -c "import sys; print(sys.executable)" 2>$null)
+        if ($LASTEXITCODE -eq 0 -and $p) { $candidates += $p.Trim() }
     }
 
     # 2. Well-known per-user / all-users install roots (glob for python.exe)
