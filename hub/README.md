@@ -114,3 +114,12 @@ Both shapes return the schema-compliant verification response shown above.
 Open <http://HUB_IP:8000/user/dashboard>. It polls `/user/events` every 2s and
 shows the latest escalation frame, hub verification, edge/hub confidence, alert
 state, and a table of recent events.
+
+## Sample images
+
+`hub/samples/` ships ready-to-use test images (a person scene, an empty scene,
+and Qualcomm's GenieX demo photo) plus helpers. See `hub/samples/README.md`.
+Quick test against a running hub:
+```bash
+python hub/samples/send_sample.py room_with_person   # -> /edge/event
+```

@@ -3,3 +3,10 @@
 # is imported conditionally at runtime (see hub/vlm_backend.py). Install it
 # separately on the Snapdragon laptop via scripts/setup_geniex.ps1.
 flask>=3.0
+
+# Optional, only for the sample tooling in hub/samples/:
+#   Pillow  -> regenerate synthetic samples (make_samples.py)
+#   requests -> send a sample to a running hub (send_sample.py)
+# The server itself does not need these.
+Pillow>=10.0
+requests>=2.28
