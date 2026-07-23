@@ -57,8 +57,12 @@ if (Get-Command git -ErrorAction SilentlyContinue) {
 Write-Step "Ensuring ARM64 Python $PythonVersion is installed"
 
 function Test-ArmPython($exe) {
-    # Returns $true if $exe is an ARM64 python >= min version. Never uses PATH.
+    # Returns $true if $exe is a REAL ARM64 python >= min version. Never uses PATH.
     if (-not $exe -or -not (Test-Path $exe)) { return $false }
+    # Skip the Microsoft Store "App execution alias" stub — it is NOT python; it
+    # just prints "Python was not found; run without arguments to install from
+    # the Microsoft Store" and exits. Lives under ...\WindowsApps\.
+    if ($exe -match '\\WindowsApps\\') { return $false }
     $machine = (& $exe -c "import platform; print(platform.machine())" 2>$null)
     $ver     = (& $exe -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>$null)
     if ($LASTEXITCODE -ne 0 -or -not $machine -or -not $ver) { return $false }
@@ -69,7 +73,8 @@ function Test-ArmPython($exe) {
 
 function Get-ArmPython {
     # Resolve python.exe by ABSOLUTE PATH, not PATH env var (which is stale right
-    # after a fresh install). Scans known install roots + py launcher + PATH.
+    # after a fresh install). Scans known install roots + py launcher + PATH, and
+    # ignores the Microsoft Store stub.
     $candidates = @()
 
     # 1. py launcher (if present) — ask it where the interpreter lives
@@ -94,11 +99,12 @@ function Get-ArmPython {
         }
     }
 
-    # 3. Whatever is on PATH, last resort
-    $onPath = Get-Command python.exe -ErrorAction SilentlyContinue
-    if ($onPath) { $candidates += $onPath.Source }
+    # 3. Whatever is on PATH, last resort (excluding the Store stub below)
+    foreach ($c in (Get-Command python.exe -All -ErrorAction SilentlyContinue)) {
+        if ($c.Source) { $candidates += $c.Source }
+    }
 
-    foreach ($exe in ($candidates | Where-Object { $_ } | Select-Object -Unique)) {
+    foreach ($exe in ($candidates | Where-Object { $_ -and $_ -notmatch '\\WindowsApps\\' } | Select-Object -Unique)) {
         if (Test-ArmPython $exe) { return $exe }
     }
     return $null
