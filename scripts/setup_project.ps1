@@ -3,11 +3,14 @@
 
     Uses the GenieX venv's python (so geniex is importable and reasoning works).
     Idempotent: re-clones only if the repo folder is missing; re-installs deps
-    (fast when already satisfied).
+    (fast when already satisfied). If these scripts are already sitting inside
+    a Qonclave checkout (their usual location, Qonclave/scripts/), it reuses
+    that checkout in place (git pull) instead of cloning a nested duplicate.
 
     Steps:
       1. Resolve the GenieX venv python (activate the env).
-      2. git clone https://github.com/jogendar/Qonclave.git  (skip if present)
+      2. Reuse the current checkout (git pull), or clone
+         https://github.com/jogendar/Qonclave.git if not already in one.
       3. cd Qonclave
       4. install hub/requirements.txt into the venv
       5. run hub/server.py
@@ -53,19 +56,48 @@ $activate = Join-Path (Split-Path $VenvPython) 'Activate.ps1'
 if (Test-Path $activate) { & $activate }
 Write-Ok "venv python: $VenvPython"
 
-# --- 2. git clone (skip if already present) --------------------------------
-Write-Step "Cloning Qonclave"
+# --- 2. git clone (skip if already present, or if already inside a checkout)
+Write-Step "Locating Qonclave checkout"
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     throw "git not found on PATH. Run setup_geniex.ps1 first (it installs Git)."
 }
-$RepoDir = Join-Path $WorkDir 'Qonclave'
-if (Test-Path (Join-Path $RepoDir '.git')) {
-    Write-Ok "repo already cloned at $RepoDir (pulling latest)"
-    git -C $RepoDir pull --ff-only 2>&1 | Out-Host
+
+# These scripts normally live INSIDE the repo, at Qonclave/scripts/. If we're
+# already running from such a checkout, reuse it in place instead of cloning
+# a nested duplicate into scripts/Qonclave.
+$ParentAsRepo = Split-Path $PSScriptRoot -Parent
+$AlreadyInRepo = (Test-Path (Join-Path $ParentAsRepo '.git')) -and
+                 (Test-Path (Join-Path $ParentAsRepo 'hub\server.py'))
+
+if ($AlreadyInRepo) {
+    $RepoDir = $ParentAsRepo
+    Write-Ok "already inside a Qonclave checkout: $RepoDir"
+    Write-Step "Pulling latest"
+    git -C $RepoDir pull --ff-only
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "    [!] git pull failed (exit $LASTEXITCODE); continuing with existing checkout" -ForegroundColor Yellow
+    }
 } else {
-    git clone $RepoUrl $RepoDir 2>&1 | Out-Host
-    if (-not (Test-Path (Join-Path $RepoDir '.git'))) { throw "git clone failed" }
-    Write-Ok "cloned to $RepoDir"
+    $RepoDir = Join-Path $WorkDir 'Qonclave'
+    if (Test-Path (Join-Path $RepoDir '.git')) {
+        Write-Ok "repo already cloned at $RepoDir (pulling latest)"
+        git -C $RepoDir pull --ff-only
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "    [!] git pull failed (exit $LASTEXITCODE); continuing with existing checkout" -ForegroundColor Yellow
+        }
+    } else {
+        Write-Step "Cloning Qonclave"
+        # NOTE: no stderr redirect here. git writes its normal progress (e.g.
+        # "Cloning into '...'") to stderr; merging it into the pipeline with
+        # 2>&1 turns each line into a PowerShell ErrorRecord, which throws
+        # immediately because $ErrorActionPreference = 'Stop' above - even
+        # though git hasn't actually failed. Let git print to the console
+        # directly and check $LASTEXITCODE for real success/failure instead.
+        git clone $RepoUrl $RepoDir
+        if ($LASTEXITCODE -ne 0) { throw "git clone failed (exit $LASTEXITCODE)" }
+        if (-not (Test-Path (Join-Path $RepoDir '.git'))) { throw "git clone failed" }
+        Write-Ok "cloned to $RepoDir"
+    }
 }
 
 # --- 3. cd into repo -------------------------------------------------------
