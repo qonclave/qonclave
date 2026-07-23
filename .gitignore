@@ -32,3 +32,6 @@ Thumbs.db
 *.log
 tmp/
 *.tmp
+
+# Hub runtime uploads
+hub/uploads/
