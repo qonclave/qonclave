@@ -9,6 +9,7 @@ Snapdragon laptop where VLM reasoning is live) without hunting for a file.
 | `empty_room.jpg` | The same room, no person | `hub_verified: false` |
 | `geniex_demo.jpg` | Qualcomm's public GenieX demo photo | depends on scene |
 | `intruder_cctv.jpg` | Stock CCTV-style photo of an intruder with a crowbar | `hub_verified: true` (security/intrusion scenario) |
+| `senior_fall.png` | Photo of a fall scenario | `hub_verified: true` (fall/elderly-care scenario) |
 
 `room_with_person.jpg` and `empty_room.jpg` are synthetic and license-free —
 regenerate them with `python make_samples.py`. `geniex_demo.jpg` is Qualcomm's
