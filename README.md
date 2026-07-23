@@ -31,25 +31,25 @@ scripts/  # environment setup (e.g. GenieX bootstrap)
 
 ## Hub environment (Snapdragon X, Windows ARM64)
 
-**One command** bootstraps everything on a fresh Snapdragon X box — copy
-[`scripts/setup_geniex.ps1`](scripts/setup_geniex.ps1) and
-[`scripts/setup_project.ps1`](scripts/setup_project.ps1) into a folder, then:
+First sync this repo yourself (`git clone https://github.com/jogendar/Qonclave.git`
+or `git pull` in an existing checkout). Then, from inside that checkout, **one
+command** bootstraps everything else on a fresh Snapdragon X box:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\setup_geniex.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\setup_geniex.ps1
 
-when ps1 script doesn't work through permissions
+# if the .ps1 is blocked by execution policy:
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ```
 
-This: installs Git + ARM64 Python, creates the `geniex-env` venv and installs
-the GenieX SDK, then hands off to `setup_project.ps1` which clones this repo,
-installs `hub/requirements.txt`, and runs `hub/server.py`.
+This installs Git + ARM64 Python, creates the `geniex-env` venv, installs the
+GenieX SDK and `hub/requirements.txt`, then runs `hub/server.py`. It does
+**not** clone or pull the repo — that's on you, first.
 
-- Stop after just the GenieX env: `.\setup_geniex.ps1 -NoProject`
-- Pass server flags through: `.\setup_geniex.ps1 -ProjectArgs '--','--verbose','--port','8080'`
-- If the repo is already cloned, re-running clones-or-pulls, reinstalls, and
-  restarts the server.
+- Stop after installing, without starting the server: `.\scripts\setup_geniex.ps1 -NoRun`
+- Pass server flags through: `.\scripts\setup_geniex.ps1 -- --verbose --port 8080`
+- Re-running is idempotent: existing Python/venv/deps are detected and reused
+  or upgraded as needed.
 
 ## Configuration
 

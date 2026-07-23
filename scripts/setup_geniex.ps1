@@ -1,8 +1,12 @@
 ﻿<#
-    setup_geniex.ps1  -  Snapdragon X (Windows ARM64) bootstrap for GenieX
+    setup_geniex.ps1  -  Snapdragon X (Windows ARM64) bootstrap for GenieX + hub
 
-    Run this at the start of every fresh cloud session. It is idempotent:
-    already-installed steps are skipped, so re-runs are quick.
+    Run this at the start of every fresh cloud session, from inside an already
+    git-synced Qonclave checkout (this script lives at Qonclave/scripts/). It
+    is idempotent: already-installed steps are skipped, so re-runs are quick.
+
+    This script does NOT clone or pull the repo - sync git yourself first
+    (git clone / git pull), then run this script from inside that checkout.
 
     What it does:
       1. Installs Git CLI (via winget) if missing.
@@ -14,21 +18,21 @@
       4. Creates the geniex-env virtual environment FROM that exact Python
          version and installs `geniex` from PyPI into it.
       5. Verifies the install by importing geniex and printing its version.
+      6. Installs hub/requirements.txt (from this checkout) into the venv.
+      7. Runs hub/server.py.
 
-    Usage (from an elevated or normal PowerShell prompt):
-        powershell -ExecutionPolicy Bypass -File .\setup_geniex.ps1
+    Usage (from an elevated or normal PowerShell prompt, inside the checkout):
+        powershell -ExecutionPolicy Bypass -File .\scripts\setup_geniex.ps1
 
-    By default, after the GenieX env is ready this chains into setup_project.ps1
-    to clone Qonclave, install its requirements, and run the hub server.
-      -NoProject            stop after the GenieX env (don't clone/run project)
-      -ProjectArgs a,b,c    forwarded to setup_project.ps1 (e.g. server flags
-                            after --, or -WorkDir). Example:
-        .\setup_geniex.ps1 -ProjectArgs '--','--verbose','--port','8080'
+      -NoRun            stop after installing requirements; don't start the server
+      -- a b c          extra args forwarded to hub/server.py, e.g.:
+        .\scripts\setup_geniex.ps1 -- --verbose --port 8080
 #>
 
 param(
-    [switch]$NoProject,
-    [string[]]$ProjectArgs = @()
+    [switch]$NoRun,
+    [Parameter(ValueFromRemainingArguments = $true)]
+    [string[]]$ServerArgs
 )
 
 $ErrorActionPreference = 'Stop'
@@ -47,21 +51,31 @@ $VenvDir         = Join-Path $PSScriptRoot 'geniex-env'
 # this script always ensures exactly this minor version is installed and uses
 # it to build the venv, so behavior is agnostic to whatever's already there.
 $RequiredMajor, $RequiredMinor = $PythonVersion.Split('.')[0..1] | ForEach-Object { [int]$_ }
+# This script lives at <repo>/scripts/setup_geniex.ps1; the repo root is its parent.
+$RepoDir = Split-Path $PSScriptRoot -Parent
 # ---------------------------------------------------------------------------
 
 function Write-Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
 function Write-Ok($msg)   { Write-Host "    [ok] $msg" -ForegroundColor Green }
 function Write-Warn($msg) { Write-Host "    [!]  $msg" -ForegroundColor Yellow }
 
-# --- 0. Sanity: this must be an ARM64 machine ------------------------------
+# --- 0. Sanity: this must be an ARM64 machine, running from inside a checkout
 Write-Step "Checking machine architecture"
-$arch = (Get-CimInstance Win32_Processor).Architecture
-# 12 = ARM64 in Win32_Processor.Architecture
 $osArch = $env:PROCESSOR_ARCHITECTURE
 Write-Host "    PROCESSOR_ARCHITECTURE = $osArch"
 if ($osArch -notmatch 'ARM64') {
     Write-Warn "This does not look like an ARM64 host. GenieX only ships ARM64 wheels; continuing anyway."
 }
+
+Write-Step "Checking for a synced Qonclave checkout"
+$ServerPy = Join-Path $RepoDir 'hub\server.py'
+if (-not (Test-Path $ServerPy)) {
+    throw ("hub\server.py not found under $RepoDir. This script assumes the repo is " +
+           "already git-synced and that this script is at <repo>\scripts\setup_geniex.ps1. " +
+           "Run 'git clone https://github.com/jogendar/Qonclave.git' (or 'git pull' in an " +
+           "existing checkout) first, then re-run this script from inside it.")
+}
+Write-Ok "found checkout at $RepoDir"
 
 # --- 1. Git CLI ------------------------------------------------------------
 Write-Step "Ensuring Git CLI is installed"
@@ -151,8 +165,8 @@ if ($pythonExe) {
     $installer = Join-Path $env:TEMP "python-$PythonVersion-arm64.exe"
     Invoke-WebRequest -Uri $PythonUrl -OutFile $installer
     Write-Host "    Running silent install (per-user, adds to PATH)..."
-    Start-Process -FilePath $installer -ArgumentList `
-        '/quiet','InstallAllUsers=0','PrependPath=1','Include_launcher=1','Include_pip=1' -Wait
+    $installArgs = @('/quiet', 'InstallAllUsers=0', 'PrependPath=1', 'Include_launcher=1', 'Include_pip=1')
+    Start-Process -FilePath $installer -ArgumentList $installArgs -Wait
     # Refresh PATH for current session (best-effort; we resolve by absolute path anyway)
     $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
                 [System.Environment]::GetEnvironmentVariable('Path','User')
@@ -195,27 +209,34 @@ Write-Step "Installing geniex into the venv (using its python directly, no PATH)
 & $VenvPython -m pip install --upgrade pip
 & $VenvPython -m pip install -U geniex
 
-# --- 5. Verify -------------------------------------------------------------
+# --- 5. Verify geniex --------------------------------------------------------
 Write-Step "Verifying geniex install"
 & $VenvPython -c "import platform, geniex; print('machine:', platform.machine()); print('geniex version:', geniex.version())"
+
+# --- 6. Install hub requirements --------------------------------------------
+Write-Step "Installing hub requirements into the venv"
+& $VenvPython -m pip install -r (Join-Path $RepoDir 'hub\requirements.txt')
+Write-Ok "requirements installed"
 
 Write-Host "`n===================================================================" -ForegroundColor Green
 Write-Host " GenieX environment ready." -ForegroundColor Green
 Write-Host " Run scripts either by activating the venv:" -ForegroundColor Green
-Write-Host "     .\geniex-env\Scripts\Activate.ps1" -ForegroundColor Green
-Write-Host "     python scripts\test_geniex.py" -ForegroundColor Green
+Write-Host "     .\scripts\geniex-env\Scripts\Activate.ps1" -ForegroundColor Green
+Write-Host "     python hub\server.py" -ForegroundColor Green
 Write-Host " ...or without activating, via the venv python directly:" -ForegroundColor Green
-Write-Host "     .\geniex-env\Scripts\python.exe scripts\test_geniex.py" -ForegroundColor Green
+Write-Host "     .\scripts\geniex-env\Scripts\python.exe hub\server.py" -ForegroundColor Green
 Write-Host "===================================================================" -ForegroundColor Green
 
-# --- 6. Chain into project setup (clone + install + run the hub) -----------
-# Skip with:  setup_geniex.ps1 -NoProject
-if (-not $NoProject) {
-    $projectScript = Join-Path $PSScriptRoot 'setup_project.ps1'
-    if (Test-Path $projectScript) {
-        Write-Step "Handing off to setup_project.ps1 (clone + install + run hub)"
-        & $projectScript -VenvPython $VenvPython @ProjectArgs
+# --- 7. Run the hub server ---------------------------------------------------
+if ($NoRun) {
+    Write-Step "NoRun set - skipping server start"
+} else {
+    Write-Step "Starting hub server"
+    Write-Host "    (Ctrl+C to stop; pass server flags after -- e.g. --verbose --port 8080)"
+    Set-Location $RepoDir
+    if ($ServerArgs) {
+        & $VenvPython (Join-Path $RepoDir 'hub\server.py') @ServerArgs
     } else {
-        Write-Warn "setup_project.ps1 not found next to this script; skipping project setup."
+        & $VenvPython (Join-Path $RepoDir 'hub\server.py')
     }
 }
