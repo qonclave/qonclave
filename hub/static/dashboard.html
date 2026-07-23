@@ -94,7 +94,7 @@ const shortTime = (iso) => { try { return new Date(iso).toLocaleTimeString(); } 
 
 async function refresh() {
   try {
-    const r = await fetch("/events");
+    const r = await fetch("/user/events");
     const j = await r.json();
 
     $("hubPill").textContent = "hub: ok";
@@ -104,7 +104,7 @@ async function refresh() {
 
     // latest frame (cache-bust)
     if (j.latest_frame) {
-      $("frame").src = "/latest.jpg?ts=" + Date.now();
+      $("frame").src = "/user/latest.jpg?ts=" + Date.now();
     }
 
     const latest = (j.events && j.events[0]) || null;

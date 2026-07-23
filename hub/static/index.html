@@ -129,7 +129,7 @@ sendEl.addEventListener("click", async () => {
 
   const t0 = performance.now();
   try {
-    const r = await fetch("/reason", { method: "POST", body: fd });
+    const r = await fetch("/user/reason", { method: "POST", body: fd });
     const j = await r.json();
     const dt = ((performance.now() - t0) / 1000).toFixed(2);
 
