@@ -37,6 +37,9 @@ scripts/  # environment setup (e.g. GenieX bootstrap)
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\setup_geniex.ps1
+
+when ps1 script doesn't work through permissions
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ```
 
 This: installs Git + ARM64 Python, creates the `geniex-env` venv and installs
