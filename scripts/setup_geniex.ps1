@@ -16,6 +16,11 @@
 #>
 
 $ErrorActionPreference = 'Stop'
+# PowerShell 7.4+ turns a native command's non-zero exit code into a TERMINATING
+# error when ErrorActionPreference is 'Stop'. This script intentionally probes
+# commands that may fail (e.g. `py -3.10` when only 3.13 is installed) and checks
+# $LASTEXITCODE itself, so opt out of that coupling.
+$PSNativeCommandUseErrorActionPreference = $false
 
 # ---- Config ---------------------------------------------------------------
 $PythonVersion   = '3.13.3'
@@ -77,12 +82,11 @@ function Get-ArmPython {
     # ignores the Microsoft Store stub.
     $candidates = @()
 
-    # 1. py launcher (if present) — ask it where the interpreter lives
+    # 1. py launcher (if present) — ask it where the interpreter lives.
+    #    Use `-3` (any Python 3); version filtering happens in Test-ArmPython.
     if (Get-Command py -ErrorAction SilentlyContinue) {
-        foreach ($sel in @("-$MinPythonMajor.$MinPythonMinor", '-3')) {
-            $p = (& py $sel -c "import sys; print(sys.executable)" 2>$null)
-            if ($LASTEXITCODE -eq 0 -and $p) { $candidates += $p.Trim() }
-        }
+        $p = (& py -3 -c "import sys; print(sys.executable)" 2>$null)
+        if ($LASTEXITCODE -eq 0 -and $p) { $candidates += $p.Trim() }
     }
 
     # 2. Well-known per-user / all-users install roots (glob for python.exe)
