@@ -56,29 +56,50 @@ if (Get-Command git -ErrorAction SilentlyContinue) {
 # --- 2. ARM64 Python 3.13.3 ------------------------------------------------
 Write-Step "Ensuring ARM64 Python $PythonVersion is installed"
 
+function Test-ArmPython($exe) {
+    # Returns $true if $exe is an ARM64 python >= min version. Never uses PATH.
+    if (-not $exe -or -not (Test-Path $exe)) { return $false }
+    $machine = (& $exe -c "import platform; print(platform.machine())" 2>$null)
+    $ver     = (& $exe -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>$null)
+    if ($LASTEXITCODE -ne 0 -or -not $machine -or -not $ver) { return $false }
+    if ($machine -notmatch 'ARM64') { return $false }
+    $mj,$mn = $ver.Split('.')
+    return ([int]$mj -gt $MinPythonMajor -or ([int]$mj -eq $MinPythonMajor -and [int]$mn -ge $MinPythonMinor))
+}
+
 function Get-ArmPython {
-    # Prefer the py launcher, then any python on PATH; return the exe path only if it is ARM64 and >= min version.
+    # Resolve python.exe by ABSOLUTE PATH, not PATH env var (which is stale right
+    # after a fresh install). Scans known install roots + py launcher + PATH.
     $candidates = @()
-    $pyLauncher = Get-Command py -ErrorAction SilentlyContinue
-    if ($pyLauncher) {
-        $p = (& py "-$MinPythonMajor.$MinPythonMinor" -c "import sys; print(sys.executable)" 2>$null)
-        if ($LASTEXITCODE -eq 0 -and $p) { $candidates += $p.Trim() }
-        $p2 = (& py -3 -c "import sys; print(sys.executable)" 2>$null)
-        if ($LASTEXITCODE -eq 0 -and $p2) { $candidates += $p2.Trim() }
+
+    # 1. py launcher (if present) — ask it where the interpreter lives
+    if (Get-Command py -ErrorAction SilentlyContinue) {
+        foreach ($sel in @("-$MinPythonMajor.$MinPythonMinor", '-3')) {
+            $p = (& py $sel -c "import sys; print(sys.executable)" 2>$null)
+            if ($LASTEXITCODE -eq 0 -and $p) { $candidates += $p.Trim() }
+        }
     }
-    $onPath = Get-Command python -ErrorAction SilentlyContinue
+
+    # 2. Well-known per-user / all-users install roots (glob for python.exe)
+    $roots = @(
+        "$env:LOCALAPPDATA\Programs\Python",
+        "$env:ProgramFiles\Python*",
+        "${env:ProgramFiles(Arm)}\Python*",
+        "C:\Python*"
+    )
+    foreach ($root in $roots) {
+        if ($root -and (Test-Path $root)) {
+            $candidates += (Get-ChildItem -Path $root -Filter python.exe -Recurse -ErrorAction SilentlyContinue |
+                            Select-Object -ExpandProperty FullName)
+        }
+    }
+
+    # 3. Whatever is on PATH, last resort
+    $onPath = Get-Command python.exe -ErrorAction SilentlyContinue
     if ($onPath) { $candidates += $onPath.Source }
 
-    foreach ($exe in ($candidates | Select-Object -Unique)) {
-        if (-not (Test-Path $exe)) { continue }
-        $machine = (& $exe -c "import platform; print(platform.machine())" 2>$null)
-        $ver     = (& $exe -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>$null)
-        if ($machine -match 'ARM64' -and $ver) {
-            $mj,$mn = $ver.Split('.')
-            if ([int]$mj -gt $MinPythonMajor -or ([int]$mj -eq $MinPythonMajor -and [int]$mn -ge $MinPythonMinor)) {
-                return $exe
-            }
-        }
+    foreach ($exe in ($candidates | Where-Object { $_ } | Select-Object -Unique)) {
+        if (Test-ArmPython $exe) { return $exe }
     }
     return $null
 }
@@ -93,11 +114,15 @@ if ($pythonExe) {
     Write-Host "    Running silent install (per-user, adds to PATH)..."
     Start-Process -FilePath $installer -ArgumentList `
         '/quiet','InstallAllUsers=0','PrependPath=1','Include_launcher=1','Include_pip=1' -Wait
-    # Refresh PATH for current session
+    # Refresh PATH for current session (best-effort; we resolve by absolute path anyway)
     $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
                 [System.Environment]::GetEnvironmentVariable('Path','User')
+    # Re-scan install folders directly — PATH is often stale immediately post-install.
     $pythonExe = Get-ArmPython
-    if (-not $pythonExe) { throw "ARM64 Python still not detected after install. Open a new shell and re-run." }
+    if (-not $pythonExe) {
+        throw ("ARM64 Python still not detected after install. Expected under " +
+               "$env:LOCALAPPDATA\Programs\Python. Open a NEW PowerShell window and re-run this script.")
+    }
     Write-Ok "ARM64 Python installed: $pythonExe"
 }
 
@@ -112,24 +137,30 @@ Write-Ok "Interpreter is ARM64"
 
 # --- 4. Virtual environment + geniex --------------------------------------
 Write-Step "Creating virtual environment at $VenvDir"
-if (Test-Path (Join-Path $VenvDir 'Scripts\Activate.ps1')) {
+$VenvPython = Join-Path $VenvDir 'Scripts\python.exe'
+if (Test-Path $VenvPython) {
     Write-Ok "venv already exists, reusing it"
 } else {
     & $pythonExe -m venv $VenvDir
+    if (-not (Test-Path $VenvPython)) { throw "venv creation failed: $VenvPython not found" }
     Write-Ok "venv created"
 }
 
-Write-Step "Activating venv and installing geniex from PyPI"
-& (Join-Path $VenvDir 'Scripts\Activate.ps1')
-python -m pip install --upgrade pip
-pip install -U geniex
+Write-Step "Installing geniex into the venv (using its python directly, no PATH)"
+# Drive everything through the venv's own python.exe by ABSOLUTE PATH so this
+# works even though the venv is not 'activated' on PATH in this session.
+& $VenvPython -m pip install --upgrade pip
+& $VenvPython -m pip install -U geniex
 
 # --- 5. Verify -------------------------------------------------------------
 Write-Step "Verifying geniex install"
-python -c "import geniex; print('geniex version:', geniex.version())"
+& $VenvPython -c "import platform, geniex; print('machine:', platform.machine()); print('geniex version:', geniex.version())"
 
 Write-Host "`n===================================================================" -ForegroundColor Green
 Write-Host " GenieX environment ready." -ForegroundColor Green
-Write-Host " To use it in a new shell:" -ForegroundColor Green
+Write-Host " Run scripts either by activating the venv:" -ForegroundColor Green
 Write-Host "     .\geniex-env\Scripts\Activate.ps1" -ForegroundColor Green
+Write-Host "     python scripts\test_geniex.py" -ForegroundColor Green
+Write-Host " ...or without activating, via the venv python directly:" -ForegroundColor Green
+Write-Host "     .\geniex-env\Scripts\python.exe scripts\test_geniex.py" -ForegroundColor Green
 Write-Host "===================================================================" -ForegroundColor Green
