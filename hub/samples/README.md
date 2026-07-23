@@ -8,10 +8,15 @@ Snapdragon laptop where VLM reasoning is live) without hunting for a file.
 | `room_with_person.jpg` | A room with a human figure | `hub_verified: true` |
 | `empty_room.jpg` | The same room, no person | `hub_verified: false` |
 | `geniex_demo.jpg` | Qualcomm's public GenieX demo photo | depends on scene |
+| `intruder_cctv.jpg` | Stock CCTV-style photo of an intruder with a crowbar | `hub_verified: true` (security/intrusion scenario) |
 
 `room_with_person.jpg` and `empty_room.jpg` are synthetic and license-free —
 regenerate them with `python make_samples.py`. `geniex_demo.jpg` is Qualcomm's
 public GenieX sample asset.
+
+`intruder_cctv.jpg` is a stock photo from Alamy (comp/watermarked preview
+resolution) — fine for local hackathon demo/testing, but **do not** redistribute
+or ship it in any public release without checking Alamy's licensing terms.
 
 ## Quick test against a running hub
 
