@@ -78,6 +78,15 @@ pip install -r hub/requirements.txt
 python hub/server.py                       # http://0.0.0.0:8000
 ```
 
+By default, per-request access logs are **hidden** (the dashboard polls every
+2s and would flood the console); the hub's own event/alert logs still show. To
+see per-request logs:
+
+```bash
+python hub/server.py --verbose             # show werkzeug access logs
+python hub/server.py --host 0.0.0.0 --port 8000 -v
+```
+
 Then open <http://localhost:8000/user/> for the test page, or
 <http://localhost:8000/user/dashboard> for the dashboard.
 

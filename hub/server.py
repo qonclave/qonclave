@@ -37,6 +37,8 @@ Run:
 from __future__ import annotations
 
 import logging
+import argparse
+import logging
 import os
 
 from flask import Flask, jsonify, redirect, request
@@ -87,8 +89,21 @@ app = create_app()
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Qonclave hub server")
+    parser.add_argument("--verbose", "-v", action="store_true",
+                        help="show per-request access logs (werkzeug). Off by "
+                             "default so the dashboard's 2s polling doesn't flood "
+                             "the console; our own event/alert logs always show.")
+    parser.add_argument("--host", default=state.HOST, help=f"bind address (default {state.HOST})")
+    parser.add_argument("--port", type=int, default=state.PORT, help=f"port (default {state.PORT})")
+    args = parser.parse_args()
+
+    # Quiet werkzeug's access log unless --verbose. Our qonclave.hub logs
+    # (events, alerts, warnings) stay at INFO either way.
+    logging.getLogger("werkzeug").setLevel(logging.INFO if args.verbose else logging.WARNING)
+
     log.info("=" * 60)
-    log.info("Qonclave hub starting on http://%s:%s", state.HOST, state.PORT)
+    log.info("Qonclave hub starting on http://%s:%s", args.host, args.port)
     log.info("Static dir : %s", state.STATIC_DIR)
     log.info("Upload dir : %s", state.UPLOAD_DIR)
     log.info("VLM status : %s", state.vlm.status())
@@ -100,10 +115,12 @@ def main():
     log.info("User  : GET /user/dashboard | GET /user/events | GET /user/latest.jpg")
     log.info("        GET /user/frames/<name> | POST /user/reason | GET /user/")
     log.info("Other : GET /health | GET / (-> /user/)")
+    log.info("Access logs: %s (use --verbose to show per-request logs)",
+             "ON" if args.verbose else "OFF")
     log.info("=" * 60)
     # threaded=True so /health stays responsive; generation is serialized
     # inside the VLM backend via its own lock.
-    app.run(host=state.HOST, port=state.PORT, threaded=True)
+    app.run(host=args.host, port=args.port, threaded=True)
 
 
 if __name__ == "__main__":
