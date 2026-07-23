@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Qonclave Hub — Reason Test</title>
+<title>Qonclave Hub — Edge Event Test</title>
 <style>
   :root { --bg:#0f1115; --card:#1a1d24; --fg:#e6e8ec; --muted:#8b93a1;
           --accent:#4f9dff; --ok:#3ecf8e; --err:#ff6b6b; --border:#2a2e37; }
@@ -16,10 +16,12 @@
   .card { background:var(--card); border:1px solid var(--border);
           border-radius:12px; padding:20px; margin-bottom:18px; }
   label { display:block; font-size:13px; color:var(--muted); margin-bottom:6px; }
-  input[type=file], textarea {
+  input[type=file], input[type=text], input[type=number], textarea {
     width:100%; background:#0f1218; color:var(--fg); border:1px solid var(--border);
     border-radius:8px; padding:10px; font-size:14px; font-family:inherit; }
   textarea { resize:vertical; min-height:60px; }
+  .fields { display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; margin-top:14px; }
+  @media (max-width:640px){ .fields{ grid-template-columns:1fr; } }
   .row { display:flex; gap:12px; align-items:center; margin-top:14px; flex-wrap:wrap; }
   button { background:var(--accent); color:#fff; border:none; border-radius:8px;
            padding:11px 20px; font-size:15px; font-weight:600; cursor:pointer; }
@@ -31,7 +33,7 @@
   @media (max-width:640px){ .grid{ grid-template-columns:1fr; } }
   img#preview { max-width:100%; border-radius:8px; border:1px solid var(--border);
                 display:none; }
-  pre { white-space:pre-wrap; word-break:break-word; margin:0; font-size:14px;
+  pre { white-space:pre-wrap; word-break:break-word; margin:0; font-size:13px;
         line-height:1.5; }
   .meta { color:var(--muted); font-size:12px; margin-top:10px; }
   .spinner { display:none; width:16px; height:16px; border:2px solid var(--border);
@@ -39,12 +41,23 @@
              animation:spin .8s linear infinite; }
   @keyframes spin { to { transform:rotate(360deg); } }
   code { background:#0f1218; padding:1px 6px; border-radius:4px; }
+  nav { display:flex; gap:14px; margin-bottom:18px; font-size:14px; }
+  nav a { color:var(--muted); text-decoration:none; }
+  nav a.active { color:var(--accent); font-weight:600; }
+  nav a:hover { color:var(--fg); }
+  .verdict { font-size:22px; font-weight:700; margin:4px 0 12px; }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>Qonclave Hub — Reason Test</h1>
-  <div class="sub">Upload a frame → the hub runs the VLM (Snapdragon only) and returns its reasoning.</div>
+  <nav>
+    <a href="/user/test_reason">Reason test</a>
+    <a href="/user/test_event" class="active">Edge event test</a>
+    <a href="/user/dashboard">Dashboard</a>
+  </nav>
+  <h1>Qonclave Hub — Edge Event Test</h1>
+  <div class="sub">Simulate an Arduino UNO Q escalation: posts a frame + edge metadata to
+    <code>/edge/event</code>. This <b>does</b> record to the dashboard.</div>
 
   <div class="card">
     <span id="healthPill" class="pill">checking…</span>
@@ -52,14 +65,31 @@
   </div>
 
   <div class="card">
-    <label for="file">Image</label>
+    <label for="file">Escalation frame</label>
     <input type="file" id="file" accept="image/*" />
+
+    <div class="fields">
+      <div>
+        <label for="deviceId">device_id</label>
+        <input type="text" id="deviceId" value="unoq-01" />
+      </div>
+      <div>
+        <label for="eventId">event_id (blank = auto)</label>
+        <input type="text" id="eventId" placeholder="auto" />
+      </div>
+      <div>
+        <label for="edgeConf">edge_confidence</label>
+        <input type="number" id="edgeConf" value="0.82" step="0.01" min="0" max="1" />
+      </div>
+    </div>
+
     <div style="margin-top:14px;">
       <label for="prompt">Prompt (optional)</label>
       <textarea id="prompt" placeholder="Leave blank to use the hub default…"></textarea>
     </div>
+
     <div class="row">
-      <button id="send" disabled>Send to /reason</button>
+      <button id="send" disabled>Post to /edge/event</button>
       <div class="spinner" id="spin"></div>
       <span id="statusPill"></span>
     </div>
@@ -67,11 +97,12 @@
 
   <div class="grid">
     <div class="card">
-      <label>Preview</label>
+      <label>Frame preview</label>
       <img id="preview" alt="preview" />
     </div>
     <div class="card">
-      <label>Reasoning output</label>
+      <label>Verification response</label>
+      <div class="verdict" id="verdict">—</div>
       <pre id="output">—</pre>
       <div class="meta" id="outMeta"></div>
     </div>
@@ -80,11 +111,10 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-const fileEl = $("file"), promptEl = $("prompt"), sendEl = $("send"),
-      spin = $("spin"), out = $("output"), outMeta = $("outMeta"),
-      statusPill = $("statusPill"), preview = $("preview");
+const fileEl = $("file"), sendEl = $("send"), spin = $("spin"),
+      out = $("output"), outMeta = $("outMeta"), statusPill = $("statusPill"),
+      preview = $("preview"), verdict = $("verdict");
 
-// --- health check ---
 async function checkHealth() {
   try {
     const r = await fetch("/health");
@@ -94,8 +124,7 @@ async function checkHealth() {
     pill.className = "pill ok";
     const v = j.vlm || {};
     $("healthMeta").textContent =
-      ` · VLM ${v.available ? "available" : "unavailable"} (${v.arch}) · ${v.model_id}`
-      + (v.load_error ? ` · ${v.load_error}` : "");
+      ` · VLM ${v.available ? "available" : "unavailable"} (${v.arch}) · ${v.model_id}`;
   } catch (e) {
     const pill = $("healthPill");
     pill.textContent = "hub: unreachable";
@@ -103,58 +132,58 @@ async function checkHealth() {
   }
 }
 
-// --- preview + enable button ---
 fileEl.addEventListener("change", () => {
   const f = fileEl.files[0];
   sendEl.disabled = !f;
-  if (f) {
-    preview.src = URL.createObjectURL(f);
-    preview.style.display = "block";
-  }
+  if (f) { preview.src = URL.createObjectURL(f); preview.style.display = "block"; }
 });
 
-// --- submit ---
 sendEl.addEventListener("click", async () => {
   const f = fileEl.files[0];
   if (!f) return;
   sendEl.disabled = true;
   spin.style.display = "inline-block";
   statusPill.textContent = "";
-  out.textContent = "…reasoning…";
+  verdict.textContent = "…";
+  out.textContent = "…posting to /edge/event…";
   outMeta.textContent = "";
+
+  // Build the edge event metadata blob (same shape the UNO Q would send).
+  const ev = { device_id: $("deviceId").value.trim() || "unoq-01",
+               event_type: "person_detected",
+               edge_confidence: parseFloat($("edgeConf").value) || undefined };
+  const eid = $("eventId").value.trim();
+  if (eid) ev.event_id = eid;
 
   const fd = new FormData();
   fd.append("image", f);
-  if (promptEl.value.trim()) fd.append("prompt", promptEl.value.trim());
+  fd.append("event", JSON.stringify(ev));
+  if ($("prompt").value.trim()) fd.append("prompt", $("prompt").value.trim());
 
   const t0 = performance.now();
   try {
-    const r = await fetch("/user/reason", { method: "POST", body: fd });
+    const r = await fetch("/edge/event", { method: "POST", body: fd });
     const j = await r.json();
     const dt = ((performance.now() - t0) / 1000).toFixed(2);
 
-    if (j.text) {
-      out.textContent = j.text;
-    } else if (j.available === false) {
-      out.textContent = "VLM not available on this hub (non-Snapdragon machine).\n\n"
-                        + (j.error || "");
-    } else {
-      out.textContent = "Error: " + (j.error || "unknown");
-    }
+    const v = j.hub_verified;
+    verdict.innerHTML = v
+      ? '<span style="color:var(--ok)">✓ ' + (j.alert || "verified") + '</span>'
+      : '<span style="color:var(--err)">✗ ' + (j.alert || "not verified") + '</span>';
 
-    const p = statusPill;
-    p.className = "pill " + (j.ok ? "ok" : "err");
-    p.textContent = j.ok ? "ok" : "error";
+    out.textContent = JSON.stringify(j, null, 2);
+
+    statusPill.className = "pill " + (j.received ? "ok" : "err");
+    statusPill.textContent = j.received ? "received" : "rejected";
 
     const parts = [];
-    if (j.model_id) parts.push(j.model_id);
-    if (j.latency_s != null) parts.push(`server ${j.latency_s}s`);
-    parts.push(`round-trip ${dt}s`);
-    if (j.image_saved_as) parts.push(j.image_saved_as);
-    if (j.profile && j.profile.decode_speed != null)
-      parts.push(`${j.profile.decode_speed.toFixed?.(1) ?? j.profile.decode_speed} tok/s`);
-    outMeta.textContent = parts.join(" · ");
+    if (j.event_id) parts.push(j.event_id);
+    if (j.hub_confidence != null) parts.push("hub_conf " + j.hub_confidence);
+    parts.push("round-trip " + dt + "s");
+    outMeta.innerHTML = parts.join(" · ")
+      + ' · <a href="/user/dashboard" style="color:var(--accent)">view on dashboard →</a>';
   } catch (e) {
+    verdict.textContent = "—";
     out.textContent = "Request failed: " + e;
     statusPill.className = "pill err";
     statusPill.textContent = "failed";

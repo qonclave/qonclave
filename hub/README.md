@@ -20,7 +20,9 @@ Routes are split into two groups, in separate files:
 | GET | `/user/latest.jpg` | user | Most recent frame |
 | GET | `/user/frames/<name>` | user | A specific stored frame |
 | POST | `/user/reason` | user | Raw VLM tester: image in, reasoning text out |
-| GET | `/user/` | user | Image upload test page |
+| GET | `/user/test_reason` | user | Reason tester page (posts to `/user/reason`) |
+| GET | `/user/test_event` | user | Edge-event tester page (posts to `/edge/event`) |
+| GET | `/user/` | user | Default landing → reason tester page |
 
 ### File layout
 
@@ -31,8 +33,18 @@ hub/
   edge_routes.py    # /edge/*  blueprint
   user_routes.py    # /user/*  blueprint
   vlm_backend.py    # conditional GenieX VLM
-  static/           # index.html (upload test), dashboard.html
+  static/           # test_reason.html, test_event.html, dashboard.html
 ```
+
+### Test pages
+
+Two browser testers (linked to each other and the dashboard via a nav bar):
+
+- **`/user/test_reason`** — posts to `/user/reason`; shows raw VLM reasoning.
+  Does **not** record to the dashboard.
+- **`/user/test_event`** — simulates an edge device: posts a frame + edge
+  metadata (`device_id`, `event_id`, `edge_confidence`) to `/edge/event` and
+  shows the schema-compliant verification response. **Records to the dashboard.**
 
 ### `/user/reason` vs `/edge/event`
 

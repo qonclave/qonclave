@@ -8,7 +8,9 @@ All routes are under the /user prefix:
     GET  /user/latest.jpg       most recent escalation frame
     GET  /user/frames/<name>    a specific stored frame
     POST /user/reason           raw VLM tester: image in, reasoning text out
-    GET  /user/  (and /user)    image upload test page
+    GET  /user/test_reason      reason tester page (posts to /user/reason)
+    GET  /user/test_event       edge-event tester page (posts to /edge/event)
+    GET  /user/  (and /user)    default landing -> reason tester page
 """
 
 from __future__ import annotations
@@ -89,6 +91,17 @@ def dashboard():
     return send_from_directory(state.STATIC_DIR, "dashboard.html")
 
 
+@user_bp.get("/test_reason")
+def test_reason():
+    return send_from_directory(state.STATIC_DIR, "test_reason.html")
+
+
+@user_bp.get("/test_event")
+def test_event():
+    return send_from_directory(state.STATIC_DIR, "test_event.html")
+
+
 @user_bp.get("/")
 def index():
-    return send_from_directory(state.STATIC_DIR, "index.html")
+    # default landing = reason tester
+    return send_from_directory(state.STATIC_DIR, "test_reason.html")
