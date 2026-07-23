@@ -3,6 +3,95 @@
 HTTP server for the Snapdragon laptop hub. Receives an image, runs
 vision-language reasoning on it, and returns the result as JSON.
 
+## Design
+
+### Architecture
+
+```mermaid
+flowchart TB
+    subgraph EdgeDevice["Edge device (Arduino UNO Q)"]
+        CAM["Camera + local person detector"]
+    end
+
+    subgraph HubProcess["Hub process (this repo, hub/)"]
+        direction TB
+
+        subgraph Blueprints["Flask app (server.py)"]
+            EDGE["edge_routes.py\n/edge/*"]
+            USER["user_routes.py\n/user/*"]
+            HEALTH["/health, / (redirect)"]
+        end
+
+        STATE["state.py\nshared config, event ring buffer,\nrequest/parsing helpers"]
+        VLM["vlm_backend.py\nVLMBackend"]
+        DISK["hub/uploads/\nsaved frames"]
+
+        EDGE --> STATE
+        USER --> STATE
+        STATE --> VLM
+        STATE --> DISK
+    end
+
+    subgraph Runtime["Conditional runtime"]
+        GENIEX["GenieX SDK\n(ARM64 / Snapdragon X only)"]
+        QWEN["Qwen2.5-VL-7B-Instruct\nvia qairt / Hexagon NPU"]
+        GENIEX --> QWEN
+    end
+
+    subgraph Browser["Operator browser"]
+        DASH["/user/dashboard"]
+        TEVENT["/user/test_event"]
+        TREASON["/user/test_reason"]
+    end
+
+    CAM -- "POST /edge/event\n(frame + event JSON)" --> EDGE
+    VLM -. "lazy import, ARM64 only" .-> GENIEX
+    Browser --> USER
+    HubProcess -- "hub_verified / alert" --> CAM
+```
+
+On non-Snapdragon machines the `geniex` import inside `vlm_backend.py` is
+never attempted at module load — only when a request actually needs
+reasoning, and only if the host is ARM64. Everything else in the diagram
+(routes, event store, uploads, dashboard) runs identically on any OS.
+
+### Request flow: `POST /edge/event`
+
+```mermaid
+sequenceDiagram
+    participant Edge as Edge device
+    participant Route as edge_routes.py
+    participant State as state.py
+    participant VLM as VLMBackend.verify()
+    participant Model as GenieX / Qwen2.5-VL
+
+    Edge->>Route: POST /edge/event (frame + event JSON)
+    Route->>State: parse_edge_event()
+    Route->>State: save_incoming_image()
+    State-->>Route: saved frame path
+
+    Route->>VLM: verify(path)
+    alt VLM available (ARM64 + GenieX loaded)
+        VLM->>Model: reset(), then generate() with json_mode=True, temperature=0.1
+        Model-->>VLM: JSON text - person_present, confidence, description
+        VLM-->>Route: available=true, person_present, confidence, alert
+    else VLM unavailable (non-ARM64 or geniex missing)
+        VLM-->>Route: available=false, error message
+    end
+
+    Route->>State: verdict_from_verify() derives hub_verified, hub_confidence, alert
+    Route->>State: record_event() into ring buffer plus latest frame
+    Route-->>Edge: schema_version, event_id, received, hub_verified, hub_confidence, identity_status, alert
+
+    Note over Route,Edge: The dashboard (/user/events, /user/latest.jpg) polls the same event store just updated.
+```
+
+`POST /user/reason` follows the same save-image -> VLM step, but calls the
+free-form `reason()` method instead of `verify()`, returns raw text instead
+of a structured verdict, and does **not** call `record_event()` — so it never
+appears on the dashboard. That split is deliberate: `/user/reason` is a
+reasoning-only developer tool; `/edge/event` is the real device contract.
+
 ## Endpoints
 
 Routes are split into two groups, in separate files:
