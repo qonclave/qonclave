@@ -31,7 +31,6 @@ def event():
              client, request.headers.get("Content-Type"), request.content_length)
 
     edge = state.parse_edge_event()
-    prompt = state.request_prompt()
 
     path, err = state.save_incoming_image()
     if err:
@@ -43,8 +42,8 @@ def event():
     log.info("Edge event %s | device=%s | edge_conf=%s | frame=%s",
              event_id, edge.get("device_id"), edge.get("edge_confidence"), frame_name)
 
-    result = state.vlm.reason(path, prompt=prompt)
-    hub_verified, hub_conf, alert = state.verify_from_reasoning(result)
+    result = state.vlm.verify(path)
+    hub_verified, hub_conf, alert = state.verdict_from_verify(result)
 
     # schema-compliant response (plan §5.3)
     response = {
@@ -69,7 +68,7 @@ def event():
         "edge_confidence": edge.get("edge_confidence"),
         "edge_model": edge.get("edge_model"),
         "frame": frame_name,
-        "reasoning_text": result.get("text"),
+        "reasoning_text": result.get("description") or result.get("raw_text"),
         "reasoning_available": result.get("available"),
         "latency_s": result.get("latency_s"),
         "received_at": state.now_iso(),

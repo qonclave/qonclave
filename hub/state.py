@@ -174,21 +174,21 @@ def request_prompt() -> str:
             or request.headers.get("X-Prompt") or DEFAULT_PROMPT)
 
 
-def verify_from_reasoning(result: dict) -> tuple[bool, float | None, str]:
+def verdict_from_verify(v: dict) -> tuple[bool, float | None, str]:
     """
-    Turn a VLM reasoning result into the (hub_verified, hub_confidence, alert)
-    triple the edge/dashboard contract expects.
+    Map the VLM's structured verify() result to the (hub_verified,
+    hub_confidence, alert) triple the edge/dashboard contract expects.
 
-    Base MVP heuristic: if reasoning ran and its text mentions a person, treat
-    the event as verified. On machines where the VLM is unavailable
-    (non-Snapdragon), we cannot verify from reasoning, so hub_verified=false.
-    A dedicated person-detector gate (YOLOv8) can replace this later so
+    verify() already did the classification with json_mode, so this is a plain
+    field read — no keyword matching on prose. On machines where the VLM is
+    unavailable (non-Snapdragon), person_present is None -> not verified.
+    A dedicated person-detector gate (YOLOv8) can supplement this later so
     verification works even without the VLM.
     """
-    if not result.get("available") or not result.get("text"):
+    if not v.get("available"):
         return False, None, "unverified (reasoning unavailable on this hub)"
-    text = result["text"].lower()
-    person = any(w in text for w in ("person", "people", "human", "man", "woman", "someone"))
-    if person:
-        return True, result.get("hub_confidence"), "Person verified near camera"
-    return False, result.get("hub_confidence"), "No person confirmed in frame"
+    person = v.get("person_present")
+    conf = v.get("confidence")
+    alert = v.get("alert") or ("Person verified near camera" if person
+                               else "No person confirmed in frame")
+    return bool(person), conf, alert

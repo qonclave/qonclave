@@ -20,6 +20,7 @@ respond gracefully.
 
 from __future__ import annotations
 
+import json
 import logging
 import platform
 import threading
@@ -36,6 +37,44 @@ DEFAULT_PROMPT = (
     "If so, what are they doing? Note anything unusual or concerning."
 )
 DEFAULT_MAX_NEW_TOKENS = 256
+
+# Structured verification: ask for a strict JSON object so we parse fields
+# instead of keyword-matching prose. Used with json_mode=True.
+VERIFY_PROMPT = (
+    "You are a security camera verifier. Look at the image and respond with "
+    "ONLY a JSON object, no other text, of exactly this form:\n"
+    '{"person_present": true or false, '
+    '"confidence": a number from 0 to 1, '
+    '"description": "a short description of the scene"}\n'
+    "Set person_present to true only if a human is clearly visible."
+)
+VERIFY_MAX_NEW_TOKENS = 128
+
+
+def _extract_json(text: str) -> dict:
+    """
+    Best-effort parse of a JSON object out of the model's output. Handles the
+    common cases: pure JSON, JSON wrapped in ```json fences, or JSON embedded in
+    surrounding prose. Returns {} if nothing parseable is found.
+    """
+    if not text:
+        return {}
+    # direct parse first
+    try:
+        obj = json.loads(text)
+        return obj if isinstance(obj, dict) else {}
+    except (ValueError, TypeError):
+        pass
+    # fall back to the first {...} span
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        try:
+            obj = json.loads(text[start:end + 1])
+            return obj if isinstance(obj, dict) else {}
+        except (ValueError, TypeError):
+            return {}
+    return {}
 
 
 def _is_arm64() -> bool:
@@ -119,79 +158,165 @@ class VLMBackend:
                 return False
 
     # --- inference ----------------------------------------------------------
+    def _generate(self, image_path: str, prompt: str, max_new_tokens: int,
+                  **gen_kwargs) -> dict:
+        """
+        Shared generation core. Returns the raw result dict. Assumes the model
+        is loaded and the lock is held by the caller. gen_kwargs (temperature,
+        json_mode, grammar, stop, …) are passed to model.generate(); if the SDK
+        build rejects one, we retry without the extras so we degrade instead of
+        crashing.
+        """
+        t0 = time.time()
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "image", "image": image_path},
+                {"type": "text", "text": prompt},
+            ],
+        }]
+        chat_prompt = self._model.tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True,
+        )
+        try:
+            output = self._model.generate(
+                chat_prompt, images=[image_path],
+                max_new_tokens=max_new_tokens, **gen_kwargs,
+            )
+        except TypeError as e:
+            # Older SDK build without json_mode/grammar/etc. — retry plain.
+            if gen_kwargs:
+                log.warning("generate() rejected %s (%s); retrying without extras",
+                            list(gen_kwargs), e)
+                output = self._model.generate(
+                    chat_prompt, images=[image_path], max_new_tokens=max_new_tokens,
+                )
+            else:
+                raise
+        latency = time.time() - t0
+
+        profile = None
+        prof = getattr(output, "profile", None)
+        if prof is not None:
+            profile = {
+                "generated_tokens": getattr(prof, "generated_tokens", None),
+                "decode_speed": getattr(prof, "decode_speed", None),
+                "stop_reason": getattr(prof, "stop_reason", None),
+            }
+        text = getattr(output, "text", str(output))
+        return {
+            "available": True,
+            "text": text,
+            "prompt": prompt,
+            "model_id": self.model_id,
+            "latency_s": round(latency, 3),
+            "error": None,
+            "profile": profile,
+        }
+
+    def _unavailable(self, prompt: str) -> dict:
+        return {
+            "available": False,
+            "text": None,
+            "prompt": prompt,
+            "model_id": self.model_id,
+            "latency_s": None,
+            "error": self._load_error or "VLM not available on this machine",
+            "profile": None,
+        }
+
     def reason(self, image_path: str, prompt: str | None = None,
                max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS) -> dict:
         """
-        Run the VLM on one image. Always returns a dict; never raises for the
-        caller. Shape:
-            {"available": bool, "text": str|None, "prompt": str,
-             "model_id": str, "latency_s": float|None, "error": str|None,
-             "profile": {...}|None}
+        Free-form reasoning over one image (used by the /user/reason tester).
+        Always returns a dict; never raises for the caller.
         """
         prompt = prompt or DEFAULT_PROMPT
-
         if not self.is_available():
+            return self._unavailable(prompt)
+        with self._lock:
+            try:
+                result = self._generate(image_path, prompt, max_new_tokens)
+                preview = (result.get("text") or "")[:200].replace("\n", " ")
+                log.info("VLM reasoning done in %.2fs: %s",
+                         result.get("latency_s") or 0.0, preview)
+                return result
+            except Exception as e:
+                log.exception("VLM reasoning failed")
+                return {**self._unavailable(prompt), "available": True,
+                        "error": f"reasoning failed: {e}"}
+
+    def verify(self, image_path: str) -> dict:
+        """
+        Structured verification for the edge contract. Asks the VLM for a strict
+        JSON object and parses it — no brittle keyword matching on prose.
+
+        Returns (always, never raises for caller):
+            {"available": bool,
+             "person_present": bool|None,
+             "confidence": float|None,     # 0..1
+             "description": str|None,
+             "alert": str|None,
+             "raw_text": str|None,
+             "latency_s": float|None,
+             "profile": {...}|None,
+             "error": str|None}
+        """
+        if not self.is_available():
+            u = self._unavailable(VERIFY_PROMPT)
             return {
-                "available": False,
-                "text": None,
-                "prompt": prompt,
-                "model_id": self.model_id,
-                "latency_s": None,
-                "error": self._load_error or "VLM not available on this machine",
-                "profile": None,
+                "available": False, "person_present": None, "confidence": None,
+                "description": None, "alert": None, "raw_text": None,
+                "latency_s": None, "profile": None, "error": u["error"],
             }
 
         with self._lock:
             try:
-                t0 = time.time()
-                messages = [{
-                    "role": "user",
-                    "content": [
-                        {"type": "image", "image": image_path},
-                        {"type": "text", "text": prompt},
-                    ],
-                }]
-                chat_prompt = self._model.tokenizer.apply_chat_template(
-                    messages, tokenize=False, add_generation_prompt=True,
+                # json_mode + low temperature => deterministic, parseable output.
+                result = self._generate(
+                    image_path, VERIFY_PROMPT, VERIFY_MAX_NEW_TOKENS,
+                    json_mode=True, temperature=0.1,
                 )
-                output = self._model.generate(
-                    chat_prompt, images=[image_path], max_new_tokens=max_new_tokens,
-                )
-                latency = time.time() - t0
-
-                profile = None
-                prof = getattr(output, "profile", None)
-                if prof is not None:
-                    profile = {
-                        "generated_tokens": getattr(prof, "generated_tokens", None),
-                        "decode_speed": getattr(prof, "decode_speed", None),
-                        "stop_reason": getattr(prof, "stop_reason", None),
-                    }
-
-                text = getattr(output, "text", str(output))
-                log.info("VLM reasoning done in %.2fs (%s tok)",
-                         latency,
-                         profile.get("generated_tokens") if profile else "?")
-                return {
-                    "available": True,
-                    "text": text,
-                    "prompt": prompt,
-                    "model_id": self.model_id,
-                    "latency_s": round(latency, 3),
-                    "error": None,
-                    "profile": profile,
-                }
             except Exception as e:
-                log.exception("VLM reasoning failed")
+                log.exception("VLM verify failed")
                 return {
-                    "available": True,
-                    "text": None,
-                    "prompt": prompt,
-                    "model_id": self.model_id,
-                    "latency_s": None,
-                    "error": f"reasoning failed: {e}",
-                    "profile": None,
+                    "available": True, "person_present": None, "confidence": None,
+                    "description": None, "alert": None, "raw_text": None,
+                    "latency_s": None, "profile": None,
+                    "error": f"verify failed: {e}",
                 }
+
+        parsed = _extract_json(result.get("text") or "")
+        person = parsed.get("person_present")
+        if isinstance(person, str):
+            person = person.strip().lower() in ("true", "yes", "1")
+        conf = parsed.get("confidence")
+        try:
+            conf = float(conf) if conf is not None else None
+        except (TypeError, ValueError):
+            conf = None
+        desc = parsed.get("description")
+
+        if person is True:
+            alert = "Person verified near camera"
+        elif person is False:
+            alert = "No person confirmed in frame"
+        else:
+            alert = "Verification inconclusive"
+
+        log.info("VLM verify (%.2fs): person=%s conf=%s",
+                 result.get("latency_s") or 0.0, person, conf)
+        return {
+            "available": True,
+            "person_present": person,
+            "confidence": conf,
+            "description": desc,
+            "alert": alert,
+            "raw_text": result.get("text"),
+            "latency_s": result.get("latency_s"),
+            "profile": result.get("profile"),
+            "error": None,
+        }
 
     def close(self):
         with self._lock:
