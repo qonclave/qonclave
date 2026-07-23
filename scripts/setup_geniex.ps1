@@ -6,9 +6,13 @@
 
     What it does:
       1. Installs Git CLI (via winget) if missing.
-      2. Installs ARM64 Python 3.13.3 (per https://geniex.aihub.qualcomm.com/en/run/python/install) if missing.
+      2. Ensures ARM64 Python 3.13.3 exists (per https://geniex.aihub.qualcomm.com/en/run/python/install).
+         Version-agnostic to whatever is already on the box: an older Python
+         (e.g. 3.9), a newer one, or an x64 build is ignored (never reused,
+         never removed) and 3.13.3 is installed fresh, side-by-side.
       3. Confirms the interpreter is ARM64 (not AMD64/x86_64 — GenieX has no x64 wheel).
-      4. Creates the geniex-env virtual environment and installs `geniex` from PyPI.
+      4. Creates the geniex-env virtual environment FROM that exact Python
+         version and installs `geniex` from PyPI into it.
       5. Verifies the install by importing geniex and printing its version.
 
     Usage (from an elevated or normal PowerShell prompt):
@@ -38,8 +42,11 @@ $PSNativeCommandUseErrorActionPreference = $false
 $PythonVersion   = '3.13.3'
 $PythonUrl       = "https://www.python.org/ftp/python/$PythonVersion/python-$PythonVersion-arm64.exe"
 $VenvDir         = Join-Path $PSScriptRoot 'geniex-env'
-$MinPythonMajor  = 3
-$MinPythonMinor  = 10
+# Exact major.minor required, derived from $PythonVersion (e.g. "3.13.3" -> 3, 13).
+# Any OTHER Python found on the box — older OR newer, ARM64 or not — is ignored;
+# this script always ensures exactly this minor version is installed and uses
+# it to build the venv, so behavior is agnostic to whatever's already there.
+$RequiredMajor, $RequiredMinor = $PythonVersion.Split('.')[0..1] | ForEach-Object { [int]$_ }
 # ---------------------------------------------------------------------------
 
 function Write-Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
@@ -70,11 +77,15 @@ if (Get-Command git -ErrorAction SilentlyContinue) {
     else { throw "git install did not surface on PATH. Open a new shell and re-run." }
 }
 
-# --- 2. ARM64 Python 3.13.3 ------------------------------------------------
+# --- 2. ARM64 Python (exact required version) ------------------------------
 Write-Step "Ensuring ARM64 Python $PythonVersion is installed"
 
 function Test-ArmPython($exe) {
-    # Returns $true if $exe is a REAL ARM64 python >= min version. Never uses PATH.
+    # Returns $true only if $exe is a REAL ARM64 python matching the EXACT
+    # required major.minor (not just ">= some minimum"). This makes the script
+    # agnostic to whatever Python already happens to be on the box: an older
+    # 3.9, a newer 3.14, an x64 build, or the Store stub are all rejected the
+    # same way, and a fresh install of the required version is triggered.
     if (-not $exe -or -not (Test-Path $exe)) { return $false }
     # Skip the Microsoft Store "App execution alias" stub — it is NOT python; it
     # just prints "Python was not found; run without arguments to install from
@@ -84,21 +95,25 @@ function Test-ArmPython($exe) {
     $ver     = (& $exe -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>$null)
     if ($LASTEXITCODE -ne 0 -or -not $machine -or -not $ver) { return $false }
     if ($machine -notmatch 'ARM64') { return $false }
-    $mj,$mn = $ver.Split('.')
-    return ([int]$mj -gt $MinPythonMajor -or ([int]$mj -eq $MinPythonMajor -and [int]$mn -ge $MinPythonMinor))
+    $mj,$mn = $ver.Split('.') | ForEach-Object { [int]$_ }
+    return ($mj -eq $RequiredMajor -and $mn -eq $RequiredMinor)
 }
 
 function Get-ArmPython {
     # Resolve python.exe by ABSOLUTE PATH, not PATH env var (which is stale right
     # after a fresh install). Scans known install roots + py launcher + PATH, and
-    # ignores the Microsoft Store stub.
+    # ignores the Microsoft Store stub. Only returns a match for the exact
+    # required version (see Test-ArmPython) — any other installed Python,
+    # older or newer, is treated as absent and triggers a fresh install below.
     $candidates = @()
 
-    # 1. py launcher (if present) — ask it where the interpreter lives.
-    #    Use `-3` (any Python 3); version filtering happens in Test-ArmPython.
+    # 1. py launcher (if present) — ask specifically for the required version,
+    #    then fall back to "any 3.x" so Test-ArmPython can reject mismatches.
     if (Get-Command py -ErrorAction SilentlyContinue) {
-        $p = (& py -3 -c "import sys; print(sys.executable)" 2>$null)
-        if ($LASTEXITCODE -eq 0 -and $p) { $candidates += $p.Trim() }
+        foreach ($sel in @("-$RequiredMajor.$RequiredMinor", '-3')) {
+            $p = (& py $sel -c "import sys; print(sys.executable)" 2>$null)
+            if ($LASTEXITCODE -eq 0 -and $p) { $candidates += $p.Trim() }
+        }
     }
 
     # 2. Well-known per-user / all-users install roots (glob for python.exe)
@@ -128,8 +143,10 @@ function Get-ArmPython {
 
 $pythonExe = Get-ArmPython
 if ($pythonExe) {
-    Write-Ok "ARM64 Python found: $pythonExe"
+    Write-Ok "ARM64 Python $PythonVersion found: $pythonExe"
 } else {
+    Write-Host "    No ARM64 Python $RequiredMajor.$RequiredMinor found (an older/newer/x64 Python may be" -ForegroundColor Yellow
+    Write-Host "    present but is ignored) — installing $PythonVersion fresh, side-by-side." -ForegroundColor Yellow
     Write-Host "    Downloading ARM64 Python installer: $PythonUrl"
     $installer = Join-Path $env:TEMP "python-$PythonVersion-arm64.exe"
     Invoke-WebRequest -Uri $PythonUrl -OutFile $installer
@@ -142,10 +159,10 @@ if ($pythonExe) {
     # Re-scan install folders directly — PATH is often stale immediately post-install.
     $pythonExe = Get-ArmPython
     if (-not $pythonExe) {
-        throw ("ARM64 Python still not detected after install. Expected under " +
+        throw ("ARM64 Python $PythonVersion still not detected after install. Expected under " +
                "$env:LOCALAPPDATA\Programs\Python. Open a NEW PowerShell window and re-run this script.")
     }
-    Write-Ok "ARM64 Python installed: $pythonExe"
+    Write-Ok "ARM64 Python $PythonVersion installed: $pythonExe"
 }
 
 # --- 3. Confirm architecture (the check you asked for) ---------------------
@@ -160,12 +177,16 @@ Write-Ok "Interpreter is ARM64"
 # --- 4. Virtual environment + geniex --------------------------------------
 Write-Step "Creating virtual environment at $VenvDir"
 $VenvPython = Join-Path $VenvDir 'Scripts\python.exe'
-if (Test-Path $VenvPython) {
-    Write-Ok "venv already exists, reusing it"
+if ((Test-Path $VenvPython) -and (Test-ArmPython $VenvPython)) {
+    Write-Ok "venv already exists and matches Python $PythonVersion, reusing it"
 } else {
+    if (Test-Path $VenvDir) {
+        Write-Warn "Existing venv at $VenvDir is missing or built from a different Python version; rebuilding it."
+        Remove-Item -Recurse -Force $VenvDir
+    }
     & $pythonExe -m venv $VenvDir
     if (-not (Test-Path $VenvPython)) { throw "venv creation failed: $VenvPython not found" }
-    Write-Ok "venv created"
+    Write-Ok "venv created from $pythonExe"
 }
 
 Write-Step "Installing geniex into the venv (using its python directly, no PATH)"
