@@ -167,6 +167,19 @@ class VLMBackend:
         build rejects one, we retry without the extras so we degrade instead of
         crashing.
         """
+        # GenieX keeps conversation state + KV cache across generate() calls.
+        # Each verify/reason must be an independent single-turn inference, so
+        # clear the prior turn first — otherwise the previous image's state
+        # bleeds into this one and the same frame can classify differently
+        # ("VLM history shrank ... without reset()" warning). Guarded for SDK
+        # builds that lack reset().
+        reset = getattr(self._model, "reset", None)
+        if callable(reset):
+            try:
+                reset()
+            except Exception as e:
+                log.debug("model.reset() failed (continuing): %s", e)
+
         t0 = time.time()
         messages = [{
             "role": "user",
