@@ -31,8 +31,22 @@ scripts/  # environment setup (e.g. GenieX bootstrap)
 
 ## Hub environment (Snapdragon X, Windows ARM64)
 
-See [`scripts/setup_geniex.ps1`](scripts/setup_geniex.ps1) — bootstraps ARM64 Python,
-Git, and the GenieX SDK for running Qwen-VL models locally.
+**One command** bootstraps everything on a fresh Snapdragon X box — copy
+[`scripts/setup_geniex.ps1`](scripts/setup_geniex.ps1) and
+[`scripts/setup_project.ps1`](scripts/setup_project.ps1) into a folder, then:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\setup_geniex.ps1
+```
+
+This: installs Git + ARM64 Python, creates the `geniex-env` venv and installs
+the GenieX SDK, then hands off to `setup_project.ps1` which clones this repo,
+installs `hub/requirements.txt`, and runs `hub/server.py`.
+
+- Stop after just the GenieX env: `.\setup_geniex.ps1 -NoProject`
+- Pass server flags through: `.\setup_geniex.ps1 -ProjectArgs '--','--verbose','--port','8080'`
+- If the repo is already cloned, re-running clones-or-pulls, reinstalls, and
+  restarts the server.
 
 ## Configuration
 

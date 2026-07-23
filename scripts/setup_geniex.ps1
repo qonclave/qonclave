@@ -13,7 +13,19 @@
 
     Usage (from an elevated or normal PowerShell prompt):
         powershell -ExecutionPolicy Bypass -File .\setup_geniex.ps1
+
+    By default, after the GenieX env is ready this chains into setup_project.ps1
+    to clone Qonclave, install its requirements, and run the hub server.
+      -NoProject            stop after the GenieX env (don't clone/run project)
+      -ProjectArgs a,b,c    forwarded to setup_project.ps1 (e.g. server flags
+                            after --, or -WorkDir). Example:
+        .\setup_geniex.ps1 -ProjectArgs '--','--verbose','--port','8080'
 #>
+
+param(
+    [switch]$NoProject,
+    [string[]]$ProjectArgs = @()
+)
 
 $ErrorActionPreference = 'Stop'
 # PowerShell 7.4+ turns a native command's non-zero exit code into a TERMINATING
@@ -174,3 +186,15 @@ Write-Host "     python scripts\test_geniex.py" -ForegroundColor Green
 Write-Host " ...or without activating, via the venv python directly:" -ForegroundColor Green
 Write-Host "     .\geniex-env\Scripts\python.exe scripts\test_geniex.py" -ForegroundColor Green
 Write-Host "===================================================================" -ForegroundColor Green
+
+# --- 6. Chain into project setup (clone + install + run the hub) -----------
+# Skip with:  setup_geniex.ps1 -NoProject
+if (-not $NoProject) {
+    $projectScript = Join-Path $PSScriptRoot 'setup_project.ps1'
+    if (Test-Path $projectScript) {
+        Write-Step "Handing off to setup_project.ps1 (clone + install + run hub)"
+        & $projectScript -VenvPython $VenvPython @ProjectArgs
+    } else {
+        Write-Warn "setup_project.ps1 not found next to this script; skipping project setup."
+    }
+}
