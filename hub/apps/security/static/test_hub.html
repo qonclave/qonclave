@@ -5,12 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Qonclave — Hub MQTT Console</title>
 <style>
-  /* Same palette as test_edge.html — deliberately different from
-     dashboard.html. Not part of the operator app. */
-  :root { --bg:#1a1206; --card:#2a1d0c; --fg:#f5e6cf; --muted:#b08a55;
-          --accent:#ffa733; --ok:#3ecf8e; --err:#ff6b6b; --border:#4a3416; }
+  /* Same palette as dashboard.html — this page is not part of the operator
+     app, but a "TEST" badge marks it instead of a jarring color scheme. */
+  :root { --bg:#0f1115; --card:#1a1d24; --fg:#e6e8ec; --muted:#8b93a1;
+          --accent:#4f9dff; --ok:#3ecf8e; --err:#ff6b6b; --border:#2a2e37; }
   * { box-sizing: border-box; }
-  body { margin:0; font-family:"Courier New",ui-monospace,monospace;
+  body { margin:0; font-family:system-ui,Segoe UI,Roboto,sans-serif;
          background:var(--bg); color:var(--fg); }
   .wrap { max-width:880px; margin:0 auto; padding:24px 16px 64px; }
   h1 { font-size:22px; margin:0 0 4px; }
@@ -19,16 +19,16 @@
           border-radius:12px; padding:20px; margin-bottom:18px; }
   label { display:block; font-size:13px; color:var(--muted); margin-bottom:6px; }
   input[type=text], textarea {
-    width:100%; background:#140d04; color:var(--fg); border:1px solid var(--border);
+    width:100%; background:#0f1218; color:var(--fg); border:1px solid var(--border);
     border-radius:8px; padding:10px; font-size:14px; font-family:inherit; }
   textarea { resize:vertical; min-height:60px; }
   .row { display:flex; gap:12px; align-items:center; margin-top:14px; flex-wrap:wrap; }
-  button { background:var(--accent); color:#1a1206; border:none; border-radius:8px;
+  button { background:var(--accent); color:#0f1115; border:none; border-radius:8px;
            padding:11px 20px; font-size:15px; font-weight:700; cursor:pointer; }
   button:disabled { opacity:.5; cursor:not-allowed; }
   .grid { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
   @media (max-width:640px){ .grid{ grid-template-columns:1fr; } }
-  code { background:#140d04; padding:1px 6px; border-radius:4px; }
+  code { background:#0f1218; padding:1px 6px; border-radius:4px; }
   .devicebadge { display:inline-block; font-size:11px; letter-spacing:.08em;
                  text-transform:uppercase; color:var(--accent); border:1px solid var(--accent);
                  border-radius:4px; padding:2px 8px; margin-bottom:10px; }
@@ -49,7 +49,7 @@
     <a href="/test/edge">Edge simulator</a>
     <a href="/test/hub" class="active">Hub MQTT console</a>
   </nav>
-  <span class="devicebadge">Hub MQTT console — not part of the operator app</span>
+  <span class="devicebadge">Test — hub MQTT console</span>
   <h1>Qonclave — Hub MQTT Console</h1>
   <div class="sub">Manually publish to and observe any MQTT topic on the broker the hub is
     connected to (<code>hub/framework/mqtt_bus.py</code>) — a browser-based stand-in for
