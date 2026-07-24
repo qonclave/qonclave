@@ -143,14 +143,14 @@ sequenceDiagram
     Server->>Policy: command_for(verdict, event)
     opt command is not None
         Server->>MQTT: publish_command(device_id, command)
-        Note over MQTT: qonclave/&lt;device_id&gt;/command<br/>(best-effort; no-op if no broker)
+        Note over MQTT: publishes to the device's command topic (best-effort; no-op if no broker)
     end
     Server->>Server: build response envelope (hub_verified, hub_confidence, command, ...)
     Server->>Server: events.record_event() into ring buffer plus latest frame
     Server-->>Edge: schema_version, event_id, received, hub_verified, hub_confidence, identity_status, command, alert
 
     Note over Server,Edge: The dashboard (/user/events, /user/latest.jpg) polls the same event store just updated.
-    Note over MQTT,Edge: A subscribed edge device also receives the same command over MQTT,<br/>independent of this HTTP response - useful if it wasn't the one that opened this request.
+    Note over MQTT,Edge: A subscribed edge device also receives the same command over MQTT, independent of this HTTP response - useful if it wasn't the one that opened this request.
 ```
 
 `POST /user/reason` follows the same save-image -> VLM step, but calls the
