@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Qonclave — Hub MQTT Console</title>
+<style>
+  /* Same palette as test_edge.html — deliberately different from
+     dashboard.html / test_reason.html. Not part of the operator app. */
+  :root { --bg:#1a1206; --card:#2a1d0c; --fg:#f5e6cf; --muted:#b08a55;
+          --accent:#ffa733; --ok:#3ecf8e; --err:#ff6b6b; --border:#4a3416; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:"Courier New",ui-monospace,monospace;
+         background:var(--bg); color:var(--fg); }
+  .wrap { max-width:880px; margin:0 auto; padding:24px 16px 64px; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  .sub { color:var(--muted); font-size:14px; margin-bottom:24px; }
+  .card { background:var(--card); border:1px solid var(--border);
+          border-radius:12px; padding:20px; margin-bottom:18px; }
+  label { display:block; font-size:13px; color:var(--muted); margin-bottom:6px; }
+  input[type=text], textarea {
+    width:100%; background:#140d04; color:var(--fg); border:1px solid var(--border);
+    border-radius:8px; padding:10px; font-size:14px; font-family:inherit; }
+  textarea { resize:vertical; min-height:60px; }
+  .row { display:flex; gap:12px; align-items:center; margin-top:14px; flex-wrap:wrap; }
+  button { background:var(--accent); color:#1a1206; border:none; border-radius:8px;
+           padding:11px 20px; font-size:15px; font-weight:700; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+  @media (max-width:640px){ .grid{ grid-template-columns:1fr; } }
+  code { background:#140d04; padding:1px 6px; border-radius:4px; }
+  .devicebadge { display:inline-block; font-size:11px; letter-spacing:.08em;
+                 text-transform:uppercase; color:var(--accent); border:1px solid var(--accent);
+                 border-radius:4px; padding:2px 8px; margin-bottom:10px; }
+  nav { display:flex; gap:14px; margin-bottom:14px; font-size:14px; }
+  nav a { color:var(--muted); text-decoration:none; }
+  nav a.active { color:var(--accent); font-weight:600; }
+  nav a:hover { color:var(--fg); }
+  .msglog { max-height:280px; overflow:auto; font-size:12px; line-height:1.5; }
+  .msglog .msg { border-bottom:1px solid var(--border); padding:6px 0; }
+  .msglog .msg .t { color:var(--muted); }
+  .msglog .empty { color:var(--muted); }
+  .meta { color:var(--muted); font-size:12px; margin-top:10px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav>
+    <a href="/test/edge">Edge simulator</a>
+    <a href="/test/hub" class="active">Hub MQTT console</a>
+  </nav>
+  <span class="devicebadge">Hub MQTT console — not part of the operator app</span>
+  <h1>Qonclave — Hub MQTT Console</h1>
+  <div class="sub">Manually publish to and observe any MQTT topic on the broker the hub is
+    connected to (<code>hub/framework/mqtt_bus.py</code>) — a browser-based stand-in for
+    <code>mosquitto_pub</code> / <code>mosquitto_sub</code>.</div>
+
+  <div class="grid">
+    <div class="card">
+      <label for="pubTopic">Publish topic</label>
+      <input type="text" id="pubTopic" value="qonclave/unoq-01/command" />
+      <div style="margin-top:10px;">
+        <label for="pubPayload">Payload (JSON)</label>
+        <textarea id="pubPayload">{"type": "navigate_to", "target": "living_room"}</textarea>
+      </div>
+      <div class="row">
+        <button id="pubBtn">Publish</button>
+        <span id="pubStatus" class="meta"></span>
+      </div>
+    </div>
+    <div class="card">
+      <label for="subTopic">Receive topic filter</label>
+      <input type="text" id="subTopic" value="qonclave/+/status" />
+      <div class="meta" id="mqttStatus" style="margin-top:8px;"></div>
+      <div class="msglog" id="msglog" style="margin-top:10px;">
+        <div class="empty">No messages yet.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const pubTopic = $("pubTopic"), pubPayload = $("pubPayload"), pubBtn = $("pubBtn"),
+      pubStatus = $("pubStatus"), subTopic = $("subTopic"),
+      mqttStatus = $("mqttStatus"), msglog = $("msglog");
+
+pubBtn.addEventListener("click", async () => {
+  pubStatus.textContent = "publishing…";
+  let payload;
+  try {
+    payload = JSON.parse(pubPayload.value || "{}");
+  } catch (e) {
+    pubStatus.textContent = "invalid JSON payload";
+    return;
+  }
+  try {
+    const r = await fetch("/test/mqtt/publish", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ topic: pubTopic.value.trim(), payload }),
+    });
+    const j = await r.json();
+    pubStatus.textContent = j.ok ? "published ✓" : "failed (broker unavailable)";
+  } catch (e) {
+    pubStatus.textContent = "request failed: " + e;
+  }
+});
+
+async function pollMqttMessages() {
+  try {
+    const topic = encodeURIComponent(subTopic.value.trim());
+    const r = await fetch(`/test/mqtt/messages?topic=${topic}`);
+    const j = await r.json();
+    mqttStatus.textContent = "broker " + (j.mqtt_available ? "connected" : "unavailable");
+    if (j.messages && j.messages.length) {
+      msglog.innerHTML = j.messages.map(m => `
+        <div class="msg"><span class="t">${new Date(m.received_at).toLocaleTimeString()}</span>
+          · <b>${m.topic}</b><br/>${m.payload}</div>`).join("");
+    } else {
+      msglog.innerHTML = '<div class="empty">No messages yet.</div>';
+    }
+  } catch (e) {
+    mqttStatus.textContent = "poll failed";
+  }
+}
+
+pollMqttMessages();
+setInterval(pollMqttMessages, 2000);
+</script>
+</body>
+</html>

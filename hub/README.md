@@ -59,8 +59,12 @@ flowchart TB
 
     subgraph Browser["Operator browser"]
         DASH["/user/dashboard"]
-        TEVENT["/user/test_event"]
         TREASON["/user/test_reason"]
+    end
+
+    subgraph TestConsoles["Browser test consoles (isolated, no /user/* links)"]
+        TEDGE["/test/edge\ndevice simulator"]
+        THUB["/test/hub\nMQTT console"]
     end
 
     CAM -- "POST /edge/event\n(frame + event JSON)" --> FSERVER
@@ -68,6 +72,8 @@ flowchart TB
     FMQTT -. "lazy connect, best-effort" .-> MOSQ
     MOSQ -. "subscribe (future edge code)" .-> CAM
     Browser --> FSERVER
+    TestConsoles -- "GET /test/edge, /test/hub\nPOST /test/mqtt/publish\nGET /test/mqtt/messages" --> FSERVER
+    THUB -. "publish/observe any topic" .-> FMQTT
     HubProcess -- "hub_verified / alert / command" --> CAM
 ```
 
@@ -165,7 +171,10 @@ static test pages vary per use case.
 |--------|------|---------|
 | GET | `/health` | Liveness + VLM availability + MQTT status + active app name |
 | GET | `/` | Redirects to `/user/dashboard` |
-| GET | `/edge` | Edge-device simulator page (standalone; not linked from `/user/*`) |
+| GET | `/test/edge` | Edge-device simulator page (standalone; not linked from `/user/*`) |
+| GET | `/test/hub` | Hub-side MQTT console: publish/observe any topic (links only to `/test/edge`) |
+| POST | `/test/mqtt/publish` | Generic MQTT publish proxy: `{"topic": "...", "payload": {...}}` |
+| GET | `/test/mqtt/messages` | Recently received MQTT messages, optionally filtered by `?topic=` |
 | POST | `/edge/event` | Edge event JSON + frame in, policy-driven verification response out |
 | GET | `/user/dashboard` | Live event / verification dashboard page (also the default `/user/` landing) |
 | GET | `/user/events` | Recent events + results (JSON) |
@@ -190,13 +199,13 @@ hub/
   apps/
     security/                # this use case: stationary person detection
       policy.py              # SecurityPolicy(Policy)
-      static/                # test_reason.html, test_event.html, dashboard.html
+      static/                # test_reason.html, dashboard.html, test_edge.html, test_hub.html
       samples/                # bundled test images + helpers
 ```
 
-### Operator app vs. device simulator
+### Operator app vs. test consoles
 
-`hub/apps/security/static/` ships three pages, deliberately split into two
+`hub/apps/security/static/` ships four pages, deliberately split into two
 groups with **no hyperlinks between the groups**:
 
 - **Operator app** (`dashboard.html`, `test_reason.html`) — nav bar links
@@ -204,13 +213,21 @@ groups with **no hyperlinks between the groups**:
   - **`/user/dashboard`** — the live event/verification dashboard.
   - **`/user/test_reason`** — posts to `/user/reason`; shows raw VLM
     reasoning. Does **not** record to the dashboard.
-- **Device simulator** (`test_event.html`, served at **`/edge`**) — stands
-  in for an Arduino UNO Q: posts a frame + edge metadata
-  (`device_id`, `event_id`, `edge_confidence`) to `/edge/event`, the same
-  contract a real device uses. **Records to the dashboard**, but has no nav
-  bar and isn't linked from the operator pages — it's a standalone test
-  tool, visually distinct (amber/monospace theme vs. the operator app's
-  blue theme) so it's never mistaken for part of the app.
+- **Test consoles** (`test_edge.html`, `test_hub.html`, served at
+  **`/test/edge`** and **`/test/hub`**) — nav bar links the two to each
+  other, but neither links to or from the operator pages. Visually distinct
+  (amber/monospace theme vs. the operator app's blue theme) so they're never
+  mistaken for part of the app:
+  - **`/test/edge`** — stands in for an Arduino UNO Q: posts a frame + edge
+    metadata (`device_id`, `event_id`, `edge_confidence`) to `/edge/event`,
+    the same contract a real device uses (**records to the dashboard**),
+    plus an MQTT publish/receive panel at the bottom (defaults: publish to
+    `qonclave/unoq-01/status`, receive `qonclave/unoq-01/command` — what a
+    real device would subscribe to).
+  - **`/test/hub`** — a browser stand-in for `mosquitto_pub`/`mosquitto_sub`:
+    publish to and observe any MQTT topic the hub's broker carries
+    (defaults: publish to `qonclave/unoq-01/command`, receive
+    `qonclave/+/status` — any device's status).
 
 ### `/user/reason` vs `/edge/event`
 
@@ -258,7 +275,9 @@ python hub/server.py --host 0.0.0.0 --port 8000 -v
 ```
 
 Then open <http://localhost:8000/> for the operator dashboard, or
-<http://localhost:8000/edge> to simulate an edge device posting to `/edge/event`.
+<http://localhost:8000/test/edge> to simulate an edge device posting to
+`/edge/event` (and linked from there, <http://localhost:8000/test/hub> for
+the MQTT console).
 
 Environment options:
 
@@ -345,6 +364,11 @@ subscribed (not mid-request) still receives it.
 - Anonymous auth, loopback-only, no persistence — fine for a local hackathon
   demo on a private WiFi network. **Not** safe for production or any
   internet-facing deployment as configured.
+- **Browser test consoles**: `/test/hub` and the bottom of `/test/edge` give
+  a no-CLI way to exercise this — publish to and observe any topic via
+  `POST /test/mqtt/publish` / `GET /test/mqtt/messages`, which proxy through
+  the hub's shared `MQTTBus` (browsers can't open a raw MQTT-over-TCP
+  socket directly). See "Operator app vs. test consoles" above.
 
 ## Sample images
 
@@ -361,9 +385,10 @@ python hub/apps/security/samples/send_sample.py room_with_person   # -> /edge/ev
    `framework.policy.Policy` and implements `evaluate(image_path, event) ->
    Verdict`. Override `command_for()` if the use case needs to send a
    command back to the edge device.
-2. Add `hub/apps/<name>/static/` with `test_reason.html`, `test_event.html`,
-   `dashboard.html` (copy from `apps/security/static/` and adjust labels —
-   the JSON shape they poll is generic).
+2. Add `hub/apps/<name>/static/` with `test_reason.html`, `dashboard.html`
+   (copy from `apps/security/static/` and adjust labels — the JSON shape
+   they poll is generic). `test_edge.html`/`test_hub.html` are optional to
+   copy too if the new app wants its own device-simulator/MQTT-console pages.
 3. In `hub/server.py`, swap the `SecurityPolicy(vlm)` construction and
    `STATIC_DIR` for the new app.
 

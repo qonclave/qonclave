@@ -10,8 +10,13 @@ Endpoints:
     GET  /health              liveness + VLM availability
     GET  /                    redirects to /user/dashboard
 
-    GET  /edge                edge-device simulator page (standalone, unlinked
+    GET  /test/edge           edge-device simulator page (standalone, unlinked
                                from the operator UI — visually distinct)
+    GET  /test/hub            hub-side MQTT console page (publish/observe any
+                               topic); links only to /test/edge, not /user/*
+    POST /test/mqtt/publish   generic MQTT publish proxy (topic + JSON payload)
+    GET  /test/mqtt/messages  recently received MQTT messages (polled by both
+                               /test/* pages)
     POST /edge/event          edge event JSON + frame -> policy-driven
                                verification response
 
@@ -36,6 +41,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import uuid
 
 from flask import Flask, jsonify, redirect, request, send_from_directory
@@ -87,12 +93,40 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, static_dir: str) 
         return jsonify({"ok": False,
                         "error": f"upload exceeds {MAX_UPLOAD_MB} MB limit"}), 413
 
-    # --- /edge: standalone device simulator + event ingestion --------------
-    @app.get("/edge")
+    # --- /test/*: standalone device simulator + MQTT console ---------------
+    @app.get("/test/edge")
     def edge_simulator():
         # Deliberately not linked from /user/* — this simulates a device,
         # it isn't part of the operator-facing app.
-        return send_from_directory(static_dir, "test_event.html")
+        return send_from_directory(static_dir, "test_edge.html")
+
+    @app.get("/test/hub")
+    def hub_mqtt_console():
+        # Same isolation as /test/edge — links only to /test/edge, never /user/*.
+        return send_from_directory(static_dir, "test_hub.html")
+
+    @app.post("/test/mqtt/publish")
+    def mqtt_publish():
+        body = request.get_json(silent=True) or {}
+        topic = body.get("topic")
+        payload = body.get("payload")
+        if not topic:
+            return jsonify({"ok": False, "error": "missing 'topic'"}), 400
+        ok = mqtt.publish(topic, payload if payload is not None else {})
+        return jsonify({"ok": ok, "mqtt_available": mqtt.is_available()})
+
+    @app.get("/test/mqtt/messages")
+    def mqtt_messages():
+        topic_filter = request.args.get("topic")
+        limit = request.args.get("limit", type=int) or 50
+        if topic_filter:
+            mqtt.subscribe(topic_filter)
+        messages = mqtt.recent_messages(limit)
+        if topic_filter:
+            pattern = topic_filter.replace("+", "[^/]+").replace("#", ".*")
+            regex = re.compile(f"^{pattern}$")
+            messages = [m for m in messages if regex.match(m["topic"])]
+        return jsonify({"mqtt_available": mqtt.is_available(), "messages": messages})
 
     @app.post("/edge/event")
     def edge_event():

@@ -18,7 +18,10 @@ Public API:
     bus = MQTTBus(host, port)         # cheap; does not connect yet
     bus.connect()                     # best-effort; False if broker unreachable
     bus.is_available()
-    bus.publish_command(device_id, command)   # -> bool
+    bus.publish(topic, payload)               # -> bool
+    bus.publish_command(device_id, command)   # -> bool (thin wrapper over publish())
+    bus.subscribe(topic_filter)                # -> bool; idempotent
+    bus.recent_messages(limit=50)              # -> list of received messages, newest first
     bus.status()                      # for /health, mirrors VLMBackend.status()
 
 Like VLMBackend, this never raises for the caller: if no broker is running,
@@ -28,9 +31,11 @@ logged no-op.
 
 from __future__ import annotations
 
+import collections
 import json
 import logging
 import threading
+import datetime as _dt
 
 log = logging.getLogger("qonclave.mqtt")
 
@@ -38,6 +43,7 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 1883
 DEFAULT_CLIENT_ID = "qonclave-hub"
 CONNECT_TIMEOUT_S = 3
+MESSAGES_MAX = 100
 
 
 def command_topic(device_id: str) -> str:
@@ -61,6 +67,8 @@ class MQTTBus:
         self._connect_error: str | None = None
         self._connect_attempted = False
         self._lock = threading.Lock()
+        self._subscriptions: set[str] = set()
+        self._messages: "collections.deque[dict]" = collections.deque(maxlen=MESSAGES_MAX)
 
     # --- capability probe ---------------------------------------------------
     def is_available(self) -> bool:
@@ -109,6 +117,7 @@ class MQTTBus:
                 client = mqtt.Client(
                     mqtt.CallbackAPIVersion.VERSION2, client_id=self.client_id,
                 )
+                client.on_message = self._on_message
                 client.connect(self.host, self.port, keepalive=30)
                 client.loop_start()
                 self._client = client
@@ -120,28 +129,69 @@ class MQTTBus:
                 self._client = None
                 return False
 
+    def _on_message(self, client, userdata, msg):
+        try:
+            payload = msg.payload.decode("utf-8", errors="replace")
+        except Exception:
+            payload = repr(msg.payload)
+        entry = {
+            "topic": msg.topic,
+            "payload": payload,
+            "received_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        }
+        with self._lock:
+            self._messages.appendleft(entry)
+        log.info("MQTT received on %s: %s", msg.topic, payload)
+
     # --- publish --------------------------------------------------------------
-    def publish_command(self, device_id: str, command: dict) -> bool:
+    def publish(self, topic: str, payload: dict) -> bool:
         """
-        Publish a command dict to qonclave/<device_id>/command. Returns True
-        if the publish was handed to the broker; False (logged) if MQTT is
-        unavailable. Never raises for the caller.
+        Publish a dict as JSON to an arbitrary topic. Returns True if handed
+        to the broker; False (logged) if MQTT is unavailable. Never raises.
         """
         if not self.is_available():
-            log.warning("Skipping MQTT publish to device=%s (broker unavailable: %s)",
-                        device_id, self._connect_error)
+            log.warning("Skipping MQTT publish to %s (broker unavailable: %s)",
+                        topic, self._connect_error)
             return False
 
-        topic = command_topic(device_id)
         try:
-            payload = json.dumps(command)
-            info = self._client.publish(topic, payload, qos=1)
+            body = json.dumps(payload)
+            info = self._client.publish(topic, body, qos=1)
             info.wait_for_publish(timeout=CONNECT_TIMEOUT_S)
-            log.info("Published command to %s: %s", topic, payload)
+            log.info("Published to %s: %s", topic, body)
             return True
         except Exception as e:
             log.warning("MQTT publish to %s failed: %s", topic, e)
             return False
+
+    def publish_command(self, device_id: str, command: dict) -> bool:
+        """Publish a command dict to qonclave/<device_id>/command."""
+        return self.publish(command_topic(device_id), command)
+
+    # --- subscribe / receive ---------------------------------------------------
+    def subscribe(self, topic_filter: str) -> bool:
+        """
+        Subscribe to a topic filter; incoming messages land in the ring
+        buffer read by recent_messages(). Idempotent — safe to call on every
+        poll. Never raises.
+        """
+        if not self.is_available():
+            return False
+        if topic_filter in self._subscriptions:
+            return True
+        try:
+            self._client.subscribe(topic_filter, qos=1)
+            self._subscriptions.add(topic_filter)
+            log.info("Subscribed to %s", topic_filter)
+            return True
+        except Exception as e:
+            log.warning("MQTT subscribe to %s failed: %s", topic_filter, e)
+            return False
+
+    def recent_messages(self, limit: int = 50) -> list[dict]:
+        """Recently received messages, newest first."""
+        with self._lock:
+            return list(self._messages)[:limit]
 
     def close(self):
         with self._lock:
