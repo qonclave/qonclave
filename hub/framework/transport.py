@@ -1,69 +1,36 @@
 """
-state.py — shared config, event store, VLM instance, and request helpers for
-the Qonclave hub. Imported by both the edge and user route blueprints so they
-share one upload dir, one event ring buffer, and one VLM backend.
+transport.py — generic device<->hub transport for the Qonclave framework.
+
+Use-case agnostic: extracting an uploaded frame and the accompanying edge
+event metadata from an HTTP request. Tolerant of how a constrained device
+sends data (multipart form, raw image body, query string) so any app built
+on this framework gets the same flexible ingestion for free.
 """
 
 from __future__ import annotations
 
-import collections
 import datetime as _dt
 import json
 import logging
 import os
-import sys
-import threading
 import uuid
 
 from flask import request
 
-# Make "import vlm_backend" work regardless of CWD.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from vlm_backend import VLMBackend, DEFAULT_PROMPT  # noqa: E402,F401 (re-exported)
-
 log = logging.getLogger("qonclave.hub")
 
-# --- config -----------------------------------------------------------------
-HERE = os.path.dirname(os.path.abspath(__file__))
-STATIC_DIR = os.path.join(HERE, "static")
-UPLOAD_DIR = os.path.join(HERE, "uploads")
+UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "uploads")
+UPLOAD_DIR = os.path.normpath(UPLOAD_DIR)
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-HOST = os.environ.get("QONCLAVE_HOST", "0.0.0.0")
-PORT = int(os.environ.get("QONCLAVE_PORT", "8000"))
-MAX_UPLOAD_MB = int(os.environ.get("QONCLAVE_MAX_UPLOAD_MB", "16"))
 ALLOWED_EXT = {"jpg", "jpeg", "png", "bmp", "webp"}
-SCHEMA_VERSION = "0.1"
 
-# --- shared VLM backend (cheap to construct; does NOT import geniex) --------
-vlm = VLMBackend()
-
-# --- event store (in-memory ring buffer for the dashboard) ------------------
-EVENTS_MAX = int(os.environ.get("QONCLAVE_EVENTS_MAX", "50"))
-_events: "collections.deque[dict]" = collections.deque(maxlen=EVENTS_MAX)
-_events_lock = threading.Lock()
-_latest_frame: dict = {"name": None}  # basename of most recent stored frame
+EDGE_EVENT_FIELDS = (
+    "device_id", "event_id", "event_type", "edge_model",
+    "edge_confidence", "threshold", "frame_id", "created_at",
+)
 
 
-def record_event(event: dict, frame_name: str | None):
-    with _events_lock:
-        _events.appendleft(event)
-        if frame_name:
-            _latest_frame["name"] = frame_name
-
-
-def recent_events(limit: int | None = None) -> tuple[list[dict], str | None]:
-    with _events_lock:
-        items = list(_events)[: (limit or EVENTS_MAX)]
-        return items, _latest_frame["name"]
-
-
-def latest_frame_name() -> str | None:
-    with _events_lock:
-        return _latest_frame["name"]
-
-
-# --- request helpers --------------------------------------------------------
 def timestamp() -> str:
     return _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
@@ -89,7 +56,7 @@ def save_incoming_image() -> tuple[str | None, str | None]:
     Supports two shapes:
       1. multipart/form-data with a file field named "image" (browsers, curl -F)
       2. raw image bytes as the request body with Content-Type image/*
-         (dead simple for Arduino UNO Q)
+         (dead simple for constrained edge devices)
     Returns (saved_path, error_message).
     """
     # Shape 1: multipart file field
@@ -105,7 +72,7 @@ def save_incoming_image() -> tuple[str | None, str | None]:
         f.save(path)
         return path, None
 
-    # Shape 2: raw body (Arduino-friendly)
+    # Shape 2: raw body (constrained-device friendly)
     ct = request.headers.get("Content-Type", "")
     if request.data and (ct.startswith("image/") or "octet-stream" in ct):
         ext = _ext_from_content_type(ct)
@@ -132,8 +99,6 @@ def parse_edge_event() -> dict:
     Missing fields are simply absent; nothing here raises.
     """
     ev: dict = {}
-    fields = ("device_id", "event_id", "event_type", "edge_model",
-              "edge_confidence", "threshold", "frame_id", "created_at")
 
     # a) a JSON blob in form field "event"
     raw = request.form.get("event")
@@ -144,12 +109,12 @@ def parse_edge_event() -> dict:
             log.warning("event field was not valid JSON; ignoring")
 
     # b) individual form fields
-    for k in fields:
+    for k in EDGE_EVENT_FIELDS:
         if k in request.form and k not in ev:
             ev[k] = request.form.get(k)
 
-    # c) query params (handy for raw-body Arduino POSTs)
-    for k in fields:
+    # c) query params (handy for raw-body edge-device POSTs)
+    for k in EDGE_EVENT_FIELDS:
         if k in request.args and k not in ev:
             ev[k] = request.args.get(k)
 
@@ -169,26 +134,6 @@ def parse_edge_event() -> dict:
     return ev
 
 
-def request_prompt() -> str:
+def request_prompt(default_prompt: str) -> str:
     return (request.form.get("prompt") or request.args.get("prompt")
-            or request.headers.get("X-Prompt") or DEFAULT_PROMPT)
-
-
-def verdict_from_verify(v: dict) -> tuple[bool, float | None, str]:
-    """
-    Map the VLM's structured verify() result to the (hub_verified,
-    hub_confidence, alert) triple the edge/dashboard contract expects.
-
-    verify() already did the classification with json_mode, so this is a plain
-    field read — no keyword matching on prose. On machines where the VLM is
-    unavailable (non-Snapdragon), person_present is None -> not verified.
-    A dedicated person-detector gate (YOLOv8) can supplement this later so
-    verification works even without the VLM.
-    """
-    if not v.get("available"):
-        return False, None, "unverified (reasoning unavailable on this hub)"
-    person = v.get("person_present")
-    conf = v.get("confidence")
-    alert = v.get("alert") or ("Person verified near camera" if person
-                               else "No person confirmed in frame")
-    return bool(person), conf, alert
+            or request.headers.get("X-Prompt") or default_prompt)

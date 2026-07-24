@@ -11,7 +11,7 @@ The real-photo sample (geniex_demo.jpg) is Qualcomm's public GenieX demo asset
 and is shipped alongside these.
 
 Run:
-    python hub/samples/make_samples.py
+    python hub/apps/security/samples/make_samples.py
 """
 
 import os

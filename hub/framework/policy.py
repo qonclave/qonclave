@@ -1,0 +1,54 @@
+"""
+policy.py — the app contract for the Qonclave framework.
+
+A "policy" is what a developer declares to build a new use case on top of
+the framework: given an escalated frame and its edge event metadata, decide
+whether the event is verified, at what confidence, and what alert (and,
+optionally, what hub->edge command) to emit. The framework's HTTP layer
+(framework/server.py) drives this interface; it never encodes any
+use-case-specific logic itself.
+"""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+
+
+@dataclass
+class Verdict:
+    """Result of a policy evaluating one escalated frame."""
+
+    verified: bool
+    confidence: float | None
+    alert: str
+    reasoning_text: str | None = None
+    reasoning_available: bool | None = None
+    latency_s: float | None = None
+    # App-specific wire fields merged flat into the response envelope,
+    # e.g. {"identity_status": "not_enabled"}.
+    extra: dict = field(default_factory=dict)
+
+
+class Policy(ABC):
+    """
+    Base class for a Qonclave app. Subclasses declare the model, prompt,
+    thresholds, and alert text for one use case (security, fall detection,
+    hazard detection, ...); the framework handles transport, verification
+    plumbing, and the event store around it.
+    """
+
+    name: str = "policy"
+
+    @abstractmethod
+    def evaluate(self, image_path: str, event: dict) -> Verdict:
+        """Evaluate one escalated frame + its edge event metadata."""
+        raise NotImplementedError
+
+    def command_for(self, verdict: Verdict, event: dict) -> dict | None:
+        """
+        Optional hub->edge command to send back in the response (e.g.
+        {"type": "navigate_to", "target": "living_room"}). Most apps have
+        no edge actuator to command, so the default is no command.
+        """
+        return None

@@ -1,7 +1,10 @@
 # Qonclave Hub
 
-HTTP server for the Snapdragon laptop hub. Receives an image, runs
-vision-language reasoning on it, and returns the result as JSON.
+HTTP server for the Snapdragon laptop hub. The hub is split into a reusable
+**framework** (transport, event store, VLM primitive, HTTP routes) and a thin
+**app** on top that declares one use case's model prompt, verification
+schema, and alert text — matching the framework/application split in
+`qonclave_proposal.md` §4.3.
 
 ## Design
 
@@ -16,20 +19,30 @@ flowchart TB
     subgraph HubProcess["Hub process (this repo, hub/)"]
         direction TB
 
-        subgraph Blueprints["Flask app (server.py)"]
-            EDGE["edge_routes.py\n/edge/*"]
-            USER["user_routes.py\n/user/*"]
-            HEALTH["/health, / (redirect)"]
+        subgraph FrameworkPkg["framework/ (reusable, use-case agnostic)"]
+            FSERVER["server.py\ncreate_app(policy, vlm, static_dir)\n/health, /edge/event, /user/*"]
+            FTRANSPORT["transport.py\nupload + edge-event parsing"]
+            FEVENTS["events.py\nevent ring buffer"]
+            FVLM["vlm.py\nVLMBackend: reason(), structured_query()"]
+            FPOLICY["policy.py\nPolicy ABC, Verdict"]
         end
 
-        STATE["state.py\nshared config, event ring buffer,\nrequest/parsing helpers"]
-        VLM["vlm_backend.py\nVLMBackend"]
+        subgraph AppPkg["apps/security/ (this use case)"]
+            APOLICY["policy.py\nSecurityPolicy(Policy)\nVERIFY_PROMPT, person_present schema"]
+            ASTATIC["static/\ndashboard, test pages"]
+        end
+
+        ENTRY["server.py (entrypoint)\nbuilds VLMBackend + SecurityPolicy,\ncalls framework.server.create_app()"]
         DISK["hub/uploads/\nsaved frames"]
 
-        EDGE --> STATE
-        USER --> STATE
-        STATE --> VLM
-        STATE --> DISK
+        ENTRY --> FSERVER
+        ENTRY --> APOLICY
+        FSERVER --> FTRANSPORT
+        FSERVER --> FEVENTS
+        FSERVER --> FVLM
+        FSERVER -- "policy.evaluate()" --> APOLICY
+        APOLICY -- "returns a Verdict" --> FPOLICY
+        FTRANSPORT --> DISK
     end
 
     subgraph Runtime["Conditional runtime"]
@@ -44,90 +57,133 @@ flowchart TB
         TREASON["/user/test_reason"]
     end
 
-    CAM -- "POST /edge/event\n(frame + event JSON)" --> EDGE
-    VLM -. "lazy import, ARM64 only" .-> GENIEX
-    Browser --> USER
-    HubProcess -- "hub_verified / alert" --> CAM
+    CAM -- "POST /edge/event\n(frame + event JSON)" --> FSERVER
+    FVLM -. "lazy import, ARM64 only" .-> GENIEX
+    Browser --> FSERVER
+    HubProcess -- "hub_verified / alert / command" --> CAM
 ```
 
-On non-Snapdragon machines the `geniex` import inside `vlm_backend.py` is
+On non-Snapdragon machines the `geniex` import inside `framework/vlm.py` is
 never attempted at module load — only when a request actually needs
 reasoning, and only if the host is ARM64. Everything else in the diagram
 (routes, event store, uploads, dashboard) runs identically on any OS.
+
+### Framework vs. app
+
+- **`framework/`** is reusable across use cases: it knows how to accept a
+  frame + edge event over HTTP, run VLM inference, keep a ring buffer of
+  recent events for a dashboard, and serve an app's static test pages. It
+  has no idea what "person_present" or "fall_detected" means.
+- **`apps/security/`** declares everything specific to stationary
+  person-detection: the verification prompt (`VERIFY_PROMPT`), the JSON
+  schema it expects back from the VLM, how that maps to an alert string, and
+  the `identity_status` stretch-goal stub. A new use case (fall detection,
+  hazard detection, ...) means writing a new `Policy` subclass in a new
+  `apps/<name>/` package — no framework code changes.
+- **`hub/server.py`** is the entrypoint: it picks one app (today,
+  `SecurityPolicy`) and wires it into `framework.server.create_app()`. To
+  demo a different app, swap what this file constructs.
+
+The `Policy` contract (`framework/policy.py`):
+
+```python
+class Policy(ABC):
+    name: str
+    def evaluate(self, image_path: str, event: dict) -> Verdict: ...
+    def command_for(self, verdict: Verdict, event: dict) -> dict | None:
+        return None   # override to route a hub->edge command
+```
+
+`Verdict` carries `verified`, `confidence`, `alert`, reasoning text/latency,
+and an `extra` dict for any app-specific wire fields (e.g.
+`identity_status`) that get merged flat into the response.
 
 ### Request flow: `POST /edge/event`
 
 ```mermaid
 sequenceDiagram
     participant Edge as Edge device
-    participant Route as edge_routes.py
-    participant State as state.py
-    participant VLM as VLMBackend.verify()
+    participant Server as framework/server.py
+    participant Transport as framework/transport.py
+    participant Policy as apps/security/policy.py
+    participant VLM as framework/vlm.py
     participant Model as GenieX / Qwen2.5-VL
 
-    Edge->>Route: POST /edge/event (frame + event JSON)
-    Route->>State: parse_edge_event()
-    Route->>State: save_incoming_image()
-    State-->>Route: saved frame path
+    Edge->>Server: POST /edge/event (frame + event JSON)
+    Server->>Transport: parse_edge_event()
+    Server->>Transport: save_incoming_image()
+    Transport-->>Server: saved frame path
 
-    Route->>VLM: verify(path)
+    Server->>Policy: evaluate(path, event)
+    Policy->>VLM: structured_query(path, VERIFY_PROMPT, json_mode=True)
     alt VLM available (ARM64 + GenieX loaded)
         VLM->>Model: reset(), then generate() with json_mode=True, temperature=0.1
         Model-->>VLM: JSON text - person_present, confidence, description
-        VLM-->>Route: available=true, person_present, confidence, alert
+        VLM-->>Policy: parsed dict
+        Policy-->>Server: Verdict(verified, confidence, alert, ...)
     else VLM unavailable (non-ARM64 or geniex missing)
-        VLM-->>Route: available=false, error message
+        VLM-->>Policy: available=false
+        Policy-->>Server: Verdict(verified=false, alert="unverified...")
     end
 
-    Route->>State: verdict_from_verify() derives hub_verified, hub_confidence, alert
-    Route->>State: record_event() into ring buffer plus latest frame
-    Route-->>Edge: schema_version, event_id, received, hub_verified, hub_confidence, identity_status, alert
+    Server->>Policy: command_for(verdict, event)
+    Server->>Server: build response envelope (hub_verified, hub_confidence, command, ...)
+    Server->>Server: events.record_event() into ring buffer plus latest frame
+    Server-->>Edge: schema_version, event_id, received, hub_verified, hub_confidence, identity_status, command, alert
 
-    Note over Route,Edge: The dashboard (/user/events, /user/latest.jpg) polls the same event store just updated.
+    Note over Server,Edge: The dashboard (/user/events, /user/latest.jpg) polls the same event store just updated.
 ```
 
 `POST /user/reason` follows the same save-image -> VLM step, but calls the
-free-form `reason()` method instead of `verify()`, returns raw text instead
-of a structured verdict, and does **not** call `record_event()` — so it never
-appears on the dashboard. That split is deliberate: `/user/reason` is a
-reasoning-only developer tool; `/edge/event` is the real device contract.
+generic `VLMBackend.reason()` method directly (bypassing any Policy) and
+returns raw text instead of a structured verdict, and does **not** call
+`events.record_event()` — so it never appears on the dashboard. That split is
+deliberate: `/user/reason` is a framework-level reasoning-only developer
+tool; `/edge/event` is the real device contract, driven by whichever app is
+wired into the entrypoint.
 
 ## Endpoints
 
-Routes are split into two groups, in separate files:
+All routes are generic (`framework/server.py`); only the app's `Policy` and
+static test pages vary per use case.
 
-- **`/edge/*`** — device-facing (Arduino UNO Q -> hub), in `edge_routes.py`
-- **`/user/*`** — human-facing (browser / operator), in `user_routes.py`
-
-| Method | Path | Group | Purpose |
-|--------|------|-------|---------|
-| GET | `/health` | — | Liveness + VLM availability |
-| GET | `/` | — | Redirects to `/user/` |
-| POST | `/edge/event` | edge | Edge event JSON + frame in, schema-compliant verification response out |
-| GET | `/user/dashboard` | user | Live event / verification dashboard page |
-| GET | `/user/events` | user | Recent events + results (JSON) |
-| GET | `/user/latest.jpg` | user | Most recent frame |
-| GET | `/user/frames/<name>` | user | A specific stored frame |
-| POST | `/user/reason` | user | Raw VLM tester: image in, reasoning text out |
-| GET | `/user/test_reason` | user | Reason tester page (posts to `/user/reason`) |
-| GET | `/user/test_event` | user | Edge-event tester page (posts to `/edge/event`) |
-| GET | `/user/` | user | Default landing → reason tester page |
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/health` | Liveness + VLM availability + active app name |
+| GET | `/` | Redirects to `/user/` |
+| POST | `/edge/event` | Edge event JSON + frame in, policy-driven verification response out |
+| GET | `/user/dashboard` | Live event / verification dashboard page |
+| GET | `/user/events` | Recent events + results (JSON) |
+| GET | `/user/latest.jpg` | Most recent frame |
+| GET | `/user/frames/<name>` | A specific stored frame |
+| POST | `/user/reason` | Raw VLM tester: image in, reasoning text out |
+| GET | `/user/test_reason` | Reason tester page (posts to `/user/reason`) |
+| GET | `/user/test_event` | Edge-event tester page (posts to `/edge/event`) |
+| GET | `/user/` | Default landing → reason tester page |
 
 ### File layout
 
 ```
 hub/
-  server.py         # app factory; registers blueprints; /health, / redirect
-  state.py          # shared config, event store, VLM, request helpers
-  edge_routes.py    # /edge/*  blueprint
-  user_routes.py    # /user/*  blueprint
-  vlm_backend.py    # conditional GenieX VLM
-  static/           # test_reason.html, test_event.html, dashboard.html
+  server.py                # entrypoint: picks an app, runs framework.server.create_app()
+  requirements.txt
+  framework/                # reusable, use-case agnostic
+    server.py               # create_app(policy, vlm, static_dir) -> Flask
+    transport.py            # upload handling + edge-event parsing
+    events.py               # event ring buffer for the dashboard
+    vlm.py                  # VLMBackend: reason() + structured_query()
+    policy.py               # Policy ABC + Verdict dataclass (the app contract)
+  apps/
+    security/                # this use case: stationary person detection
+      policy.py              # SecurityPolicy(Policy)
+      static/                # test_reason.html, test_event.html, dashboard.html
+      samples/                # bundled test images + helpers
 ```
 
 ### Test pages
 
-Two browser testers (linked to each other and the dashboard via a nav bar):
+Two browser testers (linked to each other and the dashboard via a nav bar),
+served from the active app's `static/`:
 
 - **`/user/test_reason`** — posts to `/user/reason`; shows raw VLM reasoning.
   Does **not** record to the dashboard.
@@ -137,17 +193,21 @@ Two browser testers (linked to each other and the dashboard via a nav bar):
 
 ### `/user/reason` vs `/edge/event`
 
-- **`/user/reason`** is a developer tool — it returns the raw VLM text and
-  timing. Used by the upload test page (`/user/`).
-- **`/edge/event`** is the real edge-device contract. It ingests the edge event
-  metadata (`device_id`, `event_id`, `edge_confidence`, …) alongside the frame,
-  runs hub verification, records the result for the dashboard, and returns the
-  schema from `qonclave_plan.md` §5.3:
+- **`/user/reason`** is a framework-level developer tool — it returns the
+  raw VLM text and timing, independent of any app's Policy.
+- **`/edge/event`** is the real edge-device contract. It ingests the edge
+  event metadata (`device_id`, `event_id`, `edge_confidence`, …) alongside
+  the frame, runs the active app's `Policy.evaluate()`, records the result
+  for the dashboard, and returns:
   ```json
   {"schema_version":"0.1","event_id":"…","received":true,
    "hub_verified":true,"hub_confidence":0.91,
-   "identity_status":"not_enabled","alert":"Person verified near camera"}
+   "identity_status":"not_enabled","command":null,
+   "alert":"Person verified near camera"}
   ```
+  `command` is populated by `Policy.command_for()` when an app wants to send
+  something back to the edge device (e.g. `{"type":"navigate_to", ...}`);
+  it's `null` for apps with no edge actuator to command, like `security`.
 
 ## Runs anywhere; reasoning only on Snapdragon
 
@@ -227,9 +287,23 @@ state, and a table of recent events.
 
 ## Sample images
 
-`hub/samples/` ships ready-to-use test images (a person scene, an empty scene,
-and Qualcomm's GenieX demo photo) plus helpers. See `hub/samples/README.md`.
-Quick test against a running hub:
+`hub/apps/security/samples/` ships ready-to-use test images (a person scene,
+an empty scene, and Qualcomm's GenieX demo photo) plus helpers. See
+`hub/apps/security/samples/README.md`. Quick test against a running hub:
 ```bash
-python hub/samples/send_sample.py room_with_person   # -> /edge/event
+python hub/apps/security/samples/send_sample.py room_with_person   # -> /edge/event
 ```
+
+## Building a new app
+
+1. Create `hub/apps/<name>/policy.py` with a class that subclasses
+   `framework.policy.Policy` and implements `evaluate(image_path, event) ->
+   Verdict`. Override `command_for()` if the use case needs to send a
+   command back to the edge device.
+2. Add `hub/apps/<name>/static/` with `test_reason.html`, `test_event.html`,
+   `dashboard.html` (copy from `apps/security/static/` and adjust labels —
+   the JSON shape they poll is generic).
+3. In `hub/server.py`, swap the `SecurityPolicy(vlm)` construction and
+   `STATIC_DIR` for the new app.
+
+No changes to `framework/` are needed for a new use case.
