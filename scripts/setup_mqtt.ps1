@@ -30,21 +30,47 @@ function Write-Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
 function Write-Ok($msg)   { Write-Host "    [ok] $msg" -ForegroundColor Green }
 function Write-Warn($msg) { Write-Host "    [!]  $msg" -ForegroundColor Yellow }
 
+function Get-MosquittoExe {
+    # Resolve mosquitto.exe by ABSOLUTE PATH, not the PATH env var. The
+    # Windows Mosquitto installer (including via winget) does not reliably
+    # add its install directory to PATH, so `Get-Command mosquitto` can fail
+    # even right after a successful install - check well-known install
+    # roots directly, same approach as Get-ArmPython in setup_geniex.ps1.
+    $cmd = Get-Command mosquitto.exe -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+
+    $roots = @(
+        "$env:ProgramFiles\mosquitto",
+        "${env:ProgramFiles(x86)}\mosquitto",
+        "${env:ProgramFiles(Arm)}\mosquitto"
+    )
+    foreach ($root in $roots) {
+        $exe = Join-Path $root 'mosquitto.exe'
+        if (Test-Path $exe) { return $exe }
+    }
+    return $null
+}
+
 # --- 1. Mosquitto CLI --------------------------------------------------------
 Write-Step "Ensuring Mosquitto is installed"
-if (Get-Command mosquitto -ErrorAction SilentlyContinue) {
-    Write-Ok "mosquitto already present: $(mosquitto -h 2>&1 | Select-Object -First 1)"
+$MosquittoExe = Get-MosquittoExe
+if ($MosquittoExe) {
+    Write-Ok "mosquitto already present: $MosquittoExe"
 } else {
     Write-Host "    Installing Mosquitto via winget..."
     winget install --id EclipseFoundation.Mosquitto -e --source winget `
         --accept-package-agreements --accept-source-agreements
-    # Refresh PATH for the current session
+    # Refresh PATH for the current session (best-effort; we resolve by
+    # absolute path below regardless, since winget installs don't reliably
+    # update PATH even on success - e.g. "already installed, no upgrade").
     $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
                 [System.Environment]::GetEnvironmentVariable('Path','User')
-    if (Get-Command mosquitto -ErrorAction SilentlyContinue) {
-        Write-Ok "mosquitto installed"
+    $MosquittoExe = Get-MosquittoExe
+    if ($MosquittoExe) {
+        Write-Ok "mosquitto installed: $MosquittoExe"
     } else {
-        throw ("mosquitto install did not surface on PATH. Open a new shell and re-run, " +
+        throw ("mosquitto.exe not found after install (checked PATH and " +
+               "Program Files\mosquitto). Open a new shell and re-run, " +
                "or install manually from https://mosquitto.org/download/.")
     }
 }
@@ -62,9 +88,9 @@ Write-Host "==================================================================="
 # --- 3. Run the broker --------------------------------------------------------
 if ($NoRun) {
     Write-Step "NoRun set - skipping broker start"
-    Write-Host "    Start it later with:  mosquitto -c `"$ConfPath`" -v"
+    Write-Host "    Start it later with:  & `"$MosquittoExe`" -c `"$ConfPath`" -v"
 } else {
     Write-Step "Starting Mosquitto (Ctrl+C to stop)"
     Set-Location $RepoDir
-    & mosquitto -c $ConfPath -v
+    & $MosquittoExe -c $ConfPath -v
 }
