@@ -143,7 +143,7 @@ sequenceDiagram
     Server->>Policy: command_for(verdict, event)
     opt command is not None
         Server->>MQTT: publish_command(device_id, command)
-        Note over MQTT: publishes to the device's command topic (best-effort; no-op if no broker)
+        Note over MQTT: publishes to the device's command topic (best-effort, no-op if no broker)
     end
     Server->>Server: build response envelope (hub_verified, hub_confidence, command, ...)
     Server->>Server: events.record_event() into ring buffer plus latest frame
