@@ -164,16 +164,15 @@ static test pages vary per use case.
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/health` | Liveness + VLM availability + MQTT status + active app name |
-| GET | `/` | Redirects to `/user/` |
+| GET | `/` | Redirects to `/user/dashboard` |
+| GET | `/edge` | Edge-device simulator page (standalone; not linked from `/user/*`) |
 | POST | `/edge/event` | Edge event JSON + frame in, policy-driven verification response out |
-| GET | `/user/dashboard` | Live event / verification dashboard page |
+| GET | `/user/dashboard` | Live event / verification dashboard page (also the default `/user/` landing) |
 | GET | `/user/events` | Recent events + results (JSON) |
 | GET | `/user/latest.jpg` | Most recent frame |
 | GET | `/user/frames/<name>` | A specific stored frame |
 | POST | `/user/reason` | Raw VLM tester: image in, reasoning text out |
 | GET | `/user/test_reason` | Reason tester page (posts to `/user/reason`) |
-| GET | `/user/test_event` | Edge-event tester page (posts to `/edge/event`) |
-| GET | `/user/` | Default landing → reason tester page |
 
 ### File layout
 
@@ -195,16 +194,23 @@ hub/
       samples/                # bundled test images + helpers
 ```
 
-### Test pages
+### Operator app vs. device simulator
 
-Two browser testers (linked to each other and the dashboard via a nav bar),
-served from the active app's `static/`:
+`hub/apps/security/static/` ships three pages, deliberately split into two
+groups with **no hyperlinks between the groups**:
 
-- **`/user/test_reason`** — posts to `/user/reason`; shows raw VLM reasoning.
-  Does **not** record to the dashboard.
-- **`/user/test_event`** — simulates an edge device: posts a frame + edge
-  metadata (`device_id`, `event_id`, `edge_confidence`) to `/edge/event` and
-  shows the schema-compliant verification response. **Records to the dashboard.**
+- **Operator app** (`dashboard.html`, `test_reason.html`) — nav bar links
+  the two to each other. `/` and `/user/` both land on the dashboard.
+  - **`/user/dashboard`** — the live event/verification dashboard.
+  - **`/user/test_reason`** — posts to `/user/reason`; shows raw VLM
+    reasoning. Does **not** record to the dashboard.
+- **Device simulator** (`test_event.html`, served at **`/edge`**) — stands
+  in for an Arduino UNO Q: posts a frame + edge metadata
+  (`device_id`, `event_id`, `edge_confidence`) to `/edge/event`, the same
+  contract a real device uses. **Records to the dashboard**, but has no nav
+  bar and isn't linked from the operator pages — it's a standalone test
+  tool, visually distinct (amber/monospace theme vs. the operator app's
+  blue theme) so it's never mistaken for part of the app.
 
 ### `/user/reason` vs `/edge/event`
 
@@ -251,8 +257,8 @@ python hub/server.py --verbose             # show werkzeug access logs
 python hub/server.py --host 0.0.0.0 --port 8000 -v
 ```
 
-Then open <http://localhost:8000/user/> for the test page, or
-<http://localhost:8000/user/dashboard> for the dashboard.
+Then open <http://localhost:8000/> for the operator dashboard, or
+<http://localhost:8000/edge> to simulate an edge device posting to `/edge/event`.
 
 Environment options:
 

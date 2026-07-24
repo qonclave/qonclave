@@ -8,17 +8,20 @@ Policy passed to create_app().
 
 Endpoints:
     GET  /health              liveness + VLM availability
-    GET  /                    redirects to /user/ (app landing page)
+    GET  /                    redirects to /user/dashboard
 
+    GET  /edge                edge-device simulator page (standalone, unlinked
+                               from the operator UI — visually distinct)
     POST /edge/event          edge event JSON + frame -> policy-driven
                                verification response
 
-    GET  /user/dashboard      live dashboard page (app-provided static/)
+    GET  /user/dashboard      live dashboard page (app-provided static/);
+                               also the default landing page (/, /user/)
     GET  /user/events         recent events + results (JSON)
     GET  /user/latest.jpg     most recent frame
     GET  /user/frames/<name>  a specific stored frame
     POST /user/reason         raw VLM tester (free-form reasoning)
-    GET  /user/               app landing page
+    GET  /user/test_reason    reasoning tester page
 
 Design goals:
     * Runs on ANY laptop (regular x86 Windows/Linux included). Reasoning is
@@ -77,14 +80,20 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, static_dir: str) 
 
     @app.get("/")
     def root():
-        return redirect("/user/", code=302)
+        return redirect("/user/dashboard", code=302)
 
     @app.errorhandler(413)
     def too_large(_e):
         return jsonify({"ok": False,
                         "error": f"upload exceeds {MAX_UPLOAD_MB} MB limit"}), 413
 
-    # --- /edge/event ---------------------------------------------------------
+    # --- /edge: standalone device simulator + event ingestion --------------
+    @app.get("/edge")
+    def edge_simulator():
+        # Deliberately not linked from /user/* — this simulates a device,
+        # it isn't part of the operator-facing app.
+        return send_from_directory(static_dir, "test_event.html")
+
     @app.post("/edge/event")
     def edge_event():
         """Device contract: ingest frame + event, run policy, record, respond."""
@@ -204,14 +213,10 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, static_dir: str) 
     def user_test_reason():
         return send_from_directory(static_dir, "test_reason.html")
 
-    @app.get("/user/test_event")
-    def user_test_event():
-        return send_from_directory(static_dir, "test_event.html")
-
     @app.get("/user/")
     @app.get("/user")
     def user_index():
-        # default landing = reason tester
-        return send_from_directory(static_dir, "test_reason.html")
+        # default landing = dashboard
+        return send_from_directory(static_dir, "dashboard.html")
 
     return app

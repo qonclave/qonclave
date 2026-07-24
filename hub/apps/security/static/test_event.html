@@ -3,12 +3,14 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Qonclave Hub — Edge Event Test</title>
+<title>Qonclave — Edge Device Simulator</title>
 <style>
-  :root { --bg:#0f1115; --card:#1a1d24; --fg:#e6e8ec; --muted:#8b93a1;
-          --accent:#4f9dff; --ok:#3ecf8e; --err:#ff6b6b; --border:#2a2e37; }
+  /* Deliberately different palette from dashboard.html / test_reason.html —
+     this page simulates a device, it is not part of the operator app. */
+  :root { --bg:#1a1206; --card:#2a1d0c; --fg:#f5e6cf; --muted:#b08a55;
+          --accent:#ffa733; --ok:#3ecf8e; --err:#ff6b6b; --border:#4a3416; }
   * { box-sizing: border-box; }
-  body { margin:0; font-family:system-ui,Segoe UI,Roboto,sans-serif;
+  body { margin:0; font-family:"Courier New",ui-monospace,monospace;
          background:var(--bg); color:var(--fg); }
   .wrap { max-width:880px; margin:0 auto; padding:24px 16px 64px; }
   h1 { font-size:22px; margin:0 0 4px; }
@@ -17,14 +19,14 @@
           border-radius:12px; padding:20px; margin-bottom:18px; }
   label { display:block; font-size:13px; color:var(--muted); margin-bottom:6px; }
   input[type=file], input[type=text], input[type=number], textarea {
-    width:100%; background:#0f1218; color:var(--fg); border:1px solid var(--border);
+    width:100%; background:#140d04; color:var(--fg); border:1px solid var(--border);
     border-radius:8px; padding:10px; font-size:14px; font-family:inherit; }
   textarea { resize:vertical; min-height:60px; }
   .fields { display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; margin-top:14px; }
   @media (max-width:640px){ .fields{ grid-template-columns:1fr; } }
   .row { display:flex; gap:12px; align-items:center; margin-top:14px; flex-wrap:wrap; }
-  button { background:var(--accent); color:#fff; border:none; border-radius:8px;
-           padding:11px 20px; font-size:15px; font-weight:600; cursor:pointer; }
+  button { background:var(--accent); color:#1a1206; border:none; border-radius:8px;
+           padding:11px 20px; font-size:15px; font-weight:700; cursor:pointer; }
   button:disabled { opacity:.5; cursor:not-allowed; }
   .pill { font-size:12px; padding:3px 10px; border-radius:999px; border:1px solid var(--border); }
   .pill.ok { color:var(--ok); border-color:var(--ok); }
@@ -40,24 +42,20 @@
              border-top-color:var(--accent); border-radius:50%;
              animation:spin .8s linear infinite; }
   @keyframes spin { to { transform:rotate(360deg); } }
-  code { background:#0f1218; padding:1px 6px; border-radius:4px; }
-  nav { display:flex; gap:14px; margin-bottom:18px; font-size:14px; }
-  nav a { color:var(--muted); text-decoration:none; }
-  nav a.active { color:var(--accent); font-weight:600; }
-  nav a:hover { color:var(--fg); }
+  code { background:#140d04; padding:1px 6px; border-radius:4px; }
   .verdict { font-size:22px; font-weight:700; margin:4px 0 12px; }
+  .devicebadge { display:inline-block; font-size:11px; letter-spacing:.08em;
+                 text-transform:uppercase; color:var(--accent); border:1px solid var(--accent);
+                 border-radius:4px; padding:2px 8px; margin-bottom:10px; }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <nav>
-    <a href="/user/test_reason">Reason test</a>
-    <a href="/user/test_event" class="active">Edge event test</a>
-    <a href="/user/dashboard">Dashboard</a>
-  </nav>
-  <h1>Qonclave Hub — Edge Event Test</h1>
-  <div class="sub">Simulate an Arduino UNO Q escalation: posts a frame + edge metadata to
-    <code>/edge/event</code>. This <b>does</b> record to the dashboard.</div>
+  <span class="devicebadge">Device simulator — not part of the operator app</span>
+  <h1>Qonclave — Edge Device Simulator</h1>
+  <div class="sub">Stands in for an Arduino UNO Q: posts a frame + edge metadata to
+    <code>/edge/event</code>, the same contract a real device uses. This <b>does</b>
+    record to the operator dashboard, but this page itself has no links to it.</div>
 
   <div class="card">
     <span id="healthPill" class="pill">checking…</span>
@@ -180,8 +178,7 @@ sendEl.addEventListener("click", async () => {
     if (j.event_id) parts.push(j.event_id);
     if (j.hub_confidence != null) parts.push("hub_conf " + j.hub_confidence);
     parts.push("round-trip " + dt + "s");
-    outMeta.innerHTML = parts.join(" · ")
-      + ' · <a href="/user/dashboard" style="color:var(--accent)">view on dashboard →</a>';
+    outMeta.textContent = parts.join(" · ");
   } catch (e) {
     verdict.textContent = "—";
     out.textContent = "Request failed: " + e;
