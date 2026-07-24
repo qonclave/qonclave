@@ -25,8 +25,8 @@ Endpoints:
     GET  /user/events         recent events + results (JSON)
     GET  /user/latest.jpg     most recent frame
     GET  /user/frames/<name>  a specific stored frame
-    POST /user/reason         raw VLM tester (free-form reasoning)
-    GET  /user/test_reason    reasoning tester page
+    POST /user/reason         raw VLM tester (free-form reasoning; no browser
+                               page — curl/API only)
 
 Design goals:
     * Runs on ANY laptop (regular x86 Windows/Linux included). Reasoning is
@@ -242,10 +242,6 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, static_dir: str) 
     @app.get("/user/dashboard")
     def user_dashboard():
         return send_from_directory(static_dir, "dashboard.html")
-
-    @app.get("/user/test_reason")
-    def user_test_reason():
-        return send_from_directory(static_dir, "test_reason.html")
 
     @app.get("/user/")
     @app.get("/user")

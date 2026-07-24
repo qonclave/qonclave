@@ -59,7 +59,6 @@ flowchart TB
 
     subgraph Browser["Operator browser"]
         DASH["/user/dashboard"]
-        TREASON["/user/test_reason"]
     end
 
     subgraph TestConsoles["Browser test consoles (isolated, no /user/* links)"]
@@ -180,8 +179,7 @@ static test pages vary per use case.
 | GET | `/user/events` | Recent events + results (JSON) |
 | GET | `/user/latest.jpg` | Most recent frame |
 | GET | `/user/frames/<name>` | A specific stored frame |
-| POST | `/user/reason` | Raw VLM tester: image in, reasoning text out |
-| GET | `/user/test_reason` | Reason tester page (posts to `/user/reason`) |
+| POST | `/user/reason` | Raw VLM tester: image in, reasoning text out (curl/API only, no page) |
 
 ### File layout
 
@@ -199,20 +197,17 @@ hub/
   apps/
     security/                # this use case: stationary person detection
       policy.py              # SecurityPolicy(Policy)
-      static/                # test_reason.html, dashboard.html, test_edge.html, test_hub.html
+      static/                # dashboard.html, test_edge.html, test_hub.html
       samples/                # bundled test images + helpers
 ```
 
 ### Operator app vs. test consoles
 
-`hub/apps/security/static/` ships four pages, deliberately split into two
+`hub/apps/security/static/` ships three pages, deliberately split into two
 groups with **no hyperlinks between the groups**:
 
-- **Operator app** (`dashboard.html`, `test_reason.html`) — nav bar links
-  the two to each other. `/` and `/user/` both land on the dashboard.
-  - **`/user/dashboard`** — the live event/verification dashboard.
-  - **`/user/test_reason`** — posts to `/user/reason`; shows raw VLM
-    reasoning. Does **not** record to the dashboard.
+- **Operator app** (`dashboard.html`) — the live event/verification
+  dashboard. `/`, `/user/`, and `/user/dashboard` all land here.
 - **Test consoles** (`test_edge.html`, `test_hub.html`, served at
   **`/test/edge`** and **`/test/hub`**) — nav bar links the two to each
   other, but neither links to or from the operator pages. Visually distinct
@@ -385,10 +380,10 @@ python hub/apps/security/samples/send_sample.py room_with_person   # -> /edge/ev
    `framework.policy.Policy` and implements `evaluate(image_path, event) ->
    Verdict`. Override `command_for()` if the use case needs to send a
    command back to the edge device.
-2. Add `hub/apps/<name>/static/` with `test_reason.html`, `dashboard.html`
-   (copy from `apps/security/static/` and adjust labels — the JSON shape
-   they poll is generic). `test_edge.html`/`test_hub.html` are optional to
-   copy too if the new app wants its own device-simulator/MQTT-console pages.
+2. Add `hub/apps/<name>/static/` with `dashboard.html` (copy from
+   `apps/security/static/` and adjust labels — the JSON shape it polls is
+   generic). `test_edge.html`/`test_hub.html` are optional to copy too if
+   the new app wants its own device-simulator/MQTT-console pages.
 3. In `hub/server.py`, swap the `SecurityPolicy(vlm)` construction and
    `STATIC_DIR` for the new app.
 
