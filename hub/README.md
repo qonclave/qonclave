@@ -20,10 +20,11 @@ flowchart TB
         direction TB
 
         subgraph FrameworkPkg["framework/ (reusable, use-case agnostic)"]
-            FSERVER["server.py\ncreate_app(policy, vlm, static_dir)\n/health, /edge/event, /user/*"]
+            FSERVER["server.py\ncreate_app(policy, vlm, mqtt, static_dir)\n/health, /edge/event, /user/*"]
             FTRANSPORT["transport.py\nupload + edge-event parsing"]
             FEVENTS["events.py\nevent ring buffer"]
             FVLM["vlm.py\nVLMBackend: reason(), structured_query()"]
+            FMQTT["mqtt_bus.py\nMQTTBus: publish_command()"]
             FPOLICY["policy.py\nPolicy ABC, Verdict"]
         end
 
@@ -32,7 +33,7 @@ flowchart TB
             ASTATIC["static/\ndashboard, test pages"]
         end
 
-        ENTRY["server.py (entrypoint)\nbuilds VLMBackend + SecurityPolicy,\ncalls framework.server.create_app()"]
+        ENTRY["server.py (entrypoint)\nbuilds VLMBackend + MQTTBus + SecurityPolicy,\ncalls framework.server.create_app()"]
         DISK["hub/uploads/\nsaved frames"]
 
         ENTRY --> FSERVER
@@ -40,6 +41,7 @@ flowchart TB
         FSERVER --> FTRANSPORT
         FSERVER --> FEVENTS
         FSERVER --> FVLM
+        FSERVER -- "command_for() result" --> FMQTT
         FSERVER -- "policy.evaluate()" --> APOLICY
         APOLICY -- "returns a Verdict" --> FPOLICY
         FTRANSPORT --> DISK
@@ -51,6 +53,10 @@ flowchart TB
         GENIEX --> QWEN
     end
 
+    subgraph Broker["MQTT broker (Mosquitto, standalone process)"]
+        MOSQ["qonclave/&lt;device_id&gt;/command"]
+    end
+
     subgraph Browser["Operator browser"]
         DASH["/user/dashboard"]
         TEVENT["/user/test_event"]
@@ -59,6 +65,8 @@ flowchart TB
 
     CAM -- "POST /edge/event\n(frame + event JSON)" --> FSERVER
     FVLM -. "lazy import, ARM64 only" .-> GENIEX
+    FMQTT -. "lazy connect, best-effort" .-> MOSQ
+    MOSQ -. "subscribe (future edge code)" .-> CAM
     Browser --> FSERVER
     HubProcess -- "hub_verified / alert / command" --> CAM
 ```
@@ -108,6 +116,7 @@ sequenceDiagram
     participant Policy as apps/security/policy.py
     participant VLM as framework/vlm.py
     participant Model as GenieX / Qwen2.5-VL
+    participant MQTT as framework/mqtt_bus.py
 
     Edge->>Server: POST /edge/event (frame + event JSON)
     Server->>Transport: parse_edge_event()
@@ -127,11 +136,16 @@ sequenceDiagram
     end
 
     Server->>Policy: command_for(verdict, event)
+    opt command is not None
+        Server->>MQTT: publish_command(device_id, command)
+        Note over MQTT: qonclave/<device_id>/command\n(best-effort; no-op if no broker)
+    end
     Server->>Server: build response envelope (hub_verified, hub_confidence, command, ...)
     Server->>Server: events.record_event() into ring buffer plus latest frame
     Server-->>Edge: schema_version, event_id, received, hub_verified, hub_confidence, identity_status, command, alert
 
     Note over Server,Edge: The dashboard (/user/events, /user/latest.jpg) polls the same event store just updated.
+    Note over MQTT,Edge: A subscribed edge device also receives the same command over MQTT,\nindependent of this HTTP response - useful if it wasn't the one that opened this request.
 ```
 
 `POST /user/reason` follows the same save-image -> VLM step, but calls the
@@ -149,7 +163,7 @@ static test pages vary per use case.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/health` | Liveness + VLM availability + active app name |
+| GET | `/health` | Liveness + VLM availability + MQTT status + active app name |
 | GET | `/` | Redirects to `/user/` |
 | POST | `/edge/event` | Edge event JSON + frame in, policy-driven verification response out |
 | GET | `/user/dashboard` | Live event / verification dashboard page |
@@ -168,10 +182,11 @@ hub/
   server.py                # entrypoint: picks an app, runs framework.server.create_app()
   requirements.txt
   framework/                # reusable, use-case agnostic
-    server.py               # create_app(policy, vlm, static_dir) -> Flask
+    server.py               # create_app(policy, vlm, mqtt, static_dir) -> Flask
     transport.py            # upload handling + edge-event parsing
     events.py               # event ring buffer for the dashboard
     vlm.py                  # VLMBackend: reason() + structured_query()
+    mqtt_bus.py              # MQTTBus: publish_command() hub->edge push channel
     policy.py               # Policy ABC + Verdict dataclass (the app contract)
   apps/
     security/                # this use case: stationary person detection
@@ -248,6 +263,9 @@ Environment options:
 | `QONCLAVE_WARMUP` | – | Set `1` to load the VLM model at startup |
 | `QONCLAVE_MAX_UPLOAD_MB` | `16` | Max upload size |
 | `QONCLAVE_EVENTS_MAX` | `50` | Dashboard event ring-buffer size |
+| `QONCLAVE_MQTT_HOST` | `127.0.0.1` | MQTT broker address |
+| `QONCLAVE_MQTT_PORT` | `1883` | MQTT broker port |
+| `QONCLAVE_MQTT_ENABLED` | `1` | Set `0` to skip MQTT entirely (HTTP-only mode) |
 
 ## Calling `/user/reason`
 
@@ -284,6 +302,43 @@ Both shapes return the schema-compliant verification response shown above.
 Open <http://HUB_IP:8000/user/dashboard>. It polls `/user/events` every 2s and
 shows the latest escalation frame, hub verification, edge/hub confidence, alert
 state, and a table of recent events.
+
+## MQTT broker (hub->edge push channel)
+
+`/edge/event`'s `command` field only reaches a device if it has an HTTP
+request open at that moment. `framework/mqtt_bus.py` gives the hub a second,
+independent path to push the same command: whenever a `Policy.command_for()`
+returns non-`None`, the hub also publishes it to
+`qonclave/<device_id>/command` on an MQTT broker, so a device that's simply
+subscribed (not mid-request) still receives it.
+
+- **Broker**: Eclipse Mosquitto, run as its own process — decoupled from
+  `hub/server.py`'s lifecycle. Start it once; restart the hub as often as you
+  like without losing the broker or its subscribers.
+  ```powershell
+  powershell -ExecutionPolicy Bypass -File .\scripts\setup_mqtt.ps1
+  # or, if already installed:
+  mosquitto -c scripts\mosquitto.conf -v
+  ```
+- **Topics**:
+  - `qonclave/<device_id>/command` — hub → edge (JSON, from `command_for()`)
+  - `qonclave/<device_id>/status` — reserved for a future edge → hub leg; not consumed yet
+- **Client**: `hub/framework/mqtt_bus.py`'s `MQTTBus`, using `paho-mqtt`.
+  Same "runs anywhere" philosophy as `VLMBackend`: the broker connection is
+  lazy and best-effort — if no broker is reachable, `/edge/event` still
+  returns 200 with the same schema; the MQTT publish is just skipped and
+  logged.
+- **`/health`** reports broker connectivity alongside VLM status:
+  ```json
+  {"vlm": {...}, "mqtt": {"available": true, "host": "127.0.0.1", "port": 1883, ...}}
+  ```
+- **`apps/security`** has no edge actuator to command, so
+  `SecurityPolicy.command_for()` stays the framework default (`None`) — MQTT
+  publishing is dormant for this app and only activates once a `Policy`
+  overrides `command_for()`.
+- Anonymous auth, loopback-only, no persistence — fine for a local hackathon
+  demo on a private WiFi network. **Not** safe for production or any
+  internet-facing deployment as configured.
 
 ## Sample images
 

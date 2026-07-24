@@ -40,6 +40,7 @@ log = logging.getLogger("qonclave.hub")
 
 from framework.server import create_app  # noqa: E402
 from framework.vlm import VLMBackend  # noqa: E402
+from framework.mqtt_bus import MQTTBus  # noqa: E402
 from apps.security.policy import SecurityPolicy  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -47,10 +48,14 @@ STATIC_DIR = os.path.join(HERE, "apps", "security", "static")
 
 HOST = os.environ.get("QONCLAVE_HOST", "0.0.0.0")
 PORT = int(os.environ.get("QONCLAVE_PORT", "8000"))
+MQTT_HOST = os.environ.get("QONCLAVE_MQTT_HOST", "127.0.0.1")
+MQTT_PORT = int(os.environ.get("QONCLAVE_MQTT_PORT", "1883"))
+MQTT_ENABLED = os.environ.get("QONCLAVE_MQTT_ENABLED", "1") == "1"
 
 vlm = VLMBackend()
+mqtt = MQTTBus(host=MQTT_HOST, port=MQTT_PORT, enabled=MQTT_ENABLED)
 policy = SecurityPolicy(vlm)
-app = create_app(policy=policy, vlm=vlm, static_dir=STATIC_DIR)
+app = create_app(policy=policy, vlm=vlm, mqtt=mqtt, static_dir=STATIC_DIR)
 
 
 def main():
@@ -75,6 +80,7 @@ def main():
     log.info("App        : %s", policy.name)
     log.info("Static dir : %s", STATIC_DIR)
     log.info("VLM status : %s", vlm.status())
+    log.info("MQTT status: %s", mqtt.status())
     if os.environ.get("QONCLAVE_WARMUP") == "1":
         log.info("QONCLAVE_WARMUP=1 -> loading VLM model now...")
         vlm.warmup()

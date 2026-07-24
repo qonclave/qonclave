@@ -38,6 +38,7 @@ import uuid
 from flask import Flask, jsonify, redirect, request, send_from_directory
 
 from . import events, transport
+from .mqtt_bus import MQTTBus
 from .policy import Policy
 from .vlm import VLMBackend
 
@@ -46,12 +47,15 @@ log = logging.getLogger("qonclave.hub")
 MAX_UPLOAD_MB = int(os.environ.get("QONCLAVE_MAX_UPLOAD_MB", "16"))
 
 
-def create_app(policy: Policy, vlm: VLMBackend, static_dir: str) -> Flask:
+def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, static_dir: str) -> Flask:
     """
     Build the Qonclave hub Flask app for one Policy.
 
     policy      the app's Policy instance (evaluate/command_for)
     vlm         shared VLMBackend, exposed via /health and /user/reason
+    mqtt        shared MQTTBus; commands from command_for() are also
+                published here so a device can receive them without an
+                open HTTP request
     static_dir  directory holding the app's dashboard.html, test_*.html
     """
     app = Flask(__name__, static_folder=None)
@@ -68,6 +72,7 @@ def create_app(policy: Policy, vlm: VLMBackend, static_dir: str) -> Flask:
             "app": policy.name,
             "time": transport.now_iso(),
             "vlm": vlm.status(),
+            "mqtt": mqtt.status(),
         })
 
     @app.get("/")
@@ -101,6 +106,9 @@ def create_app(policy: Policy, vlm: VLMBackend, static_dir: str) -> Flask:
 
         verdict = policy.evaluate(path, event)
         command = policy.command_for(verdict, event)
+        device_id = event.get("device_id")
+        if command is not None and device_id:
+            mqtt.publish_command(device_id, command)
 
         response = {
             "schema_version": events.SCHEMA_VERSION,
