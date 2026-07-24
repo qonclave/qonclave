@@ -45,6 +45,11 @@ $PSNativeCommandUseErrorActionPreference = $false
 # ---- Config ---------------------------------------------------------------
 $PythonVersion   = '3.13.3'
 $PythonUrl       = "https://www.python.org/ftp/python/$PythonVersion/python-$PythonVersion-arm64.exe"
+# Pinned Git for Windows ARM64 build, used only as a fallback when winget
+# itself can't run (see step 1) - not "latest", so this stays reproducible.
+$GitVersion      = '2.55.0.3'
+$GitTag          = 'v2.55.0.windows.3'
+$GitUrl          = "https://github.com/git-for-windows/git/releases/download/$GitTag/Git-$GitVersion-arm64.exe"
 $VenvDir         = Join-Path $PSScriptRoot 'geniex-env'
 # Exact major.minor required, derived from $PythonVersion (e.g. "3.13.3" -> 3, 13).
 # Any OTHER Python found on the box - older OR newer, ARM64 or not - is ignored;
@@ -83,7 +88,28 @@ if (Get-Command git -ErrorAction SilentlyContinue) {
     Write-Ok "git already present: $(git --version)"
 } else {
     Write-Host "    Installing Git via winget..."
-    winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements
+    $wingetOk = $true
+    try {
+        winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements
+        if ($LASTEXITCODE -ne 0) { $wingetOk = $false }
+    } catch {
+        # On a brand-new machine, `winget.exe` on PATH can be an unprovisioned
+        # Microsoft Store "App Execution Alias" stub that fails with
+        # "The file cannot be accessed by the system" - not a real winget
+        # error, just winget being unusable yet. Fall back to a direct
+        # installer download instead of hard-failing the whole bootstrap.
+        Write-Warn "winget failed to run ($($_.Exception.Message)); falling back to a direct Git installer download."
+        $wingetOk = $false
+    }
+
+    if (-not $wingetOk) {
+        Write-Host "    Downloading Git for Windows ARM64 installer: $GitUrl"
+        $gitInstaller = Join-Path $env:TEMP "Git-$GitVersion-arm64.exe"
+        Invoke-WebRequest -Uri $GitUrl -OutFile $gitInstaller
+        Write-Host "    Running silent install..."
+        Start-Process -FilePath $gitInstaller -ArgumentList '/VERYSILENT', '/NORESTART' -Wait
+    }
+
     # Refresh PATH for the current session
     $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
                 [System.Environment]::GetEnvironmentVariable('Path','User')

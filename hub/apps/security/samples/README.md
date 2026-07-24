@@ -23,15 +23,15 @@ or ship it in any public release without checking Alamy's licensing terms.
 
 Using the helper (needs `pip install requests`):
 ```bash
-python hub/samples/send_sample.py room_with_person          # -> /edge/event
-python hub/samples/send_sample.py empty_room                # -> /edge/event
-python hub/samples/send_sample.py geniex_demo reason        # -> /user/reason
-python hub/samples/send_sample.py room_with_person event http://HUB_IP:8000
+python hub/apps/security/samples/send_sample.py room_with_person          # -> /edge/event
+python hub/apps/security/samples/send_sample.py empty_room                # -> /edge/event
+python hub/apps/security/samples/send_sample.py geniex_demo reason        # -> /user/reason
+python hub/apps/security/samples/send_sample.py room_with_person event http://HUB_IP:8000
 ```
 
 Or plain curl:
 ```bash
-curl -F "image=@hub/samples/room_with_person.jpg" \
+curl -F "image=@hub/apps/security/samples/room_with_person.jpg" \
      -F 'event={"device_id":"unoq-01","event_id":"evt-1","edge_confidence":0.85}' \
      http://127.0.0.1:8000/edge/event
 ```

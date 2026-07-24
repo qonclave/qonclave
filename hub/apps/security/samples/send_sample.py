@@ -3,10 +3,10 @@ send_sample.py — post a bundled sample image to a running hub, for quick
 end-to-end testing (especially on the Snapdragon laptop where reasoning is live).
 
 Usage:
-    python hub/samples/send_sample.py                       # room_with_person -> /edge/event
-    python hub/samples/send_sample.py empty_room            # by sample name
-    python hub/samples/send_sample.py geniex_demo.jpg reason  # -> /user/reason
-    python hub/samples/send_sample.py room_with_person event http://HUB_IP:8000
+    python hub/apps/security/samples/send_sample.py                       # room_with_person -> /edge/event
+    python hub/apps/security/samples/send_sample.py empty_room            # by sample name
+    python hub/apps/security/samples/send_sample.py geniex_demo.jpg reason  # -> /user/reason
+    python hub/apps/security/samples/send_sample.py room_with_person event http://HUB_IP:8000
 
 Args: [sample] [mode: event|reason] [base_url]
 Requires: pip install requests   (or use the curl commands in hub/README.md)

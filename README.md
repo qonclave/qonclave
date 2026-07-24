@@ -24,10 +24,14 @@ person as `known` / `unknown`.
 ```
 edge/     # UNO Q: capture, local detection, event sender
 hub/      # Snapdragon X laptop: HTTP server, verification, reasoning, alert
+  framework/   # reusable: transport, event store, VLM, HTTP routes, Policy contract
+  apps/        # use cases built on the framework (today: apps/security/)
 shared/   # event schema, sample events
 demo/     # runbook, fallback assets
 scripts/  # environment setup (e.g. GenieX bootstrap)
 ```
+
+See `hub/README.md` for the framework/app split and how to add a new use case.
 
 ## Hub environment (Snapdragon X, Windows ARM64)
 

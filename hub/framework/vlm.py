@@ -1,21 +1,27 @@
 """
-vlm_backend.py — conditional vision-language reasoning for the Qonclave hub.
+vlm.py — conditional vision-language reasoning for the Qonclave framework.
 
-The heavy reasoning (GenieX + Qwen2.5-VL-7B) only runs on Snapdragon X laptops.
-On every other machine (regular x86 Windows/Linux), the `geniex` import will
-fail — so we import it LAZILY and never at module load time. That lets the rest
-of the hub (HTTP server, upload handling, test webpage) run and be tested on any
-laptop; only the reasoning call reports "unavailable".
+The heavy reasoning (GenieX + a VLM bundle) only runs on Snapdragon X
+laptops. On every other machine (regular x86 Windows/Linux), the `geniex`
+import will fail — so we import it LAZILY and never at module load time.
+That lets the rest of the hub (HTTP server, upload handling, test webpage)
+run and be tested on any laptop; only the reasoning call reports
+"unavailable".
+
+Use-case agnostic: this module knows nothing about what an app is verifying
+(person, fall, hazard, ...). Apps call `reason()` for free-form text or
+`structured_query()` for JSON-mode output with their own prompt and schema.
 
 Public API:
     backend = VLMBackend()          # cheap, does not import geniex
     backend.is_available()          # True only where geniex + model can load
     backend.warmup()                # optional: load the model up front
-    result = backend.reason(image_path, prompt)   # -> dict
+    result = backend.reason(image_path, prompt)               # -> dict
+    result = backend.structured_query(image_path, prompt, ...)  # -> dict
 
-`reason()` always returns a dict and never raises for the caller; on an
-unsupported machine it returns {"available": False, ...} so the server can
-respond gracefully.
+Both always return a dict and never raise for the caller; on an unsupported
+machine they return {"available": False, ...} so the server can respond
+gracefully.
 """
 
 from __future__ import annotations
@@ -38,20 +44,8 @@ DEFAULT_PROMPT = (
 )
 DEFAULT_MAX_NEW_TOKENS = 256
 
-# Structured verification: ask for a strict JSON object so we parse fields
-# instead of keyword-matching prose. Used with json_mode=True.
-VERIFY_PROMPT = (
-    "You are a security camera verifier. Look at the image and respond with "
-    "ONLY a JSON object, no other text, of exactly this form:\n"
-    '{"person_present": true or false, '
-    '"confidence": a number from 0 to 1, '
-    '"description": "a short description of the scene"}\n'
-    "Set person_present to true only if a human is clearly visible."
-)
-VERIFY_MAX_NEW_TOKENS = 128
 
-
-def _extract_json(text: str) -> dict:
+def extract_json(text: str) -> dict:
     """
     Best-effort parse of a JSON object out of the model's output. Handles the
     common cases: pure JSON, JSON wrapped in ```json fences, or JSON embedded in
@@ -168,10 +162,10 @@ class VLMBackend:
         crashing.
         """
         # GenieX keeps conversation state + KV cache across generate() calls.
-        # Each verify/reason must be an independent single-turn inference, so
-        # clear the prior turn first — otherwise the previous image's state
-        # bleeds into this one and the same frame can classify differently
-        # ("VLM history shrank ... without reset()" warning). Guarded for SDK
+        # Each query must be an independent single-turn inference, so clear
+        # the prior turn first — otherwise the previous image's state bleeds
+        # into this one and the same frame can classify differently ("VLM
+        # history shrank ... without reset()" warning). Guarded for SDK
         # builds that lack reset().
         reset = getattr(self._model, "reset", None)
         if callable(reset):
@@ -259,73 +253,41 @@ class VLMBackend:
                 return {**self._unavailable(prompt), "available": True,
                         "error": f"reasoning failed: {e}"}
 
-    def verify(self, image_path: str) -> dict:
+    def structured_query(self, image_path: str, prompt: str,
+                          max_new_tokens: int = 128, **gen_kwargs) -> dict:
         """
-        Structured verification for the edge contract. Asks the VLM for a strict
-        JSON object and parses it — no brittle keyword matching on prose.
+        Ask the VLM a question and get back both the raw text and a best-effort
+        parsed JSON object. Apps supply their own prompt (asking for a strict
+        JSON reply) and read whatever fields they expect out of `parsed`.
 
         Returns (always, never raises for caller):
-            {"available": bool,
-             "person_present": bool|None,
-             "confidence": float|None,     # 0..1
-             "description": str|None,
-             "alert": str|None,
-             "raw_text": str|None,
-             "latency_s": float|None,
-             "profile": {...}|None,
-             "error": str|None}
+            {"available": bool, "text": str|None, "parsed": dict,
+             "latency_s": float|None, "profile": {...}|None, "error": str|None}
         """
         if not self.is_available():
-            u = self._unavailable(VERIFY_PROMPT)
-            return {
-                "available": False, "person_present": None, "confidence": None,
-                "description": None, "alert": None, "raw_text": None,
-                "latency_s": None, "profile": None, "error": u["error"],
-            }
+            u = self._unavailable(prompt)
+            return {**u, "parsed": {}}
 
         with self._lock:
             try:
-                # json_mode + low temperature => deterministic, parseable output.
-                result = self._generate(
-                    image_path, VERIFY_PROMPT, VERIFY_MAX_NEW_TOKENS,
-                    json_mode=True, temperature=0.1,
-                )
+                # json_mode + low temperature (passed via gen_kwargs by the
+                # caller) => deterministic, parseable output.
+                result = self._generate(image_path, prompt, max_new_tokens, **gen_kwargs)
             except Exception as e:
-                log.exception("VLM verify failed")
+                log.exception("VLM structured_query failed")
                 return {
-                    "available": True, "person_present": None, "confidence": None,
-                    "description": None, "alert": None, "raw_text": None,
+                    "available": True, "text": None, "parsed": {},
                     "latency_s": None, "profile": None,
-                    "error": f"verify failed: {e}",
+                    "error": f"structured_query failed: {e}",
                 }
 
-        parsed = _extract_json(result.get("text") or "")
-        person = parsed.get("person_present")
-        if isinstance(person, str):
-            person = person.strip().lower() in ("true", "yes", "1")
-        conf = parsed.get("confidence")
-        try:
-            conf = float(conf) if conf is not None else None
-        except (TypeError, ValueError):
-            conf = None
-        desc = parsed.get("description")
-
-        if person is True:
-            alert = "Person verified near camera"
-        elif person is False:
-            alert = "No person confirmed in frame"
-        else:
-            alert = "Verification inconclusive"
-
-        log.info("VLM verify (%.2fs): person=%s conf=%s",
-                 result.get("latency_s") or 0.0, person, conf)
+        parsed = extract_json(result.get("text") or "")
+        log.info("VLM structured_query (%.2fs): parsed=%s",
+                 result.get("latency_s") or 0.0, parsed)
         return {
             "available": True,
-            "person_present": person,
-            "confidence": conf,
-            "description": desc,
-            "alert": alert,
-            "raw_text": result.get("text"),
+            "text": result.get("text"),
+            "parsed": parsed,
             "latency_s": result.get("latency_s"),
             "profile": result.get("profile"),
             "error": None,

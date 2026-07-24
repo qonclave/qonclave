@@ -1,31 +1,17 @@
 """
-server.py — Qonclave hub HTTP server (app assembly).
+server.py — Qonclave hub entrypoint.
 
-Route groups live in separate blueprints:
-    edge_routes.py  ->  /edge/*   device-facing (Arduino UNO Q -> hub)
-    user_routes.py  ->  /user/*   human-facing (browser / operator)
+Wires the security app's Policy into the generic framework HTTP server and
+runs it. Route groups, transport, event store, and VLM plumbing all live in
+framework/; only the app choice (SecurityPolicy) and its static/ dir are
+specific to this deployment.
 
-This file wires them together and keeps the top-level /health probe.
-
-Endpoints:
-    GET  /health              liveness + VLM availability
-    GET  /                    redirects to /user/ (upload test page)
-
-    POST /edge/event          edge event JSON + frame -> verification response
-
-    GET  /user/dashboard      live dashboard page
-    GET  /user/events         recent events + results (JSON)
-    GET  /user/latest.jpg     most recent frame
-    GET  /user/frames/<name>  a specific stored frame
-    POST /user/reason         raw VLM tester
-    GET  /user/               upload test page
+Endpoints: see hub/framework/server.py create_app().
 
 Design goals:
     * Runs on ANY laptop (regular x86 Windows/Linux included). The reasoning
-      part is conditional — see hub/vlm_backend.py — so only that piece is
+      part is conditional — see hub/framework/vlm.py — so only that piece is
       Snapdragon-only. Everything else runs anywhere.
-    * Arduino UNO Q friendly: /edge/event accepts BOTH multipart form uploads
-      and raw image bodies.
     * Everything is logged to the terminal where the server runs.
 
 Run:
@@ -36,14 +22,15 @@ Run:
 
 from __future__ import annotations
 
-import logging
 import argparse
 import logging
 import os
+import sys
 
-from flask import Flask, jsonify, redirect, request
+# Make "import framework" / "import apps" work regardless of CWD.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# --- logging: everything to the terminal (configure before importing state) -
+# --- logging: everything to the terminal (configure before importing framework) -
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
@@ -51,42 +38,24 @@ logging.basicConfig(
 )
 log = logging.getLogger("qonclave.hub")
 
-import state  # noqa: E402  (shared config, VLM, event store)
-from edge_routes import edge_bp  # noqa: E402
-from user_routes import user_bp  # noqa: E402
+from framework.server import create_app  # noqa: E402
+from framework.vlm import VLMBackend  # noqa: E402
+from framework.mqtt_bus import MQTTBus  # noqa: E402
+from apps.security.policy import SecurityPolicy  # noqa: E402
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+STATIC_DIR = os.path.join(HERE, "apps", "security", "static")
 
-def create_app() -> Flask:
-    app = Flask(__name__, static_folder=None)
-    app.config["MAX_CONTENT_LENGTH"] = state.MAX_UPLOAD_MB * 1024 * 1024
+HOST = os.environ.get("QONCLAVE_HOST", "0.0.0.0")
+PORT = int(os.environ.get("QONCLAVE_PORT", "8000"))
+MQTT_HOST = os.environ.get("QONCLAVE_MQTT_HOST", "127.0.0.1")
+MQTT_PORT = int(os.environ.get("QONCLAVE_MQTT_PORT", "1883"))
+MQTT_ENABLED = os.environ.get("QONCLAVE_MQTT_ENABLED", "1") == "1"
 
-    app.register_blueprint(edge_bp)
-    app.register_blueprint(user_bp)
-
-    @app.get("/health")
-    def health():
-        # debug-level: the test pages poll this every 15s; don't spam the console
-        log.debug("GET /health from %s", request.remote_addr)
-        return jsonify({
-            "status": "ok",
-            "service": "qonclave-hub",
-            "time": state.now_iso(),
-            "vlm": state.vlm.status(),
-        })
-
-    @app.get("/")
-    def root():
-        return redirect("/user/", code=302)
-
-    @app.errorhandler(413)
-    def too_large(_e):
-        return jsonify({"ok": False,
-                        "error": f"upload exceeds {state.MAX_UPLOAD_MB} MB limit"}), 413
-
-    return app
-
-
-app = create_app()
+vlm = VLMBackend()
+mqtt = MQTTBus(host=MQTT_HOST, port=MQTT_PORT, enabled=MQTT_ENABLED)
+policy = SecurityPolicy(vlm)
+app = create_app(policy=policy, vlm=vlm, mqtt=mqtt, static_dir=STATIC_DIR)
 
 
 def main():
@@ -95,8 +64,8 @@ def main():
                         help="show per-request access logs (werkzeug). Off by "
                              "default so the dashboard's 2s polling doesn't flood "
                              "the console; our own event/alert logs always show.")
-    parser.add_argument("--host", default=state.HOST, help=f"bind address (default {state.HOST})")
-    parser.add_argument("--port", type=int, default=state.PORT, help=f"port (default {state.PORT})")
+    parser.add_argument("--host", default=HOST, help=f"bind address (default {HOST})")
+    parser.add_argument("--port", type=int, default=PORT, help=f"port (default {PORT})")
     args = parser.parse_args()
 
     # Quiet werkzeug's access log unless --verbose. Our qonclave.hub logs
@@ -108,13 +77,14 @@ def main():
 
     log.info("=" * 60)
     log.info("Qonclave hub starting on http://%s:%s", args.host, args.port)
-    log.info("Static dir : %s", state.STATIC_DIR)
-    log.info("Upload dir : %s", state.UPLOAD_DIR)
-    log.info("VLM status : %s", state.vlm.status())
+    log.info("App        : %s", policy.name)
+    log.info("Static dir : %s", STATIC_DIR)
+    log.info("VLM status : %s", vlm.status())
+    log.info("MQTT status: %s", mqtt.status())
     if os.environ.get("QONCLAVE_WARMUP") == "1":
         log.info("QONCLAVE_WARMUP=1 -> loading VLM model now...")
-        state.vlm.warmup()
-        log.info("VLM status after warmup: %s", state.vlm.status())
+        vlm.warmup()
+        log.info("VLM status after warmup: %s", vlm.status())
     log.info("Edge  : POST /edge/event")
     log.info("User  : GET /user/dashboard | GET /user/events | GET /user/latest.jpg")
     log.info("        GET /user/frames/<name> | POST /user/reason | GET /user/")
