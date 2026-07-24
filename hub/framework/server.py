@@ -10,10 +10,11 @@ Endpoints:
     GET  /health              liveness + VLM availability
     GET  /                    redirects to /user/dashboard
 
-    GET  /test/edge           edge-device simulator page (standalone, unlinked
-                               from the operator UI — visually distinct)
+    GET  /test/               redirects to /test/edge
+    GET  /test/edge           edge-device simulator page (visually distinct
+                               from the dashboard; linked from it as "Test")
     GET  /test/hub            hub-side MQTT console page (publish/observe any
-                               topic); links only to /test/edge, not /user/*
+                               topic); links to /test/edge
     POST /test/mqtt/publish   generic MQTT publish proxy (topic + JSON payload)
     GET  /test/mqtt/messages  recently received MQTT messages (polled by both
                                /test/* pages)
@@ -94,15 +95,19 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, static_dir: str) 
                         "error": f"upload exceeds {MAX_UPLOAD_MB} MB limit"}), 413
 
     # --- /test/*: standalone device simulator + MQTT console ---------------
+    @app.get("/test/")
+    @app.get("/test")
+    def test_index():
+        return redirect("/test/edge", code=302)
+
     @app.get("/test/edge")
     def edge_simulator():
-        # Deliberately not linked from /user/* — this simulates a device,
-        # it isn't part of the operator-facing app.
+        # Simulates a device; linked from the dashboard, but visually
+        # distinct (see the "Test" badge) so it reads as a dev tool.
         return send_from_directory(static_dir, "test_edge.html")
 
     @app.get("/test/hub")
     def hub_mqtt_console():
-        # Same isolation as /test/edge — links only to /test/edge, never /user/*.
         return send_from_directory(static_dir, "test_hub.html")
 
     @app.post("/test/mqtt/publish")
