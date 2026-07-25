@@ -51,6 +51,7 @@ GenieX SDK and `hub/requirements.txt`, then runs `hub/server.py`. It does
 **not** clone or pull the repo — that's on you, first.
 
 - Stop after installing, without starting the server: `.\scripts\setup_geniex.ps1 -NoRun`
+- By default, the heavy VLM model is pre-loaded into memory immediately upon startup. To launch the server faster and load the model lazily on the first request instead, use: `.\scripts\setup_geniex.ps1 -NoWarmup`
 - Pass server flags through: `.\scripts\setup_geniex.ps1 -- --verbose --port 8080`
 - Re-running is idempotent: existing Python/venv/deps are detected and reused
   or upgraded as needed.

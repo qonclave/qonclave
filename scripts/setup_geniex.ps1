@@ -1,4 +1,4 @@
-﻿<#
+<#
     setup_geniex.ps1  -  Snapdragon X (Windows ARM64) bootstrap for GenieX + hub
 
     Run this at the start of every fresh cloud session, from inside an already
@@ -25,12 +25,14 @@
         powershell -ExecutionPolicy Bypass -File .\scripts\setup_geniex.ps1
 
       -NoRun            stop after installing requirements; don't start the server
+      -NoWarmup         do not load the VLM model immediately upon server start
       -- a b c          extra args forwarded to hub/server.py, e.g.:
         .\scripts\setup_geniex.ps1 -- --verbose --port 8080
 #>
 
 param(
     [switch]$NoRun,
+    [switch]$NoWarmup,
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$ServerArgs
 )
@@ -278,6 +280,9 @@ if ($NoRun) {
 } else {
     Write-Step "Starting hub server"
     Write-Host "    (Ctrl+C to stop; pass server flags after -- e.g. --verbose --port 8080)"
+    if (-not $NoWarmup) {
+        $env:QONCLAVE_WARMUP = "1"
+    }
     Set-Location $RepoDir
     if ($ServerArgs) {
         & $VenvPython (Join-Path $RepoDir 'hub\server.py') @ServerArgs
