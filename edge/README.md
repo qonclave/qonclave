@@ -17,7 +17,13 @@ interface.
 
 ## Camera Source
 
-Controlled by `CAMERA_SOURCE`:
+Controlled by `CAMERA_SOURCE` — switching between USB and IP camera is purely a
+`CAMERA_SOURCE` change, no `app.yaml` edits needed. In both modes the app itself
+opens the camera (`V4LCamera` or `IPCamera`) and hands it to
+`VideoObjectDetection`, which captures from it and forwards frames to the
+detection runner; the runner never needs direct device access, so
+`app.yaml` declares `devices: [remote_camera_0]` on the `video_object_detection`
+brick unconditionally.
 
 | Var | Default | Meaning |
 |-----|---------|---------|
@@ -26,7 +32,16 @@ Controlled by `CAMERA_SOURCE`:
 ### USB (default)
 
 **Note:** This mode must be run in **Network Mode** in the Arduino App Lab, since it
-requires a USB-C hub and a USB camera. No other configuration needed.
+requires a USB-C hub and a USB camera.
+
+| Var | Default | Meaning |
+|-----|---------|---------|
+| `USB_CAMERA_DEVICE` | _(from `VIDEO_DEVICE`, else `0`)_ | USB camera index or `/dev/videoX` path. `arduino-app-cli` auto-detects a connected camera into `VIDEO_DEVICE`; only set this to override that. |
+
+Requires the camera to expose a `/dev/v4l/by-id/` udev entry (standard for real USB
+webcams). On hardware with no physical camera attached at all, this fails at
+startup with `CameraOpenError` rather than the CLI's pre-flight check — expected,
+since `app.yaml` no longer declares a hard physical-camera requirement.
 
 ### IP camera (optional)
 
@@ -35,21 +50,6 @@ requires a USB-C hub and a USB camera. No other configuration needed.
 2. Note the stream URL it shows, typically `http://<phone-ip>:8080/video`.
 3. Set `CAMERA_SOURCE=ip`, `IP_CAMERA_URL` (and `IP_CAMERA_USERNAME` /
    `IP_CAMERA_PASSWORD` if the app's stream is password-protected) as below.
-4. **Also required:** add a `devices: [remote_camera_0]` entry under this app's
-   `arduino:video_object_detection` brick in `app.yaml`:
-   ```yaml
-   bricks:
-   - arduino:video_object_detection:
-       devices:
-       - remote_camera_0
-   - arduino:web_ui: {}
-   ```
-   This is unfortunately not something `CAMERA_SOURCE` alone can control: on `app
-   start`, the CLI checks `app.yaml` for a physical camera *before* the Python app
-   (and its env vars) ever runs, and fails with `No Camera Device Found` if none is
-   attached. Declaring `remote_camera_0` tells it the camera is supplied by the app
-   itself (over the network) instead of requiring physical hardware. Leave this out
-   for USB mode so the CLI keeps requiring — and mounting — a real camera device.
 
 | Var | Default | Meaning |
 |-----|---------|---------|
@@ -103,8 +103,8 @@ App Lab):
 1. USB mode (default): connect the USB-C hub to the UNO Q and the USB camera, then
    attach the external power supply.
    ![Hardware setup](assets/docs_assets/hardware-setup.png)
-   IP camera mode: start the IP-camera app on the phone and configure `CAMERA_SOURCE`
-   / `IP_CAMERA_URL` + `app.yaml` as described in Camera Source above.
+   IP camera mode: start the IP-camera app on the phone and set `CAMERA_SOURCE=ip` /
+   `IP_CAMERA_URL` as described in Camera Source above.
 2. Run the App.
    ![Arduino App Lab - Run App](assets/docs_assets/launch-app.png)
 3. The App should open automatically in the web browser. You can open it manually via `<board-name>.local:7000`.

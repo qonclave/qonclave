@@ -13,17 +13,20 @@ import requests
 from arduino.app_utils import App, Logger
 from arduino.app_bricks.web_ui import WebUI
 from arduino.app_bricks.video_objectdetection import VideoObjectDetection
-from arduino.app_peripherals.camera import IPCamera
+from arduino.app_peripherals.camera import IPCamera, V4LCamera
 
 log = Logger("qonclave.edge")
 
 # --- Camera source: USB webcam by default, or an Android IP-camera app ---
-# (e.g. "IP Webcam") when CAMERA_SOURCE=ip. Switching to "ip" also requires
-# adding `devices: [remote_camera_0]` under this app's video_object_detection
-# brick in app.yaml -- see edge/README.md.
+# (e.g. "IP Webcam") when CAMERA_SOURCE=ip. Both paths construct the camera
+# ourselves and hand it to VideoObjectDetection, which captures from it and
+# forwards frames to the detection runner -- so app.yaml's
+# `devices: [remote_camera_0]` on the video_object_detection brick stays the
+# same for either mode (the runner never needs direct device access; the USB
+# device itself is opened here, in the main container, which always has /dev
+# access).
 CAMERA_SOURCE = os.environ.get("CAMERA_SOURCE", "usb").strip().lower()
 
-camera = None
 if CAMERA_SOURCE == "ip":
   IP_CAMERA_URL = os.environ.get("IP_CAMERA_URL", "http://192.168.18.65:8080/video")
   IP_CAMERA_USERNAME = os.environ.get("IP_CAMERA_USERNAME") or None
@@ -31,6 +34,11 @@ if CAMERA_SOURCE == "ip":
   IP_CAMERA_FPS = int(os.environ.get("IP_CAMERA_FPS", "10"))
   camera = IPCamera(url=IP_CAMERA_URL, username=IP_CAMERA_USERNAME,
                     password=IP_CAMERA_PASSWORD, fps=IP_CAMERA_FPS)
+else:
+  # VIDEO_DEVICE is set by arduino-app-cli when it detects a local USB
+  # camera; USB_CAMERA_DEVICE lets that be overridden explicitly.
+  USB_CAMERA_DEVICE = os.environ.get("USB_CAMERA_DEVICE") or os.environ.get("VIDEO_DEVICE", 0)
+  camera = V4LCamera(device=USB_CAMERA_DEVICE)
 
 ui = WebUI()
 detection_stream = VideoObjectDetection(camera, confidence=0.5, debounce_sec=0.0, camera_preview=True)
