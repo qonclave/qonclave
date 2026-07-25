@@ -35,3 +35,6 @@ tmp/
 
 # Hub runtime uploads
 hub/uploads/
+
+# Arduino App Lab build output
+.cache/

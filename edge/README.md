@@ -1,12 +1,62 @@
 # Detect Objects on Camera
 
-The **Detect Objects on Camera** example lets you detect objects on a live feed from a USB camera and visualize bounding boxes around the detections in real-time.
+The **Detect Objects on Camera** example lets you detect objects on a live feed and visualize bounding boxes around the detections in real-time.
 
-**Note:** This example must be run in **Network Mode** in the Arduino App Lab, since it requires a USB-C hub and a USB camera.
+By default the video source is a **USB camera** (the original behavior). Optionally,
+it can instead pull its feed from an **Android phone running an IP-camera app**
+(e.g. "IP Webcam" by Pavel Khlebovich) over the network, for testing without a USB
+camera attached.
 
 ![Detect Objects on Camera](assets/docs_assets/video-object-detection.png)
 
-This example uses a pre-trained model to detect objects on a live video feed from a camera. The workflow involves continuously getting the frames from a USB camera, processing it through an AI model using the `video_objectdetection` Brick, and displaying the bounding boxes around detections. The App is managed from an interactive web interface.
+This example uses a pre-trained model to detect objects on a live video feed. The
+workflow involves continuously getting frames from the camera, processing them
+through an AI model using the `video_objectdetection` Brick, and displaying the
+bounding boxes around detections. The App is managed from an interactive web
+interface.
+
+## Camera Source
+
+Controlled by `CAMERA_SOURCE`:
+
+| Var | Default | Meaning |
+|-----|---------|---------|
+| `CAMERA_SOURCE` | `usb` | `usb` for a physically-connected USB camera, or `ip` for an Android IP-camera stream |
+
+### USB (default)
+
+**Note:** This mode must be run in **Network Mode** in the Arduino App Lab, since it
+requires a USB-C hub and a USB camera. No other configuration needed.
+
+### IP camera (optional)
+
+1. On the Android phone, install an IP-camera app (e.g. "IP Webcam") and start its
+   server. Make sure the phone is on the **same network** as the board.
+2. Note the stream URL it shows, typically `http://<phone-ip>:8080/video`.
+3. Set `CAMERA_SOURCE=ip`, `IP_CAMERA_URL` (and `IP_CAMERA_USERNAME` /
+   `IP_CAMERA_PASSWORD` if the app's stream is password-protected) as below.
+4. **Also required:** add a `devices: [remote_camera_0]` entry under this app's
+   `arduino:video_object_detection` brick in `app.yaml`:
+   ```yaml
+   bricks:
+   - arduino:video_object_detection:
+       devices:
+       - remote_camera_0
+   - arduino:web_ui: {}
+   ```
+   This is unfortunately not something `CAMERA_SOURCE` alone can control: on `app
+   start`, the CLI checks `app.yaml` for a physical camera *before* the Python app
+   (and its env vars) ever runs, and fails with `No Camera Device Found` if none is
+   attached. Declaring `remote_camera_0` tells it the camera is supplied by the app
+   itself (over the network) instead of requiring physical hardware. Leave this out
+   for USB mode so the CLI keeps requiring — and mounting — a real camera device.
+
+| Var | Default | Meaning |
+|-----|---------|---------|
+| `IP_CAMERA_URL` | `http://192.168.18.65:8080/video` | IP camera stream URL (RTSP/HTTP/HTTPS) |
+| `IP_CAMERA_USERNAME` | _(none)_ | Optional stream auth username |
+| `IP_CAMERA_PASSWORD` | _(none)_ | Optional stream auth password |
+| `IP_CAMERA_FPS` | `10` | Frames per second to pull from the stream |
 
 ## Brick Used
 
@@ -15,14 +65,33 @@ The example uses the following Bricks:
 - `web_ui`: Brick to create a web interface to display the classification results and model controls.
 - `video_objectdetection`: Brick to classify objects within a live video feed from a camera.
 
+## Qonclave Hub Event Forwarding
+
+When a `person` is detected with confidence above a configurable threshold, this app
+POSTs the detection frame + event metadata to the Qonclave hub's `/edge/event`
+endpoint (see `hub/README.md`), so the hub can run its own heavier verification. A
+hysteresis window prevents re-sending on every frame while a person stays in view.
+
+Configurable via environment variables (set as Brick Configuration / env vars in
+App Lab):
+
+| Var | Default | Meaning |
+|-----|---------|---------|
+| `DEVICE_ID` | `unoq-01` | Identifier sent as `device_id` in the event |
+| `HUB_IP` | `192.168.18.62` | Hub's IP address |
+| `HUB_PORT` | `8000` | Hub's HTTP port |
+| `PERSON_CONFIDENCE_THRESHOLD` | `0.7` | Minimum person-detection confidence (0-1) to trigger an event |
+| `HUB_EVENT_HYSTERESIS_SEC` | `10` | Minimum seconds between two hub events |
+| `HUB_EVENT_TIMEOUT_SEC` | `5` | HTTP request timeout when posting to the hub |
+
 ## Hardware and Software Requirements
 
 ### Hardware
 
 - [Arduino® UNO Q](https://store.arduino.cc/products/uno-q) or Arduino VENTUNO Q
-- USB camera (x1)
-- USB-C® hub adapter with external power (x1) _(only for UNO Q)_
-- A power supply (5 V, 3 A) for the USB hub (e.g. a phone charger) _(only for UNO Q)_
+- USB camera (x1) — _or_ an Android phone running an IP-camera app on the same network (see Camera Source above)
+- USB-C® hub adapter with external power (x1) _(only for UNO Q, only in USB camera mode)_
+- A power supply (5 V, 3 A) for the USB hub (e.g. a phone charger) _(only for UNO Q, only in USB camera mode)_
 - Personal computer with internet access
 
 ### Software
@@ -31,13 +100,15 @@ The example uses the following Bricks:
 
 ## How to Use the Example
 
-1. Connect the USB-C hub to the UNO Q and the USB camera.
+1. USB mode (default): connect the USB-C hub to the UNO Q and the USB camera, then
+   attach the external power supply.
    ![Hardware setup](assets/docs_assets/hardware-setup.png)
-2. Attach the external power supply to the USB-C hub to power everything.
-3. Run the App.
+   IP camera mode: start the IP-camera app on the phone and configure `CAMERA_SOURCE`
+   / `IP_CAMERA_URL` + `app.yaml` as described in Camera Source above.
+2. Run the App.
    ![Arduino App Lab - Run App](assets/docs_assets/launch-app.png)
-4. The App should open automatically in the web browser. You can open it manually via `<board-name>.local:7000`.
-5. Position any object in front of the camera and watch as the App detects and recognizes them.
+3. The App should open automatically in the web browser. You can open it manually via `<board-name>.local:7000`.
+4. Position any object in front of the camera and watch as the App detects and recognizes them.
 
 Try with one of the following objects for a special reaction:
 
