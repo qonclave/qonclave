@@ -97,7 +97,7 @@ App Lab):
 |-----|---------|---------|
 | `DEVICE_ID` | `unoq-01` | Identifier sent as `device_id` in the event |
 | `HUB_MDNS_NAME` | `qonclave-hub.local` | mDNS ZeroConf hostname for automatic Hub LAN discovery |
-| `HUB_IP` | `192.168.18.62` | Hub's fallback IP address if mDNS fails |
+| `HUB_IP` | `192.168.50.207` | Hub's fallback IP address if mDNS fails |
 | `HUB_PORT` | `8000` | Hub's HTTP port |
 | `PERSON_CONFIDENCE_THRESHOLD` | `0.7` | Minimum person-detection confidence (0-1) to trigger an event |
 | `HUB_EVENT_HYSTERESIS_SEC` | `10` | Minimum seconds between two hub events |

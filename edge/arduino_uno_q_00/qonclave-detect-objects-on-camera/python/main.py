@@ -23,7 +23,7 @@ log = Logger("qonclave.edge")
 
 DEVICE_ID = os.environ.get("DEVICE_ID", "unoq-01")
 HUB_MDNS_NAME = os.environ.get("HUB_MDNS_NAME", "qonclave-hub.local").strip()
-HUB_IP = os.environ.get("HUB_IP", "192.168.18.68").strip()
+HUB_IP = os.environ.get("HUB_IP", "192.168.50.207").strip()
 HUB_PORT = int(os.environ.get("HUB_PORT", "8000"))
 TTL_SECONDS = 1800.0  # 30 minutes
 
