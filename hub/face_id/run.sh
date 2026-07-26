@@ -12,11 +12,16 @@ cd "$SCRIPT_DIR"
 
 # ── Install dependencies ──────────────────────────────────────────────────────
 echo "Checking dependencies..."
-# mediapipe --no-deps: skips opencv-contrib which is only needed for the
-# legacy mp.solutions API — we use mp.tasks which has no cv2 dependency
-pip install --quiet numpy
+
+# opencv-python-headless: available on Linux x86 and macOS via pip
+# (on Windows ARM64 use run.ps1 which installs from local wheel)
+pip install --quiet opencv-python-headless
 pip install --quiet mediapipe --no-deps
-pip install --quiet "qai-hub-models[cavaface]" pillow
+pip install --quiet torch torchvision pillow numpy
+# qai-hub-models: only needed for the model wrapper; cv2 already satisfied above
+pip install --quiet "qai-hub-models[cavaface]"
+
+echo "Dependencies ready."
 
 # ── Parse mode ────────────────────────────────────────────────────────────────
 MODE="${1:-help}"

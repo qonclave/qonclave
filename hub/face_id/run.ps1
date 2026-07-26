@@ -1,30 +1,50 @@
 # Face identification pipeline — Windows (x86 and ARM64/WoS)
 # Usage:
-#   .\run.ps1 compare  image1.jpg image2.jpg
-#   .\run.ps1 identify unknown.jpg
-#   .\run.ps1 benchmark image.jpg
+#   .\run.ps1 compare  -Image1 a.jpg -Image2 b.jpg
+#   .\run.ps1 identify -Image unknown.jpg
+#   .\run.ps1 benchmark -Image photo.jpg
 
 param(
-    [string]$Mode = "help",
+    [string]$Mode   = "help",
     [string]$Image1 = "",
     [string]$Image2 = "",
     [string]$Image  = ""
 )
 
+$ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ScriptDir
 
-# ── Install dependencies ──────────────────────────────────────────────────────
+# ── Install opencv: platform-aware ───────────────────────────────────────────
 Write-Host "Checking dependencies..." -ForegroundColor Cyan
-# mediapipe --no-deps: skips opencv-contrib which is only needed for the
-# legacy mp.solutions API — we use mp.tasks which has no cv2 dependency
-pip install --quiet numpy
-pip install --quiet mediapipe --no-deps
-pip install --quiet "qai-hub-models[cavaface]" pillow
+
+$arch = $env:PROCESSOR_ARCHITECTURE   # ARM64 on WoS, AMD64 on x86
+
+if ($arch -eq "ARM64") {
+    # No pip wheel exists for Windows ARM64 — install from pre-built local wheel
+    $wheel = Get-ChildItem "$ScriptDir\wheels" -Filter "opencv_python_headless-*-win_arm64.whl" |
+             Sort-Object Name -Descending | Select-Object -First 1
+    if (-not $wheel) {
+        Write-Host "[ERROR] No ARM64 opencv wheel found in wheels\ folder." -ForegroundColor Red
+        Write-Host "        Run build_opencv_arm64.ps1 first to build it." -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "  Installing opencv from local wheel: $($wheel.Name)" -ForegroundColor Cyan
+    pip install $wheel.FullName --quiet
+} else {
+    # Windows x86/x64 — standard pip wheel available
+    pip install opencv-python-headless --quiet
+}
+
+# mediapipe --no-deps: skips opencv-contrib (not needed for mp.tasks API)
+pip install mediapipe --no-deps --quiet
+pip install torch torchvision pillow numpy --quiet
+pip install "qai-hub-models[cavaface]" --quiet
 if ($LASTEXITCODE -ne 0) {
     Write-Host "pip install failed. Make sure Python is in PATH." -ForegroundColor Red
     exit 1
 }
+Write-Host "Dependencies ready." -ForegroundColor Green
 
 # ── Parse mode ────────────────────────────────────────────────────────────────
 switch ($Mode.ToLower()) {
@@ -63,6 +83,8 @@ switch ($Mode.ToLower()) {
         Write-Host "known_faces\ folder:"
         Write-Host "  Put one reference image per person, named as the person's name."
         Write-Host "  Example: known_faces\john_doe.jpg"
+        Write-Host ""
+        Write-Host "Platform: $arch"
         Write-Host ""
     }
 }
