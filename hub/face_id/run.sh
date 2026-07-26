@@ -13,13 +13,11 @@ cd "$SCRIPT_DIR"
 # ── Install dependencies ──────────────────────────────────────────────────────
 echo "Checking dependencies..."
 
-# opencv-python-headless: available on Linux x86 and macOS via pip
-# (on Windows ARM64 use run.ps1 which installs from local wheel)
+# Install opencv-headless FIRST so qai-hub-models sees cv2 already satisfied
+# and skips pulling opencv-contrib (which has no ARM64 wheel)
 pip install --quiet opencv-python-headless
 pip install --quiet mediapipe --no-deps
-pip install --quiet torch torchvision pillow numpy
-# qai-hub-models: only needed for the model wrapper; cv2 already satisfied above
-pip install --quiet "qai-hub-models[cavaface]"
+pip install --quiet "qai-hub-models[cavaface]" pillow numpy
 
 echo "Dependencies ready."
 

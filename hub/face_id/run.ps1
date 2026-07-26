@@ -38,8 +38,8 @@ if ($arch -eq "ARM64") {
 
 # mediapipe --no-deps: skips opencv-contrib (not needed for mp.tasks API)
 pip install mediapipe --no-deps --quiet
-pip install torch torchvision pillow numpy --quiet
-pip install "qai-hub-models[cavaface]" --quiet
+# qai-hub-models AFTER opencv so pip sees cv2 already satisfied and skips opencv-contrib
+pip install "qai-hub-models[cavaface]" pillow numpy --quiet
 if ($LASTEXITCODE -ne 0) {
     Write-Host "pip install failed. Make sure Python is in PATH." -ForegroundColor Red
     exit 1

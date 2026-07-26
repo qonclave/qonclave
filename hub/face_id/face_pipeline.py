@@ -25,53 +25,18 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-# ── CavaFace model (pure PyTorch, no cv2) ────────────────────────────────────
-
-CAVAFACE_WEIGHTS_URL = (
-    "https://qaihub-public-assets.s3.us-west-2.amazonaws.com/"
-    "qai-hub-models/models/cavaface/v2/IR_SE_100_Combined_Epoch_24.pth"
-)
-CAVAFACE_WEIGHTS_PATH = Path.home() / ".qaihm" / "cavaface" / "IR_SE_100_Combined_Epoch_24.pth"
-
-
-def _download_weights():
-    if CAVAFACE_WEIGHTS_PATH.exists():
-        return
-    CAVAFACE_WEIGHTS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    print(f"Downloading CavaFace weights (~263MB) to {CAVAFACE_WEIGHTS_PATH} ...")
-    urllib.request.urlretrieve(CAVAFACE_WEIGHTS_URL, CAVAFACE_WEIGHTS_PATH)
-    print("Download complete.")
-
+# ── CavaFace (via qai-hub-models) ─────────────────────────────────────────────
 
 def _build_cavaface():
-    import torch
+    from qai_hub_models.models.cavaface.model import CavaFace
+    from qai_hub_models.models.cavaface.app import CavaFaceApp
 
-    _download_weights()
-    net = torch.jit.load(str(CAVAFACE_WEIGHTS_PATH), map_location="cpu")
-    net.eval()
-    return net
+    model = CavaFace.from_pretrained()
+    return CavaFaceApp(model, input_height=112, input_width=112)
 
 
-def _get_embedding_from_face(model, face_img: "Image.Image") -> np.ndarray:
-    """Run CavaFace on a 112x112 PIL image, return 512-dim unit embedding."""
-    import torch
-
-    face = face_img.convert("RGB").resize((112, 112), Image.LANCZOS)
-    arr = np.array(face, dtype=np.float32) / 255.0
-    tensor = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0)  # [1,3,112,112]
-
-    # Normalize to [-1, 1] (CavaFace convention)
-    tensor = (tensor * 255.0 - 127.5) / 128.0
-
-    with torch.no_grad():
-        emb = model(tensor)[0]
-        # Also run on flipped image and average (improves accuracy)
-        emb_flip = model(tensor.flip(3))[0]
-        emb = (emb + emb_flip) / 2
-        norm = torch.norm(emb, dim=1, keepdim=True) + 1e-9
-        emb = emb / norm
-
-    return emb.squeeze().numpy()
+def _get_embedding(app, face_img: Image.Image) -> np.ndarray:
+    return app.predict_features(face_img.convert("RGB").resize((112, 112), Image.LANCZOS), use_flip=True)
 
 
 # ── MediaPipe face detector ───────────────────────────────────────────────────
@@ -85,7 +50,7 @@ MEDIAPIPE_MODEL_PATH = Path(__file__).parent / "face_detector.tflite"
 
 def _ensure_mp_model():
     if not MEDIAPIPE_MODEL_PATH.exists():
-        print(f"Downloading MediaPipe face detector (~228KB)...")
+        print("Downloading MediaPipe face detector (~228KB)...")
         urllib.request.urlretrieve(MEDIAPIPE_MODEL_URL, MEDIAPIPE_MODEL_PATH)
 
 
@@ -102,8 +67,7 @@ def _build_detector():
     return FaceDetector.create_from_options(options)
 
 
-def detect_and_crop_face(detector, pil_img: "Image.Image", padding: float = 0.3) -> "Image.Image | None":
-    """Detect highest-confidence face, return 112x112 crop or None."""
+def detect_and_crop_face(detector, pil_img: Image.Image, padding: float = 0.3) -> "Image.Image | None":
     import mediapipe as mp
 
     rgb = pil_img.convert("RGB")
@@ -129,39 +93,39 @@ def detect_and_crop_face(detector, pil_img: "Image.Image", padding: float = 0.3)
 
 # ── Full pipeline ─────────────────────────────────────────────────────────────
 
-def get_embedding(detector, model, image_path: str) -> "np.ndarray | None":
+THRESHOLD = 0.3
+
+
+def get_embedding(detector, app, image_path: str) -> "np.ndarray | None":
     img = Image.open(image_path)
     face = detect_and_crop_face(detector, img)
     if face is None:
         print(f"  [!] No face detected in {image_path}")
         return None
-    return _get_embedding_from_face(model, face)
+    return _get_embedding(app, face)
 
 
 # ── Modes ─────────────────────────────────────────────────────────────────────
 
-THRESHOLD = 0.3  # cosine similarity threshold for CavaFace
-
-
-def mode_compare(detector, model, image1: str, image2: str):
+def mode_compare(detector, app, image1: str, image2: str):
     print(f"\nComparing:\n  A: {image1}\n  B: {image2}\n")
     t0 = time.time()
-    e1 = get_embedding(detector, model, image1)
-    e2 = get_embedding(detector, model, image2)
+    e1 = get_embedding(detector, app, image1)
+    e2 = get_embedding(detector, app, image2)
     elapsed = (time.time() - t0) * 1000
 
     if e1 is None or e2 is None:
-        print("Cannot compare — face not detected in one or both images.")
+        print("Cannot compare - face not detected in one or both images.")
         return
 
     sim = float(np.dot(e1, e2))
-    label = "SAME PERSON ✓" if sim > THRESHOLD else "different person ✗"
+    label = "SAME PERSON" if sim > THRESHOLD else "different person"
     print(f"Similarity : {sim * 100:.1f}%")
     print(f"Result     : {label}  (threshold={THRESHOLD*100:.0f}%)")
     print(f"Time       : {elapsed:.0f}ms")
 
 
-def mode_identify(detector, model, unknown_path: str, db_dir: str):
+def mode_identify(detector, app, unknown_path: str, db_dir: str):
     db = Path(db_dir)
     exts = {".jpg", ".jpeg", ".png", ".webp"}
 
@@ -170,18 +134,17 @@ def mode_identify(detector, model, unknown_path: str, db_dir: str):
     for img_path in sorted(db.rglob("*")):
         if img_path.suffix.lower() not in exts:
             continue
-        name = img_path.stem
-        emb = get_embedding(detector, model, str(img_path))
+        emb = get_embedding(detector, app, str(img_path))
         if emb is not None:
-            known[name] = emb
-            print(f"  enrolled: {name}")
+            known[img_path.stem] = emb
+            print(f"  enrolled: {img_path.stem}")
 
     if not known:
-        print("No faces enrolled — check db path and image files.")
+        print("No faces enrolled - check db path and image files.")
         return
 
     print(f"\nIdentifying: {unknown_path}")
-    unknown_emb = get_embedding(detector, model, unknown_path)
+    unknown_emb = get_embedding(detector, app, unknown_path)
     if unknown_emb is None:
         return
 
@@ -196,20 +159,19 @@ def mode_identify(detector, model, unknown_path: str, db_dir: str):
 
     print()
     if best_score > THRESHOLD:
-        print(f"Identified as : {best_name}  ({best_score*100:.1f}% similarity)")
+        print(f"Identified as : {best_name}  ({best_score*100:.1f}%)")
     else:
-        print(f"Unknown person  (best match '{best_name}' only {best_score*100:.1f}%)")
+        print(f"Unknown person  (best '{best_name}' only {best_score*100:.1f}%)")
 
 
-def mode_benchmark(detector, model, image_path: str, runs: int = 20):
+def mode_benchmark(detector, app, image_path: str, runs: int = 20):
     img = Image.open(image_path)
     face = detect_and_crop_face(detector, img)
     if face is None:
         print("No face detected.")
         return
 
-    # Warmup
-    _get_embedding_from_face(model, face)
+    _get_embedding(app, face)  # warmup
 
     times_det, times_emb = [], []
     for _ in range(runs):
@@ -218,7 +180,7 @@ def mode_benchmark(detector, model, image_path: str, runs: int = 20):
         times_det.append((time.time() - t0) * 1000)
 
         t0 = time.time()
-        _get_embedding_from_face(model, face)
+        _get_embedding(app, face)
         times_emb.append((time.time() - t0) * 1000)
 
     total = [d + e for d, e in zip(times_det, times_emb)]
@@ -243,13 +205,12 @@ def main():
 
     p = sub.add_parser("identify",  help="Identify face against a database folder")
     p.add_argument("image")
-    p.add_argument("--db", required=True, help="Folder of known face images (name.jpg)")
+    p.add_argument("--db", required=True)
 
     p = sub.add_parser("benchmark", help="Benchmark end-to-end latency")
     p.add_argument("image")
     p.add_argument("--runs", type=int, default=20)
 
-    # Shorthand flags on root parser
     parser.add_argument("--image1")
     parser.add_argument("--image2")
     parser.add_argument("--identify")
@@ -261,15 +222,15 @@ def main():
     print("Loading models...")
     t0 = time.time()
     detector = _build_detector()
-    model    = _build_cavaface()
+    app      = _build_cavaface()
     print(f"Ready in {time.time()-t0:.1f}s\n")
 
     if args.mode == "compare" or (args.image1 and args.image2):
-        mode_compare(detector, model, args.image1, args.image2)
+        mode_compare(detector, app, args.image1, args.image2)
     elif args.mode == "identify" or args.identify:
-        mode_identify(detector, model, args.identify or args.image, args.db)
+        mode_identify(detector, app, args.identify or args.image, args.db)
     elif args.mode == "benchmark":
-        mode_benchmark(detector, model, args.image, args.runs)
+        mode_benchmark(detector, app, args.image, args.runs)
     else:
         parser.print_help()
 
