@@ -12,6 +12,8 @@ cd "$SCRIPT_DIR"
 
 # ── Install dependencies ──────────────────────────────────────────────────────
 echo "Checking dependencies..."
+# Install opencv-headless first so mediapipe doesn't pull in opencv-contrib (GUI libs)
+pip install --quiet opencv-python-headless
 pip install --quiet mediapipe "qai-hub-models[cavaface]" pillow numpy
 
 # ── Parse mode ────────────────────────────────────────────────────────────────

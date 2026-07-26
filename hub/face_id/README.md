@@ -16,6 +16,9 @@ chmod +x run.sh
 ./run.sh
 ```
 
+> **Note:** `opencv-python-headless` is installed first to prevent mediapipe
+> from pulling in `opencv-contrib-python` (full GUI build, ~90MB, not needed).
+
 ## Add known faces
 
 Drop one clear face photo per person into `known_faces/`, named as the person:

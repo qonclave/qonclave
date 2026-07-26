@@ -16,6 +16,8 @@ Set-Location $ScriptDir
 
 # ── Install dependencies ──────────────────────────────────────────────────────
 Write-Host "Checking dependencies..." -ForegroundColor Cyan
+# Install opencv-headless first so mediapipe doesn't pull in opencv-contrib (GUI libs)
+pip install --quiet opencv-python-headless
 pip install --quiet mediapipe "qai-hub-models[cavaface]" pillow numpy
 if ($LASTEXITCODE -ne 0) {
     Write-Host "pip install failed. Make sure Python is in PATH." -ForegroundColor Red
