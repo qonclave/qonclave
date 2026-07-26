@@ -15,13 +15,15 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ScriptDir
 
-# ── Install opencv: platform-aware ───────────────────────────────────────────
+# ── Install dependencies: platform-aware opencv, then qai-hub-models ─────────
 Write-Host "Checking dependencies..." -ForegroundColor Cyan
 
 $arch = $env:PROCESSOR_ARCHITECTURE   # ARM64 on WoS, AMD64 on x86
 
 if ($arch -eq "ARM64") {
-    # No pip wheel exists for Windows ARM64 — install from pre-built local wheel
+    # No pip wheel for Windows ARM64 — install from pre-built local wheel.
+    # Must be done BEFORE qai-hub-models so constraints.txt can redirect
+    # any remaining opencv-python requests to this already-installed headless build.
     $wheel = Get-ChildItem "$ScriptDir\wheels" -Filter "opencv_python_headless-*-win_arm64.whl" |
              Sort-Object Name -Descending | Select-Object -First 1
     if (-not $wheel) {
@@ -31,15 +33,13 @@ if ($arch -eq "ARM64") {
     }
     Write-Host "  Installing opencv from local wheel: $($wheel.Name)" -ForegroundColor Cyan
     pip install $wheel.FullName --quiet
-} else {
-    # Windows x86/x64 — standard pip wheel available
-    pip install opencv-python-headless --quiet
 }
 
 # mediapipe --no-deps: skips opencv-contrib (not needed for mp.tasks API)
 pip install mediapipe --no-deps --quiet
-# qai-hub-models AFTER opencv so pip sees cv2 already satisfied and skips opencv-contrib
-pip install "qai-hub-models[cavaface]" pillow numpy --quiet
+# constraints.txt pins opencv-python-headless so pip uses it instead of
+# opencv-python (no ARM64 Windows wheel) when resolving qai-hub-models deps
+pip install "qai-hub-models[cavaface]" pillow numpy --quiet -c "$ScriptDir\constraints.txt"
 if ($LASTEXITCODE -ne 0) {
     Write-Host "pip install failed. Make sure Python is in PATH." -ForegroundColor Red
     exit 1

@@ -13,11 +13,10 @@ cd "$SCRIPT_DIR"
 # ── Install dependencies ──────────────────────────────────────────────────────
 echo "Checking dependencies..."
 
-# Install opencv-headless FIRST so qai-hub-models sees cv2 already satisfied
-# and skips pulling opencv-contrib (which has no ARM64 wheel)
-pip install --quiet opencv-python-headless
+# constraints.txt pins opencv-python-headless so pip uses it instead of
+# opencv-python (no ARM64 Windows wheel) when resolving qai-hub-models deps
 pip install --quiet mediapipe --no-deps
-pip install --quiet "qai-hub-models[cavaface]" pillow numpy
+pip install --quiet "qai-hub-models[cavaface]" pillow numpy -c constraints.txt
 
 echo "Dependencies ready."
 
