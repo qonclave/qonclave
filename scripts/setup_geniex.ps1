@@ -10,6 +10,7 @@
 
     What it does:
       1. Installs Git CLI (via winget) if missing.
+         Installs Node.js + Claude CLI (via npm) if missing.
       2. Ensures ARM64 Python 3.13.3 exists (per https://geniex.aihub.qualcomm.com/en/run/python/install).
          Version-agnostic to whatever is already on the box: an older Python
          (e.g. 3.9), a newer one, or an x64 build is ignored (never reused,
@@ -119,7 +120,38 @@ if (Get-Command git -ErrorAction SilentlyContinue) {
     else { throw "git install did not surface on PATH. Open a new shell and re-run." }
 }
 
-# --- 2. ARM64 Python (exact required version) ------------------------------
+# --- 1b. Claude CLI -----------------------------------------------------------
+Write-Step "Ensuring Claude CLI is installed"
+if (Get-Command claude -ErrorAction SilentlyContinue) {
+    Write-Ok "claude already present: $(claude --version 2>&1)"
+} else {
+    Write-Host "    Installing Claude CLI via npm..."
+    # Ensure Node.js is available (required for npm)
+    if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+        Write-Host "    Node.js not found - installing via winget..."
+        try {
+            winget install --id OpenJS.NodeJS.LTS -e --source winget --accept-package-agreements --accept-source-agreements
+            $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
+                        [System.Environment]::GetEnvironmentVariable('Path','User')
+        } catch {
+            throw "Failed to install Node.js. Install it manually from https://nodejs.org and re-run."
+        }
+    }
+    if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+        throw "npm not found after Node.js install. Open a new PowerShell window and re-run."
+    }
+    npm install -g @anthropic-ai/claude-code
+    if ($LASTEXITCODE -ne 0) { throw "Claude CLI install failed." }
+    $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
+                [System.Environment]::GetEnvironmentVariable('Path','User')
+    if (Get-Command claude -ErrorAction SilentlyContinue) {
+        Write-Ok "Claude CLI installed: $(claude --version 2>&1)"
+    } else {
+        Write-Warn "Claude CLI installed but not yet on PATH. Open a new shell to use it."
+    }
+}
+
+
 Write-Step "Ensuring ARM64 Python $PythonVersion is installed"
 
 function Test-ArmPython($exe) {
