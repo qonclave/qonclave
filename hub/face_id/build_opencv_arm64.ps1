@@ -1,7 +1,8 @@
 # build_opencv_arm64.ps1
 # Builds opencv-python from source for Windows ARM64 (Snapdragon X / WoS)
 #
-# Auto-installs prerequisites if missing:
+# Fully self-bootstrapping — installs everything it needs:
+#   - winget       (via MSIX bootstrap if missing — needs elevation once)
 #   - Git          (via winget)
 #   - CMake        (via winget)
 #   - Python 3.12 ARM64 (downloaded from python.org)
@@ -47,13 +48,36 @@ function Install-Winget {
     Ok "$label installed"
 }
 
+function Install-Winget-Bootstrap {
+    # winget is part of "App Installer" — download and install it via MSIX
+    Info "winget not found — bootstrapping App Installer..."
+    $msixUrl  = "https://aka.ms/getwinget"
+    $msixPath = "$env:TEMP\AppInstaller.msixbundle"
+    Info "Downloading App Installer..."
+    Invoke-WebRequest -Uri $msixUrl -OutFile $msixPath -UseBasicParsing
+    Info "Installing App Installer (requires elevation)..."
+    Add-AppxPackage -Path $msixPath
+    # Also install VC++ Runtime required by winget
+    $vcUrl  = "https://aka.ms/Microsoft.VCLibs.arm64.14.00.Desktop.appx"
+    $vcPath = "$env:TEMP\VCLibs.appx"
+    Invoke-WebRequest -Uri $vcUrl -OutFile $vcPath -UseBasicParsing
+    Add-AppxPackage -Path $vcPath
+    # Refresh PATH
+    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" +
+                [System.Environment]::GetEnvironmentVariable("PATH", "User")
+    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+        Fail "winget still not available after bootstrap. Please reboot and re-run."
+    }
+    Ok "winget installed"
+}
+
 # ── Install prerequisites ─────────────────────────────────────────────────────
 
 Info "Checking and installing prerequisites..."
 
-# winget itself (should already exist on Win11 ARM64)
+# winget — bootstrap if missing (older Win10/Win11 builds may not have it)
 if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-    Fail "winget not found. Install App Installer from the Microsoft Store."
+    Install-Winget-Bootstrap
 }
 Ok "winget found"
 
