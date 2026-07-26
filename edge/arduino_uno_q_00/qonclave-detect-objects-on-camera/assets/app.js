@@ -17,7 +17,151 @@ ui.on_message('detection', async message => {
   updateFeedback(message);
 });
 
+const matrixBitmaps = {
+  person: [
+    [0,0,1,1,1,1,1,1,1,1,0,0],
+    [0,1,0,0,0,0,0,0,0,0,1,0],
+    [1,0,0,1,0,0,0,0,1,0,0,1],
+    [1,0,0,1,0,0,0,0,1,0,0,1],
+    [1,0,0,0,0,0,0,0,0,0,0,1],
+    [1,0,1,0,0,0,0,0,0,1,0,1],
+    [0,1,0,1,1,1,1,1,1,0,1,0],
+    [0,0,1,1,1,1,1,1,1,1,0,0]
+  ],
+  'cell phone': [
+    [0,0,0,1,1,1,1,1,1,0,0,0],
+    [0,0,0,1,0,0,0,0,1,0,0,0],
+    [0,0,0,1,0,1,1,0,1,0,0,0],
+    [0,0,0,1,0,1,1,0,1,0,0,0],
+    [0,0,0,1,0,0,0,0,1,0,0,0],
+    [0,0,0,1,0,0,0,0,1,0,0,0],
+    [0,0,0,1,0,1,1,0,1,0,0,0],
+    [0,0,0,1,1,1,1,1,1,0,0,0]
+  ],
+  cat: [
+    [1,0,0,0,0,0,0,0,0,0,0,1],
+    [1,1,0,0,0,0,0,0,0,0,1,1],
+    [1,0,1,1,1,1,1,1,1,1,0,1],
+    [1,0,1,0,0,0,0,0,0,1,0,1],
+    [1,0,0,1,0,0,0,0,1,0,0,1],
+    [1,0,0,0,0,1,1,0,0,0,0,1],
+    [0,1,0,0,1,0,0,1,0,0,1,0],
+    [0,0,1,1,1,1,1,1,1,1,0,0]
+  ],
+  dog: [
+    [0,0,1,1,1,1,1,1,1,1,0,0],
+    [0,1,1,0,0,0,0,0,0,1,1,0],
+    [1,1,0,1,0,0,0,0,1,0,1,1],
+    [1,1,0,1,0,0,0,0,1,0,1,1],
+    [1,1,0,0,0,1,1,0,0,0,1,1],
+    [1,1,0,0,1,1,1,1,0,0,1,1],
+    [0,1,0,0,0,0,0,0,0,0,1,0],
+    [0,0,1,1,1,1,1,1,1,1,0,0]
+  ],
+  clock: [
+    [0,0,0,1,1,1,1,1,1,0,0,0],
+    [0,0,1,0,0,1,0,0,0,1,0,0],
+    [0,1,0,0,0,1,0,0,0,0,1,0],
+    [1,0,0,0,0,1,0,0,0,0,0,1],
+    [1,0,0,0,0,1,1,1,1,0,0,1],
+    [0,1,0,0,0,0,0,0,0,0,1,0],
+    [0,0,1,0,0,0,0,0,0,1,0,0],
+    [0,0,0,1,1,1,1,1,1,0,0,0]
+  ],
+  cup: [
+    [0,0,1,0,0,1,0,0,1,0,0,0],
+    [0,0,0,0,0,0,0,0,0,0,0,0],
+    [0,1,1,1,1,1,1,1,1,0,0,0],
+    [0,1,0,0,0,0,0,0,1,1,1,0],
+    [0,1,0,0,0,0,0,0,1,0,1,0],
+    [0,1,0,0,0,0,0,0,1,1,1,0],
+    [0,0,1,0,0,0,0,1,0,0,0,0],
+    [0,0,0,1,1,1,1,0,0,0,0,0]
+  ],
+  'potted plant': [
+    [0,0,0,0,1,0,0,1,0,0,0,0],
+    [0,0,0,1,1,1,1,1,1,0,0,0],
+    [0,0,1,1,0,1,1,0,1,1,0,0],
+    [0,0,0,0,0,1,1,0,0,0,0,0],
+    [0,0,1,1,1,1,1,1,1,1,0,0],
+    [0,0,0,1,0,0,0,0,1,0,0,0],
+    [0,0,0,1,0,0,0,0,1,0,0,0],
+    [0,0,0,0,1,1,1,1,0,0,0,0]
+  ],
+  clear: [
+    [0,0,0,0,0,0,0,0,0,0,0,1],
+    [0,0,0,0,0,0,0,0,0,0,1,0],
+    [0,0,0,0,0,0,0,0,0,1,0,0],
+    [1,0,0,0,0,0,0,0,1,0,0,0],
+    [0,1,0,0,0,0,0,1,0,0,0,0],
+    [0,0,1,0,0,0,1,0,0,0,0,0],
+    [0,0,0,1,0,1,0,0,0,0,0,0],
+    [0,0,0,0,1,0,0,0,0,0,0,0]
+  ]
+};
+
+function initVirtualMatrix() {
+  const grid = document.getElementById('virtualMatrixGrid');
+  if (!grid) return;
+  grid.innerHTML = '';
+  for (let r = 0; r < 8; r++) {
+    for (let c = 0; c < 12; c++) {
+      const dot = document.createElement('div');
+      dot.id = `led_${r}_${c}`;
+      dot.style.width = '14px';
+      dot.style.height = '14px';
+      dot.style.borderRadius = '2px';
+      dot.style.background = '#1a1e26';
+      dot.style.transition = 'all 0.15s';
+      grid.appendChild(dot);
+    }
+  }
+  renderVirtualMatrix('clear');
+}
+
+function renderVirtualMatrix(iconName) {
+  const bitmap = matrixBitmaps[iconName] || matrixBitmaps.clear;
+  const text = document.getElementById('ledArrayText');
+  if (text) {
+    if (iconName && iconName !== 'clear') {
+      text.textContent = `${iconName.toUpperCase()} DETECTED`;
+      text.style.color = '#ffb700';
+    } else {
+      text.textContent = 'CLEAR (Safe)';
+      text.style.color = '#3ecf8e';
+    }
+  }
+  for (let r = 0; r < 8; r++) {
+    for (let c = 0; c < 12; c++) {
+      const dot = document.getElementById(`led_${r}_${c}`);
+      if (dot) {
+        const isOn = bitmap[r] && bitmap[r][c] === 1;
+        dot.style.background = isOn ? '#ffb700' : '#1a1e26';
+        dot.style.boxShadow = isOn ? '0 0 6px #ffb700' : 'none';
+      }
+    }
+  }
+}
+
+ui.on_message('led_status', async msg => {
+  if (msg) {
+    renderVirtualMatrix(msg.trigger || 'clear');
+  }
+});
+ui.on_message('knob_update', async msg => {
+  if (msg && msg.threshold != null) {
+    const confidenceInput = document.getElementById('confidenceInput');
+    const confidenceSlider = document.getElementById('confidenceSlider');
+    if (confidenceInput && confidenceSlider) {
+      confidenceInput.value = msg.threshold.toFixed(2);
+      confidenceSlider.value = msg.threshold;
+      updateConfidenceDisplay();
+    }
+  }
+});
+
 // Start the application
+initVirtualMatrix();
 initializeConfidenceSlider();
 updateFeedback(null);
 renderDetections();
@@ -71,6 +215,7 @@ function updateFeedback(detection) {
     clock: { text: 'Time to go', gif: 'clock.webp' },
     cup: { text: 'Need a break?', gif: 'cup.webp' },
     dog: { text: 'Walkies?', gif: 'dog.webp' },
+    person: { text: 'Person Detected! LED Array Active 🚨', gif: 'hand.gif' },
     'potted plant': { text: 'Glow your ideas!', gif: 'plant.webp' },
   };
 

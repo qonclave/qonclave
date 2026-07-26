@@ -109,6 +109,7 @@ App Lab):
 - USB camera (x1) — _or_ an Android phone running an IP-camera app on the same network (see Camera Source above)
 - USB-C® hub adapter with external power (x1) _(only for UNO Q, only in USB camera mode)_
 - A power supply (5 V, 3 A) for the USB hub (e.g. a phone charger) _(only for UNO Q, only in USB camera mode)_
+- Potentiometer connected to analog pin A0 (optional, for physical threshold control)
 - Personal computer with internet access
 
 ### Software
@@ -122,12 +123,15 @@ App Lab):
    ![Hardware setup](assets/docs_assets/hardware-setup.png)
    IP camera mode: start the IP-camera app on the phone and set `CAMERA_SOURCE=ip` /
    `IP_CAMERA_URL` as described in Camera Source above.
-2. Run the App.
+2. (Optional) Connect a potentiometer wiper to analog pin A0 on the UNO Q for physical confidence threshold control.
+3. Run the App.
    ![Arduino App Lab - Run App](assets/docs_assets/launch-app.png)
-3. The App should open automatically in the web browser. You can open it manually via `<board-name>.local:7000`.
-4. Position any object in front of the camera and watch as the App detects and recognizes them.
+4. The App should open automatically in the web browser. You can open it manually via `<board-name>.local:7000`.
+5. Position any object in front of the camera and watch as the App detects and recognizes them.
+6. Observe the UNO Q's onboard **12x8 LED Matrix**: it will dynamically render custom hardware-aligned icons corresponding to detected objects!
+7. Rotate the potentiometer knob to dynamically adjust the AI detection confidence threshold in real-time.
 
-Try with one of the following objects for a special reaction:
+Try with one of the following objects for a special reaction (both on the Web UI and the LED Matrix):
 
 - Cat
 - Cell phone
@@ -135,6 +139,7 @@ Try with one of the following objects for a special reaction:
 - Cup
 - Dog
 - Potted plant
+- Person
 
 ![Example of special reaction](assets/docs_assets/special-detection.png)
 
@@ -160,6 +165,17 @@ Here is a brief explanation of the full-stack application:
   - **Realtime messaging**: publishes detection updates to the frontend via `ui.send_message("detection", message=entry)` so the UI can display live detections.
 
 - Runs with `App.run()` which starts the internal event loop and keeps the detection stream and UI messaging alive.
+
+---
+
+### ⚡ Microcontroller & Hardware Bridge (sketch/sketch.ino)
+
+- **12x8 LED Matrix Icon Display**:
+  - Uses the `Arduino_LED_Matrix` library configured with a **13-column hardware stride buffer** (`byte frame[8][13]`) required by the UNO Q and Zephyr OS architecture.
+  - Receives `set_led_state` commands over the Bridge from `main.py` (e.g. `"cat"`, `"person"`, `"cell phone"`, `"green"`, `"clear"`) and renders hardware-aligned bitmap icons in real-time.
+- **Physical Potentiometer Threshold Control**:
+  - Continuously samples analog pin A0 (`analogRead(A0)`) with debounce and noise filtering.
+  - When the knob is adjusted, it transmits percentage changes over the Bridge via `Bridge.call("on_knob_change", str(percentage))` to dynamically adjust the AI detection confidence threshold in Python and update the Web UI slider simultaneously.
 
 ---
 

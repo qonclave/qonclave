@@ -10,7 +10,7 @@ from datetime import datetime, UTC
 
 import requests
 
-from arduino.app_utils import App, Logger
+from arduino.app_utils import App, Logger, Bridge
 from arduino.app_bricks.web_ui import WebUI
 from arduino.app_bricks.video_objectdetection import VideoObjectDetection
 from arduino.app_peripherals.camera import IPCamera, V4LCamera
@@ -54,6 +54,18 @@ ui = WebUI()
 detection_stream = VideoObjectDetection(camera, confidence=0.5, debounce_sec=0.0, camera_preview=True)
 
 ui.on_message("override_th", lambda sid, threshold: detection_stream.override_threshold(threshold))
+
+# 1. Listen for Potentiometer Knob adjustments from MCU (sketch.ino)
+def handle_knob_change(percentage_str):
+  try:
+    val = float(percentage_str) / 100.0
+    detection_stream.override_threshold(val)
+    ui.send_message("knob_update", message={"threshold": val})
+  except Exception:
+    pass
+
+Bridge.provide("on_knob_change", handle_knob_change)
+Bridge.call("set_led_state", "green")  # Start in safe/green state
 
 # --- Hub event forwarding: notify the Qonclave hub when a person is detected ---
 
@@ -110,6 +122,14 @@ def maybe_notify_hub(detections: dict, frame: bytes | None):
 
 # Register a callback for when all objects are detected
 def send_detections_to_ui(detections: dict, frame: bytes | None = None):
+  if detections:
+    first_obj = list(detections.keys())[0]
+    Bridge.call("set_led_state", first_obj)
+    ui.send_message("led_status", message={"state": "active", "trigger": first_obj})
+  else:
+    Bridge.call("set_led_state", "clear")
+    ui.send_message("led_status", message={"state": "clear", "trigger": None})
+
   for key, values in detections.items():
     for value in values:
       entry = {
