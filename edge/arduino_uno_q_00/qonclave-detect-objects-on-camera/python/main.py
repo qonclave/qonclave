@@ -8,6 +8,7 @@ import time
 import uuid
 from datetime import datetime, UTC
 
+import socket
 import requests
 
 from arduino.app_utils import App, Logger, Bridge
@@ -15,9 +16,140 @@ from arduino.app_bricks.web_ui import WebUI
 from arduino.app_bricks.video_objectdetection import VideoObjectDetection
 from arduino.app_peripherals.camera import IPCamera, V4LCamera
 
+import json
 from file_camera import FileCamera
 
 log = Logger("qonclave.edge")
+
+DEVICE_ID = os.environ.get("DEVICE_ID", "unoq-01")
+HUB_MDNS_NAME = os.environ.get("HUB_MDNS_NAME", "qonclave-hub.local").strip()
+HUB_IP = os.environ.get("HUB_IP", "192.168.50.207").strip()
+HUB_PORT = int(os.environ.get("HUB_PORT", "8000"))
+TTL_SECONDS = 1800.0  # 30 minutes
+
+_resolved_hub_host = None
+_discovery_method = "Searching..."
+_hub_online = False
+
+def get_hub_base_url() -> str:
+  global _resolved_hub_host, _discovery_method
+  if _resolved_hub_host:
+    return f"http://{_resolved_hub_host}:{HUB_PORT}"
+  if HUB_MDNS_NAME:
+    try:
+      socket.gethostbyname(HUB_MDNS_NAME)
+      _resolved_hub_host = HUB_MDNS_NAME
+      _discovery_method = "mDNS (Option B)"
+      log.info(f"Resolved Hub via mDNS (Option B): {_resolved_hub_host}")
+      return f"http://{_resolved_hub_host}:{HUB_PORT}"
+    except Exception:
+      log.debug(f"mDNS resolution for '{HUB_MDNS_NAME}' failed; attempting UDP LAN discovery...")
+
+  # Attempt UDP LAN broadcast discovery on port 8888
+  try:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    sock.settimeout(1.5)
+    sock.sendto(json.dumps({"probe": "qonclave-hub"}).encode("utf-8"), ("255.255.255.255", 8888))
+    data, addr = sock.recvfrom(1024)
+    msg = json.loads(data.decode("utf-8", errors="ignore"))
+    if isinstance(msg, dict) and msg.get("service") == "qonclave-hub":
+      _resolved_hub_host = addr[0]
+      _discovery_method = "UDP Broadcast"
+      log.info(f"Discovered Qonclave Hub via UDP LAN Broadcast at: {_resolved_hub_host}")
+      return f"http://{_resolved_hub_host}:{HUB_PORT}"
+  except Exception:
+    log.debug(f"UDP LAN discovery timed out; falling back to HUB_IP '{HUB_IP}'")
+
+  _resolved_hub_host = HUB_IP
+  _discovery_method = "Static IP"
+  return f"http://{_resolved_hub_host}:{HUB_PORT}"
+
+# Load persistent Level 1 Edge icons cache
+CACHE_FILE = os.path.join(os.path.dirname(__file__), "..", "icons_cache.json")
+icon_cache = {}
+try:
+  if os.path.exists(CACHE_FILE):
+    with open(CACHE_FILE, "r", encoding="utf-8") as f:
+      raw = json.load(f)
+    if isinstance(raw, dict):
+      for k, val in raw.items():
+        if isinstance(val, list):
+          icon_cache[k] = {"bitmap": val, "updated_at": 0.0, "permanent": k in ("clear", "green")}
+        elif isinstance(val, dict):
+          icon_cache[k] = val
+    log.info(f"Loaded {len(icon_cache)} icons from Level 1 Edge cache.")
+except Exception as e:
+  log.warning(f"Could not load Level 1 Edge icons cache: {e}")
+
+now_ts = time.time()
+if "clear" not in icon_cache:
+  icon_cache["clear"] = {"bitmap": [[0]*12 for _ in range(8)], "updated_at": now_ts, "permanent": True}
+if "green" not in icon_cache:
+  icon_cache["green"] = {"bitmap": [[1]*12 for _ in range(8)], "updated_at": now_ts, "permanent": True}
+
+_generating_labels = set()
+_cache_lock = threading.Lock()
+
+def _save_cache():
+  try:
+    with open(CACHE_FILE, "w", encoding="utf-8") as f:
+      json.dump(icon_cache, f, indent=2)
+  except Exception as e:
+    log.warning(f"Failed to save Level 1 Edge icons cache: {e}")
+
+def _get_bitmap_entry(label: str):
+  entry = icon_cache.get(label)
+  if not entry:
+    return None
+  if not entry.get("permanent", False):
+    age = time.time() - entry.get("updated_at", 0.0)
+    if age > TTL_SECONDS or entry.get("updated_at", 0.0) == 0.0:
+      log.info(f"Level 1 Edge cache expired for '{label}' (age: {age:.1f}s > {TTL_SECONDS}s)")
+      return None
+  return entry.get("bitmap")
+
+def _generate_icon_thread(label: str):
+  log.info(f"Querying Qonclave Hub (Level 2 Cache) for icon silhouette: '{label}'...")
+  try:
+    url = f"{get_hub_base_url()}/edge/icon"
+    resp = requests.get(url, params={"label": label}, timeout=15)
+    if resp.status_code == 200 and resp.json().get("ok"):
+      grid = resp.json().get("bitmap")
+      if grid and len(grid) == 8 and len(grid[0]) == 12:
+        with _cache_lock:
+          icon_cache[label] = {
+            "bitmap": grid,
+            "updated_at": time.time(),
+            "permanent": False
+          }
+          _save_cache()
+        log.info(f"Successfully received and cached Level 1 icon from Hub for '{label}'")
+        try:
+          bitstring = "".join("1" if val else "0" for r in grid for val in r[:12])
+          Bridge.call("set_custom_led_array", bitstring)
+          ui.send_message("sync_icons", message=icon_cache)
+          ui.send_message("led_status", message={"state": "active", "trigger": label, "bitmap": grid, "ai_generated": True})
+        except Exception as e:
+          log.warning(f"Failed to push updated icon to UI: {e}")
+  except Exception as e:
+    log.error(f"Failed to query Hub for icon '{label}': {e}")
+  finally:
+    with _cache_lock:
+      _generating_labels.discard(label)
+
+def get_or_trigger_icon(label: str):
+  if not label:
+    return _get_bitmap_entry("clear") or [[0]*12 for _ in range(8)], False
+  label = label.lower().strip()
+  with _cache_lock:
+    bmp = _get_bitmap_entry(label)
+    if bmp:
+      return bmp, False
+    if label not in _generating_labels:
+      _generating_labels.add(label)
+      threading.Thread(target=_generate_icon_thread, args=(label,), daemon=True).start()
+  return _get_bitmap_entry("clear") or [[0]*12 for _ in range(8)], True
 
 # --- Camera source: a bundled sample video file by default (no hardware ---
 # needed), a physically-connected USB webcam when CAMERA_SOURCE=usb, or an
@@ -51,6 +183,34 @@ else:
   camera = V4LCamera(device=USB_CAMERA_DEVICE)
 
 ui = WebUI()
+def _send_current_hub_status():
+  try:
+    ui.send_message("hub_status", message={
+      "online": _hub_online,
+      "host": _resolved_hub_host or HUB_IP,
+      "port": HUB_PORT,
+      "method": _discovery_method
+    })
+  except Exception:
+    pass
+
+ui.on_message("request_icons", lambda sid, data: (ui.send_message("sync_icons", message=icon_cache), _send_current_hub_status()))
+
+def _monitor_hub_health():
+  global _hub_online, _resolved_hub_host, _discovery_method
+  while True:
+    try:
+      url = f"{get_hub_base_url()}/health"
+      resp = requests.get(url, timeout=3)
+      _hub_online = (resp.status_code == 200)
+    except Exception:
+      _hub_online = False
+      _resolved_hub_host = None
+      _discovery_method = "Searching..."
+    _send_current_hub_status()
+    time.sleep(5.0)
+
+threading.Thread(target=_monitor_hub_health, name="HubHealthMonitor", daemon=True).start()
 detection_stream = VideoObjectDetection(camera, confidence=0.5, debounce_sec=0.0, camera_preview=True)
 
 ui.on_message("override_th", lambda sid, threshold: detection_stream.override_threshold(threshold))
@@ -65,13 +225,12 @@ def handle_knob_change(percentage_str):
     pass
 
 Bridge.provide("on_knob_change", handle_knob_change)
-Bridge.call("set_led_state", "green")  # Start in safe/green state
+green_bmp = _get_bitmap_entry("green")
+if green_bmp:
+  Bridge.call("set_custom_led_array", "".join("1" if val else "0" for r in green_bmp for val in r[:12]))
 
 # --- Hub event forwarding: notify the Qonclave hub when a person is detected ---
 
-DEVICE_ID = os.environ.get("DEVICE_ID", "unoq-01")
-HUB_IP = os.environ.get("HUB_IP", "192.168.18.68")
-HUB_PORT = int(os.environ.get("HUB_PORT", "8000"))
 PERSON_CONFIDENCE_THRESHOLD = float(os.environ.get("PERSON_CONFIDENCE_THRESHOLD", "0.7"))
 HUB_EVENT_HYSTERESIS_SEC = float(os.environ.get("HUB_EVENT_HYSTERESIS_SEC", "10"))
 HUB_EVENT_TIMEOUT_SEC = float(os.environ.get("HUB_EVENT_TIMEOUT_SEC", "5"))
@@ -81,7 +240,7 @@ _last_hub_event_at = 0.0
 
 
 def _post_person_event(confidence: float, frame: bytes):
-  url = f"http://{HUB_IP}:{HUB_PORT}/edge/event"
+  url = f"{get_hub_base_url()}/edge/event"
   params = {
     "device_id": DEVICE_ID,
     "event_id": f"{DEVICE_ID}-{uuid.uuid4().hex[:8]}",
@@ -124,11 +283,15 @@ def maybe_notify_hub(detections: dict, frame: bytes | None):
 def send_detections_to_ui(detections: dict, frame: bytes | None = None):
   if detections:
     first_obj = list(detections.keys())[0]
-    Bridge.call("set_led_state", first_obj)
-    ui.send_message("led_status", message={"state": "active", "trigger": first_obj})
+    bitmap, is_generating = get_or_trigger_icon(first_obj)
+    bitstring = "".join("1" if val else "0" for r in bitmap for val in r[:12]) if bitmap else "0" * 96
+    Bridge.call("set_custom_led_array", bitstring)
+    ui.send_message("led_status", message={"state": "active", "trigger": first_obj, "bitmap": bitmap, "ai_generated": (first_obj not in ["clear", "green"])})
   else:
-    Bridge.call("set_led_state", "clear")
-    ui.send_message("led_status", message={"state": "clear", "trigger": None})
+    clear_bmp = _get_bitmap_entry("clear") or [[0]*12 for _ in range(8)]
+    bitstring = "".join("1" if val else "0" for r in clear_bmp for val in r[:12])
+    Bridge.call("set_custom_led_array", bitstring)
+    ui.send_message("led_status", message={"state": "clear", "trigger": "clear", "bitmap": clear_bmp})
 
   for key, values in detections.items():
     for value in values:

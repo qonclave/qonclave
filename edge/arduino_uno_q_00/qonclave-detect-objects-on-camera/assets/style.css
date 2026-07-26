@@ -38,6 +38,44 @@ body {
   margin-bottom: 32px;
 }
 
+.hub-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 0.85em;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(4px);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  width: fit-content;
+  transition: all 0.3s ease;
+}
+.hub-status .status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.hub-status.online {
+  color: #047857;
+  border-color: #a7f3d0;
+  background: #ecfdf5;
+}
+.hub-status.online .status-dot {
+  background: #10b981;
+  box-shadow: 0 0 8px #10b981;
+}
+.hub-status.offline {
+  color: #be123c;
+  border-color: #fecdd3;
+  background: #fff1f2;
+}
+.hub-status.offline .status-dot {
+  background: #f43f5e;
+}
+
 .container {
   width: 100%;
   max-width: 550px;
