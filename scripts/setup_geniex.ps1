@@ -25,14 +25,14 @@
         powershell -ExecutionPolicy Bypass -File .\scripts\setup_geniex.ps1
 
       -NoRun            stop after installing requirements; don't start the server
-      -NoWarmup         do not load the VLM model immediately upon server start
+      -Warmup           pre-load the VLM model at server start (default: off, loads lazily on first request)
       -- a b c          extra args forwarded to hub/server.py, e.g.:
         .\scripts\setup_geniex.ps1 -- --verbose --port 8080
 #>
 
 param(
     [switch]$NoRun,
-    [switch]$NoWarmup,
+    [switch]$Warmup,
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$ServerArgs
 )
@@ -280,7 +280,7 @@ if ($NoRun) {
 } else {
     Write-Step "Starting hub server"
     Write-Host "    (Ctrl+C to stop; pass server flags after -- e.g. --verbose --port 8080)"
-    if (-not $NoWarmup) {
+    if ($Warmup) {
         $env:QONCLAVE_WARMUP = "1"
     }
     Set-Location $RepoDir
