@@ -17,17 +17,17 @@ interface.
 
 ## Camera Source
 
-Controlled by `CAMERA_SOURCE` — switching between USB and IP camera is purely a
-`CAMERA_SOURCE` change, no `app.yaml` edits needed. In both modes the app itself
-opens the camera (`V4LCamera` or `IPCamera`) and hands it to
-`VideoObjectDetection`, which captures from it and forwards frames to the
-detection runner; the runner never needs direct device access, so
-`app.yaml` declares `devices: [remote_camera_0]` on the `video_object_detection`
-brick unconditionally.
+Controlled by `CAMERA_SOURCE` — switching between USB, IP camera, and video file is
+purely a `CAMERA_SOURCE` change, no `app.yaml` edits needed. In every mode the app
+itself opens the camera (`V4LCamera`, `IPCamera`, or the local `FileCamera`) and
+hands it to `VideoObjectDetection`, which captures from it and forwards frames to
+the detection runner; the runner never needs direct device access, so `app.yaml`
+declares `devices: [remote_camera_0]` on the `video_object_detection` brick
+unconditionally.
 
 | Var | Default | Meaning |
 |-----|---------|---------|
-| `CAMERA_SOURCE` | `usb` | `usb` for a physically-connected USB camera, or `ip` for an Android IP-camera stream |
+| `CAMERA_SOURCE` | `file` | `usb` for a physically-connected USB camera, `ip` for an Android IP-camera stream, or `file` to loop a local video file instead of a live feed |
 
 ### USB (default)
 
@@ -57,6 +57,23 @@ since `app.yaml` no longer declares a hard physical-camera requirement.
 | `IP_CAMERA_USERNAME` | _(none)_ | Optional stream auth username |
 | `IP_CAMERA_PASSWORD` | _(none)_ | Optional stream auth password |
 | `IP_CAMERA_FPS` | `10` | Frames per second to pull from the stream |
+
+### Video file (optional)
+
+Loops a local video file as the detection input — useful for testing/demoing
+without any camera attached. The file must be reachable inside the app container;
+place it somewhere under the app folder (e.g. `media/`, next to `python/`), which
+is bind-mounted to `/app`, and point `VIDEO_FILE_PATH` at its in-container path.
+
+A sample clip is bundled at `media/sample.mp4` (stock footage from Pexels, free
+license) — set `VIDEO_FILE_PATH=/app/media/sample.mp4` to try this mode out of
+the box.
+
+| Var | Default | Meaning |
+|-----|---------|---------|
+| `VIDEO_FILE_PATH` | `/app/media/sample.mp4` | Path to the video file, as seen inside the container |
+| `VIDEO_FILE_LOOP` | `true` | Rewind and replay the file once it ends, so detection keeps running continuously |
+| `VIDEO_FILE_FPS` | `10` | Frames per second to read from the file |
 
 ## Brick Used
 
