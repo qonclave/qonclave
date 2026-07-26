@@ -35,11 +35,14 @@ function RefreshPath {
 }
 
 function Install-ViaWinget {
-    param([string]$Id, [string]$Label)
+    param([string]$Id, [string]$Label, [string]$CommandName)
     Info "Installing $Label via winget..."
-    winget install --id $Id --silent --accept-package-agreements --accept-source-agreements
-    if ($LASTEXITCODE -ne 0) { Fail "Failed to install $Label" }
+    winget install --id $Id --source winget --silent --accept-package-agreements --accept-source-agreements
+    $exitCode = $LASTEXITCODE
     RefreshPath
+    if ($exitCode -ne 0 -and -not (Get-Command $CommandName -ErrorAction SilentlyContinue)) {
+        Fail "Failed to install $Label"
+    }
     Ok "$Label installed"
 }
 
@@ -63,6 +66,7 @@ function Bootstrap-Winget {
 
 # ── Install prerequisites ─────────────────────────────────────────────────────
 
+RefreshPath
 Info "Checking and installing prerequisites..."
 
 # winget
@@ -72,12 +76,12 @@ if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
 
 # Git
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-    Install-ViaWinget "Git.Git" "Git"
+    Install-ViaWinget "Git.Git" "Git" "git"
 } else { Ok "Git found" }
 
 # CMake
 if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
-    Install-ViaWinget "Kitware.CMake" "CMake"
+    Install-ViaWinget "Kitware.CMake" "CMake" "cmake"
 } else { Ok "CMake found" }
 
 # Visual Studio 2022 Build Tools + ARM64 toolchain
@@ -116,7 +120,7 @@ Ok "Python $pyVer ARM64"
 
 # Check ARM64 MSVC toolchain
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-$vsPath  = & $vswhere -latest -property installationPath 2>$null
+$vsPath  = & $vswhere -latest -products * -property installationPath 2>$null
 if (-not $vsPath) { Fail "No Visual Studio installation found." }
 Ok "Visual Studio: $vsPath"
 
@@ -230,6 +234,11 @@ if ($LASTEXITCODE -ne 0) {
     New-Item -ItemType Directory -Force -Path $distInfo | Out-Null
     Copy-Item $pyd.FullName "$tmp\cv2.pyd"
 
+    $dllDir = "$BuildDir\install\ARM64\vc17\bin"
+    if (Test-Path $dllDir) {
+        Copy-Item "$dllDir\opencv_*.dll" $tmp -ErrorAction SilentlyContinue
+    }
+
     Set-Content "$distInfo\WHEEL" @"
 Wheel-Version: 1.0
 Generator: build_opencv_arm64.ps1
@@ -241,7 +250,15 @@ Metadata-Version: 2.1
 Name: opencv-python-headless
 Version: $Version
 "@
+
+    $recordLines = Get-ChildItem $tmp -Recurse -File | ForEach-Object {
+        $rel = $_.FullName.Substring($tmp.Length + 1) -replace '\\', '/'
+        "$rel,,"
+    }
+    $recordLines += "$($distInfo.Substring($tmp.Length + 1) -replace '\\','/')/RECORD,,"
+    Set-Content "$distInfo\RECORD" $recordLines
     Compress-Archive -Path "$tmp\*" -DestinationPath "$wheelPath.zip" -Force
+    Remove-Item $wheelPath -Force -ErrorAction SilentlyContinue
     Rename-Item "$wheelPath.zip" $wheelPath
     Ok "Wheel packaged: $wheelPath"
 }
