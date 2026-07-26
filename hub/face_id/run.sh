@@ -12,9 +12,11 @@ cd "$SCRIPT_DIR"
 
 # ── Install dependencies ──────────────────────────────────────────────────────
 echo "Checking dependencies..."
-# Install opencv-headless first so mediapipe doesn't pull in opencv-contrib (GUI libs)
-pip install --quiet opencv-python-headless
-pip install --quiet mediapipe "qai-hub-models[cavaface]" pillow numpy
+# mediapipe --no-deps: skips opencv-contrib which is only needed for the
+# legacy mp.solutions API — we use mp.tasks which has no cv2 dependency
+pip install --quiet numpy
+pip install --quiet mediapipe --no-deps
+pip install --quiet "qai-hub-models[cavaface]" pillow
 
 # ── Parse mode ────────────────────────────────────────────────────────────────
 MODE="${1:-help}"

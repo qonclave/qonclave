@@ -16,8 +16,9 @@ chmod +x run.sh
 ./run.sh
 ```
 
-> **Note:** `opencv-python-headless` is installed first to prevent mediapipe
-> from pulling in `opencv-contrib-python` (full GUI build, ~90MB, not needed).
+> **Note:** mediapipe is installed with `--no-deps` to skip `opencv-contrib-python`,
+> which is only needed for the legacy `mp.solutions` API. We use `mp.tasks`
+> which has no cv2 dependency — so this works on Windows ARM64 (WoS) too.
 
 ## Add known faces
 

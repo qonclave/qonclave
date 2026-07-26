@@ -16,9 +16,11 @@ Set-Location $ScriptDir
 
 # ── Install dependencies ──────────────────────────────────────────────────────
 Write-Host "Checking dependencies..." -ForegroundColor Cyan
-# Install opencv-headless first so mediapipe doesn't pull in opencv-contrib (GUI libs)
-pip install --quiet opencv-python-headless
-pip install --quiet mediapipe "qai-hub-models[cavaface]" pillow numpy
+# mediapipe --no-deps: skips opencv-contrib which is only needed for the
+# legacy mp.solutions API — we use mp.tasks which has no cv2 dependency
+pip install --quiet numpy
+pip install --quiet mediapipe --no-deps
+pip install --quiet "qai-hub-models[cavaface]" pillow
 if ($LASTEXITCODE -ne 0) {
     Write-Host "pip install failed. Make sure Python is in PATH." -ForegroundColor Red
     exit 1
