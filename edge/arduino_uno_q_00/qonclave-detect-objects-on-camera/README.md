@@ -81,6 +81,7 @@ The example uses the following Bricks:
 
 - `web_ui`: Brick to create a web interface to display the classification results and model controls.
 - `video_objectdetection`: Brick to classify objects within a live video feed from a camera.
+- `cloud_llm`: Brick to connect to Cloud LLMs for dynamically generating 10x6 LED matrix icon silhouettes when new object classes are detected.
 
 ## Qonclave Hub Event Forwarding
 
@@ -154,25 +155,26 @@ Here is a brief explanation of the full-stack application:
 - Initializes the app Bricks:
   - **WebUI** (`ui = WebUI()`): channel to push messages to the frontend.
   - **VideoObjectDetection** (`detection_stream = VideoObjectDetection()`): runs object detection on the video stream.
+  - **CloudLLM** (`llm = CloudLLM()`): AI text completion engine to synthesize custom LED matrix icons in real-time.
+
+- **Single Source of Truth & AI Icon Caching (`icons_cache.json`)**:
+  - Maintains a local JSON file (`icons_cache.json`) pre-populated with redesigned default bitmaps (`person`, `cat`, `dog`, `cell phone`, `clock`, `cup`, `potted plant`, `clear`, `green`), all centered in a **10x6 grid** with an empty 1-pixel outer border of OFF LEDs (`0`).
+  - Acts as the Single Source of Truth: on startup, Python synchronizes the entire cache to web clients via WebSocket (`request_icons` ↔ `sync_icons`), eliminating hardcoded arrays from the frontend JavaScript.
+  - When a newly detected object class is encountered, a background thread prompts `CloudLLM` to generate a centered **10x6 binary grid** silhouette. A 1-pixel empty border of OFF LEDs is appended on all four sides to form a clean, bordered 12x8 grid, which is saved to `icons_cache.json` and immediately broadcast to all connected web browsers via `sync_icons`.
+  - Flattens the 12x8 grid into a 96-character bitstring and transmits it to the microcontroller firmware via `Bridge.call("set_custom_led_array", bitstring)`.
+  - Pushes dynamic bitmap data and an `ai_generated` boolean flag to the frontend via `ui.send_message("led_status", ...)`.
 
 - Wires detection events to actions using callbacks:
-  - `on_detect_all(send_detections_to_ui)`: sends `{ content, confidence, timestamp }` via `ui.send_message("detection", ...)`
-
-- **Controls**:
-  - Listens for `override_th` → updates detection threshold
-
-- Exposes:
-  - **Realtime messaging**: publishes detection updates to the frontend via `ui.send_message("detection", message=entry)` so the UI can display live detections.
-
-- Runs with `App.run()` which starts the internal event loop and keeps the detection stream and UI messaging alive.
+  - `on_detect_all(send_detections_to_ui)`: sends `{ content, confidence, timestamp }` via `ui.send_message("detection", ...)` and triggers icon rendering.
 
 ---
 
 ### ⚡ Microcontroller & Hardware Bridge (sketch/sketch.ino)
 
-- **12x8 LED Matrix Icon Display**:
+- **Dynamic 10x6 Bordered LED Matrix Icon Display (Single Source of Truth)**:
   - Uses the `Arduino_LED_Matrix` library configured with a **13-column hardware stride buffer** (`byte frame[8][13]`) required by the UNO Q and Zephyr OS architecture.
-  - Receives `set_led_state` commands over the Bridge from `main.py` (e.g. `"cat"`, `"person"`, `"cell phone"`, `"green"`, `"clear"`) and renders hardware-aligned bitmap icons in real-time.
+  - Registers a custom `set_custom_led_array` Bridge callback that receives 96-character bitstrings from Python, parses them into 0/1 integer grids, and renders dynamic icons in real-time on the physical UNO Q LED matrix.
+  - Eliminated over 75 lines of hardcoded icon arrays and lookup blocks from C++; the microcontroller now only keeps `icon_clear` for boot-up initialization while Python streams all icon bitmaps dynamically from `icons_cache.json`.
 - **Physical Potentiometer Threshold Control**:
   - Continuously samples analog pin A0 (`analogRead(A0)`) with debounce and noise filtering.
   - When the knob is adjusted, it transmits percentage changes over the Bridge via `Bridge.call("on_knob_change", str(percentage))` to dynamically adjust the AI detection confidence threshold in Python and update the Web UI slider simultaneously.
@@ -181,12 +183,15 @@ Here is a brief explanation of the full-stack application:
 
 ### 💻 Frontend (index.html + app.js)
 
-- **Video feed**
-  - iframe auto-retries /embed until the camera stream is available
+- **Single Source of Truth Virtual Matrix & AI Badging**
+  - Receives the icon cache dynamically from Python via WebSocket (`sync_icons`), requiring zero hardcoded bitmap arrays in `app.js`.
+  - Renders physical LED states on the browser `#virtualMatrixGrid`.
+  - When an AI-generated icon is displayed, dots glow in magenta/purple (`#e879f9`) and `#ledArrayText` displays a glowing gradient `✨ AI ICON` badge. When standard icons are displayed, dots glow in gold (`#ffb700`).
 
-- **Controls**
-  - Slider, numeric input, and reset button adjust threshold live
-  - Updates sent to backend with: `ui.send_message("override_th", value)`
+- **Video feed & Controls**
+  - iframe auto-retries /embed until the camera stream is available
+  - Slider, numeric input, and reset button adjust threshold live (`override_th`)
+  - Listens for `knob_update` from hardware potentiometer to synchronize UI slider in real-time.
 
 - **Feedback**
   - Shows GIF + text for known objects (dog, cat, cup, cell phone, clock, potted plant)

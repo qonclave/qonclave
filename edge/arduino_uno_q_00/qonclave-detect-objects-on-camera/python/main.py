@@ -13,11 +13,84 @@ import requests
 from arduino.app_utils import App, Logger, Bridge
 from arduino.app_bricks.web_ui import WebUI
 from arduino.app_bricks.video_objectdetection import VideoObjectDetection
+from arduino.app_bricks.cloud_llm import CloudLLM
 from arduino.app_peripherals.camera import IPCamera, V4LCamera
+
+import json
 
 from file_camera import FileCamera
 
 log = Logger("qonclave.edge")
+
+# Load persistent 12x8 LED matrix icons cache
+CACHE_FILE = os.path.join(os.path.dirname(__file__), "..", "icons_cache.json")
+icon_cache = {}
+try:
+  if os.path.exists(CACHE_FILE):
+    with open(CACHE_FILE, "r", encoding="utf-8") as f:
+      icon_cache = json.load(f)
+    log.info(f"Loaded {len(icon_cache)} icons from cache.")
+except Exception as e:
+  log.warning(f"Could not load icons cache: {e}")
+
+llm = CloudLLM()
+_generating_labels = set()
+_llm_lock = threading.Lock()
+
+def _save_cache():
+  try:
+    with open(CACHE_FILE, "w", encoding="utf-8") as f:
+      json.dump(icon_cache, f, indent=2)
+  except Exception as e:
+    log.warning(f"Failed to save icons cache: {e}")
+
+def _generate_icon_thread(label: str):
+  log.info(f"Generating 10x6 LED matrix icon via CloudLLM for: {label}")
+  prompt = (
+      f"You are an expert icon designer for an LED matrix. Given the object name '{label}', "
+      "output ONLY a JSON array containing exactly 6 lists, each with exactly 10 integers (0 for OFF, 1 for ON), "
+      "forming a recognizable centered silhouette of the object. Do not include markdown formatting, backticks, or any text other than the JSON array."
+  )
+  try:
+    resp = llm.generate(prompt) if hasattr(llm, "generate") else llm.chat(prompt)
+    resp_text = resp.text if hasattr(resp, "text") else (resp if isinstance(resp, str) else str(resp))
+    resp_text = resp_text.replace("```json", "").replace("```", "").strip()
+    grid_10x6 = json.loads(resp_text)
+
+    if isinstance(grid_10x6, list) and len(grid_10x6) == 6 and all(isinstance(r, list) and len(r) == 10 for r in grid_10x6):
+      # Wrap in 1-pixel empty outer border (10x6 -> 12x8)
+      full_grid = [[0] * 12]
+      for row in grid_10x6:
+        full_grid.append([0] + [1 if x else 0 for x in row] + [0])
+      full_grid.append([0] * 12)
+
+      with _llm_lock:
+        icon_cache[label] = full_grid
+        _save_cache()
+      log.info(f"Successfully generated and cached AI icon for '{label}'")
+
+      # Push new icon immediately to hardware and Web UI
+      bitstring = "".join("1" if val else "0" for r in full_grid for val in r[:12])
+      Bridge.call("set_custom_led_array", bitstring)
+      ui.send_message("sync_icons", message=icon_cache)
+      ui.send_message("led_status", message={"state": "active", "trigger": label, "bitmap": full_grid, "ai_generated": True})
+  except Exception as e:
+    log.error(f"LLM icon generation failed for '{label}': {e}")
+  finally:
+    with _llm_lock:
+      _generating_labels.discard(label)
+
+def get_or_trigger_icon(label: str):
+  if not label:
+    return icon_cache.get("clear"), False
+  label = label.lower().strip()
+  with _llm_lock:
+    if label in icon_cache:
+      return icon_cache[label], False
+    if label not in _generating_labels:
+      _generating_labels.add(label)
+      threading.Thread(target=_generate_icon_thread, args=(label,), daemon=True).start()
+  return icon_cache.get("clear"), True
 
 # --- Camera source: a bundled sample video file by default (no hardware ---
 # needed), a physically-connected USB webcam when CAMERA_SOURCE=usb, or an
@@ -51,6 +124,7 @@ else:
   camera = V4LCamera(device=USB_CAMERA_DEVICE)
 
 ui = WebUI()
+ui.on_message("request_icons", lambda sid, data: ui.send_message("sync_icons", message=icon_cache))
 detection_stream = VideoObjectDetection(camera, confidence=0.5, debounce_sec=0.0, camera_preview=True)
 
 ui.on_message("override_th", lambda sid, threshold: detection_stream.override_threshold(threshold))
@@ -65,7 +139,9 @@ def handle_knob_change(percentage_str):
     pass
 
 Bridge.provide("on_knob_change", handle_knob_change)
-Bridge.call("set_led_state", "green")  # Start in safe/green state
+green_bmp = icon_cache.get("green")
+if green_bmp:
+  Bridge.call("set_custom_led_array", "".join("1" if val else "0" for r in green_bmp for val in r[:12]))
 
 # --- Hub event forwarding: notify the Qonclave hub when a person is detected ---
 
@@ -124,11 +200,15 @@ def maybe_notify_hub(detections: dict, frame: bytes | None):
 def send_detections_to_ui(detections: dict, frame: bytes | None = None):
   if detections:
     first_obj = list(detections.keys())[0]
-    Bridge.call("set_led_state", first_obj)
-    ui.send_message("led_status", message={"state": "active", "trigger": first_obj})
+    bitmap, is_generating = get_or_trigger_icon(first_obj)
+    bitstring = "".join("1" if val else "0" for r in bitmap for val in r[:12]) if bitmap else "0" * 96
+    Bridge.call("set_custom_led_array", bitstring)
+    ui.send_message("led_status", message={"state": "active", "trigger": first_obj, "bitmap": bitmap, "ai_generated": (first_obj not in ["person", "cat", "dog", "cell phone", "clock", "cup", "potted plant", "clear", "green"])})
   else:
-    Bridge.call("set_led_state", "clear")
-    ui.send_message("led_status", message={"state": "clear", "trigger": None})
+    clear_bmp = icon_cache.get("clear")
+    bitstring = "".join("1" if val else "0" for r in clear_bmp for val in r[:12]) if clear_bmp else "0" * 96
+    Bridge.call("set_custom_led_array", bitstring)
+    ui.send_message("led_status", message={"state": "clear", "trigger": "clear", "bitmap": clear_bmp})
 
   for key, values in detections.items():
     for value in values:

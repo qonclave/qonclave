@@ -17,86 +17,16 @@ ui.on_message('detection', async message => {
   updateFeedback(message);
 });
 
-const matrixBitmaps = {
-  person: [
-    [0,0,1,1,1,1,1,1,1,1,0,0],
-    [0,1,0,0,0,0,0,0,0,0,1,0],
-    [1,0,0,1,0,0,0,0,1,0,0,1],
-    [1,0,0,1,0,0,0,0,1,0,0,1],
-    [1,0,0,0,0,0,0,0,0,0,0,1],
-    [1,0,1,0,0,0,0,0,0,1,0,1],
-    [0,1,0,1,1,1,1,1,1,0,1,0],
-    [0,0,1,1,1,1,1,1,1,1,0,0]
-  ],
-  'cell phone': [
-    [0,0,0,1,1,1,1,1,1,0,0,0],
-    [0,0,0,1,0,0,0,0,1,0,0,0],
-    [0,0,0,1,0,1,1,0,1,0,0,0],
-    [0,0,0,1,0,1,1,0,1,0,0,0],
-    [0,0,0,1,0,0,0,0,1,0,0,0],
-    [0,0,0,1,0,0,0,0,1,0,0,0],
-    [0,0,0,1,0,1,1,0,1,0,0,0],
-    [0,0,0,1,1,1,1,1,1,0,0,0]
-  ],
-  cat: [
-    [1,0,0,0,0,0,0,0,0,0,0,1],
-    [1,1,0,0,0,0,0,0,0,0,1,1],
-    [1,0,1,1,1,1,1,1,1,1,0,1],
-    [1,0,1,0,0,0,0,0,0,1,0,1],
-    [1,0,0,1,0,0,0,0,1,0,0,1],
-    [1,0,0,0,0,1,1,0,0,0,0,1],
-    [0,1,0,0,1,0,0,1,0,0,1,0],
-    [0,0,1,1,1,1,1,1,1,1,0,0]
-  ],
-  dog: [
-    [0,0,1,1,1,1,1,1,1,1,0,0],
-    [0,1,1,0,0,0,0,0,0,1,1,0],
-    [1,1,0,1,0,0,0,0,1,0,1,1],
-    [1,1,0,1,0,0,0,0,1,0,1,1],
-    [1,1,0,0,0,1,1,0,0,0,1,1],
-    [1,1,0,0,1,1,1,1,0,0,1,1],
-    [0,1,0,0,0,0,0,0,0,0,1,0],
-    [0,0,1,1,1,1,1,1,1,1,0,0]
-  ],
-  clock: [
-    [0,0,0,1,1,1,1,1,1,0,0,0],
-    [0,0,1,0,0,1,0,0,0,1,0,0],
-    [0,1,0,0,0,1,0,0,0,0,1,0],
-    [1,0,0,0,0,1,0,0,0,0,0,1],
-    [1,0,0,0,0,1,1,1,1,0,0,1],
-    [0,1,0,0,0,0,0,0,0,0,1,0],
-    [0,0,1,0,0,0,0,0,0,1,0,0],
-    [0,0,0,1,1,1,1,1,1,0,0,0]
-  ],
-  cup: [
-    [0,0,1,0,0,1,0,0,1,0,0,0],
-    [0,0,0,0,0,0,0,0,0,0,0,0],
-    [0,1,1,1,1,1,1,1,1,0,0,0],
-    [0,1,0,0,0,0,0,0,1,1,1,0],
-    [0,1,0,0,0,0,0,0,1,0,1,0],
-    [0,1,0,0,0,0,0,0,1,1,1,0],
-    [0,0,1,0,0,0,0,1,0,0,0,0],
-    [0,0,0,1,1,1,1,0,0,0,0,0]
-  ],
-  'potted plant': [
-    [0,0,0,0,1,0,0,1,0,0,0,0],
-    [0,0,0,1,1,1,1,1,1,0,0,0],
-    [0,0,1,1,0,1,1,0,1,1,0,0],
-    [0,0,0,0,0,1,1,0,0,0,0,0],
-    [0,0,1,1,1,1,1,1,1,1,0,0],
-    [0,0,0,1,0,0,0,0,1,0,0,0],
-    [0,0,0,1,0,0,0,0,1,0,0,0],
-    [0,0,0,0,1,1,1,1,0,0,0,0]
-  ],
+let matrixBitmaps = {
   clear: [
-    [0,0,0,0,0,0,0,0,0,0,0,1],
-    [0,0,0,0,0,0,0,0,0,0,1,0],
+    [0,0,0,0,0,0,0,0,0,0,0,0],
     [0,0,0,0,0,0,0,0,0,1,0,0],
-    [1,0,0,0,0,0,0,0,1,0,0,0],
-    [0,1,0,0,0,0,0,1,0,0,0,0],
-    [0,0,1,0,0,0,1,0,0,0,0,0],
-    [0,0,0,1,0,1,0,0,0,0,0,0],
-    [0,0,0,0,1,0,0,0,0,0,0,0]
+    [0,0,0,0,0,0,0,0,1,0,0,0],
+    [0,0,0,0,0,0,0,1,0,0,0,0],
+    [0,1,0,0,0,0,1,0,0,0,0,0],
+    [0,0,1,0,0,1,0,0,0,0,0,0],
+    [0,0,0,1,1,0,0,0,0,0,0,0],
+    [0,0,0,0,0,0,0,0,0,0,0,0]
   ]
 };
 
@@ -119,13 +49,18 @@ function initVirtualMatrix() {
   renderVirtualMatrix('clear');
 }
 
-function renderVirtualMatrix(iconName) {
-  const bitmap = matrixBitmaps[iconName] || matrixBitmaps.clear;
+function renderVirtualMatrix(iconName, customBitmap = null, isAiGenerated = false) {
+  const bitmap = customBitmap || matrixBitmaps[iconName] || matrixBitmaps.clear;
   const text = document.getElementById('ledArrayText');
   if (text) {
     if (iconName && iconName !== 'clear') {
-      text.textContent = `${iconName.toUpperCase()} DETECTED`;
-      text.style.color = '#ffb700';
+      if (isAiGenerated) {
+        text.innerHTML = `${iconName.toUpperCase()} <span style="background: linear-gradient(135deg, #a855f7, #ec4899); color: white; padding: 2px 6px; border-radius: 4px; font-size: 0.75em; margin-left: 6px; box-shadow: 0 0 8px rgba(168, 85, 247, 0.5);">✨ AI ICON</span>`;
+        text.style.color = '#e879f9';
+      } else {
+        text.textContent = `${iconName.toUpperCase()} DETECTED`;
+        text.style.color = '#ffb700';
+      }
     } else {
       text.textContent = 'CLEAR (Safe)';
       text.style.color = '#3ecf8e';
@@ -134,10 +69,11 @@ function renderVirtualMatrix(iconName) {
   for (let r = 0; r < 8; r++) {
     for (let c = 0; c < 12; c++) {
       const dot = document.getElementById(`led_${r}_${c}`);
-      if (dot) {
-        const isOn = bitmap[r] && bitmap[r][c] === 1;
-        dot.style.background = isOn ? '#ffb700' : '#1a1e26';
-        dot.style.boxShadow = isOn ? '0 0 6px #ffb700' : 'none';
+      if (dot && bitmap[r]) {
+        const isOn = bitmap[r][c] === 1;
+        const ledColor = isAiGenerated ? '#e879f9' : '#ffb700';
+        dot.style.background = isOn ? ledColor : '#1a1e26';
+        dot.style.boxShadow = isOn ? `0 0 6px ${ledColor}` : 'none';
       }
     }
   }
@@ -145,7 +81,13 @@ function renderVirtualMatrix(iconName) {
 
 ui.on_message('led_status', async msg => {
   if (msg) {
-    renderVirtualMatrix(msg.trigger || 'clear');
+    renderVirtualMatrix(msg.trigger || 'clear', msg.bitmap || null, msg.ai_generated || false);
+  }
+});
+ui.on_message('sync_icons', async cache => {
+  if (cache) {
+    matrixBitmaps = cache;
+    renderVirtualMatrix('clear');
   }
 });
 ui.on_message('knob_update', async msg => {
@@ -165,6 +107,7 @@ initVirtualMatrix();
 initializeConfidenceSlider();
 updateFeedback(null);
 renderDetections();
+ui.send_message('request_icons', {});
 
 // Popover logic
 const confidencePopoverText =
