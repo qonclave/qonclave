@@ -1,11 +1,11 @@
 # build_opencv_arm64.ps1
 # Builds opencv-python from source for Windows ARM64 (Snapdragon X / WoS)
 #
-# Prerequisites (auto-checked):
-#   - Python ARM64 installed
-#   - Visual Studio 2022 with ARM64 build tools
-#   - CMake
-#   - Git
+# Auto-installs prerequisites if missing:
+#   - Git          (via winget)
+#   - CMake        (via winget)
+#   - Python 3.12 ARM64 (downloaded from python.org)
+#   - VS 2022 Build Tools + ARM64 MSVC toolchain (downloaded from Microsoft)
 #
 # Usage:
 #   .\build_opencv_arm64.ps1
@@ -36,29 +36,81 @@ function Require-Command {
     Ok "$cmd found"
 }
 
-# ── Check prerequisites ───────────────────────────────────────────────────────
+function Install-Winget {
+    param($id, $label)
+    Info "Installing $label..."
+    winget install --id $id --silent --accept-package-agreements --accept-source-agreements
+    if ($LASTEXITCODE -ne 0) { Fail "Failed to install $label via winget" }
+    # Refresh PATH for this session
+    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" +
+                [System.Environment]::GetEnvironmentVariable("PATH", "User")
+    Ok "$label installed"
+}
 
-Info "Checking prerequisites..."
+# ── Install prerequisites ─────────────────────────────────────────────────────
+
+Info "Checking and installing prerequisites..."
+
+# winget itself (should already exist on Win11 ARM64)
+if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+    Fail "winget not found. Install App Installer from the Microsoft Store."
+}
+Ok "winget found"
+
+# Git
+if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    Install-Winget "Git.Git" "Git"
+} else { Ok "Git found" }
+
+# CMake
+if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
+    Install-Winget "Kitware.CMake" "CMake"
+} else { Ok "CMake found" }
+
+# Visual Studio 2022 Build Tools with ARM64 workload
+$vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+if (-not (Test-Path $vswhere)) {
+    Info "Visual Studio not found — installing VS 2022 Build Tools with ARM64 support..."
+    Info "This may take 10-15 minutes..."
+    $vsBootstrap = "$env:TEMP\vs_buildtools.exe"
+    Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vs_buildtools.exe" -OutFile $vsBootstrap
+    # Workloads:
+    #   Microsoft.VisualStudio.Workload.VCTools   = C++ build tools
+    #   Microsoft.VisualStudio.Component.VC.Tools.ARM64 = ARM64 MSVC toolchain
+    Start-Process -FilePath $vsBootstrap -ArgumentList @(
+        "--quiet", "--wait", "--norestart",
+        "--add", "Microsoft.VisualStudio.Workload.VCTools",
+        "--add", "Microsoft.VisualStudio.Component.VC.Tools.ARM64",
+        "--add", "Microsoft.VisualStudio.Component.Windows11SDK.22621"
+    ) -Wait -NoNewWindow
+    Ok "Visual Studio 2022 Build Tools installed"
+} else {
+    Ok "Visual Studio installer found"
+}
 
 # Python — must be ARM64 native
-Require-Command python "Install Python ARM64 from https://python.org (Windows ARM64 installer)"
+if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
+    Info "Python not found — downloading ARM64 installer..."
+    $pyInstaller = "$env:TEMP\python_arm64.exe"
+    # Python 3.12 ARM64
+    Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.12.8/python-3.12.8-arm64.exe" -OutFile $pyInstaller
+    Start-Process -FilePath $pyInstaller -ArgumentList "/quiet InstallAllUsers=1 PrependPath=1" -Wait -NoNewWindow
+    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" +
+                [System.Environment]::GetEnvironmentVariable("PATH", "User")
+    Ok "Python 3.12 ARM64 installed"
+}
+
 $pyArch = python -c "import platform; print(platform.machine())"
 if ($pyArch -ne "ARM64") {
-    Fail "Python is $pyArch, not ARM64. Download the ARM64 installer from python.org"
+    Fail "Python is $pyArch not ARM64. Please install the ARM64 build from https://python.org"
 }
 $pyVer = python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
 Ok "Python $pyVer ARM64"
 
-# CMake
-Require-Command cmake "Run: winget install Kitware.CMake"
-
-# Git
-Require-Command git "Run: winget install Git.Git"
-
-# Visual Studio ARM64 toolchain
+# Visual Studio ARM64 toolchain check
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 if (-not (Test-Path $vswhere)) {
-    Fail "Visual Studio not found. Install VS 2022 with 'Desktop development with C++' + ARM64 build tools."
+    Fail "Visual Studio installer still not found after install attempt. Please reboot and re-run."
 }
 $vsPath = & $vswhere -latest -property installationPath
 if (-not $vsPath) { Fail "No Visual Studio installation found." }
