@@ -50,7 +50,8 @@ function initVirtualMatrix() {
 }
 
 function renderVirtualMatrix(iconName, customBitmap = null, isAiGenerated = false) {
-  const bitmap = customBitmap || matrixBitmaps[iconName] || matrixBitmaps.clear;
+  const rawEntry = customBitmap || matrixBitmaps[iconName] || matrixBitmaps.clear;
+  const bitmap = (rawEntry && rawEntry.bitmap) ? rawEntry.bitmap : rawEntry;
   const text = document.getElementById('ledArrayText');
   if (text) {
     if (iconName && iconName !== 'clear') {
@@ -98,6 +99,19 @@ ui.on_message('knob_update', async msg => {
       confidenceInput.value = msg.threshold.toFixed(2);
       confidenceSlider.value = msg.threshold;
       updateConfidenceDisplay();
+    }
+  }
+});
+ui.on_message('hub_status', async status => {
+  const badge = document.getElementById('hubStatusBadge');
+  const text = document.getElementById('hubStatusText');
+  if (badge && text && status) {
+    if (status.online) {
+      badge.className = 'hub-status online';
+      text.textContent = `Hub Connected: ${status.host}:${status.port} (${status.method})`;
+    } else {
+      badge.className = 'hub-status offline';
+      text.textContent = `Hub Offline: ${status.host}:${status.port} (${status.method})`;
     }
   }
 });

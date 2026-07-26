@@ -6,5 +6,4 @@ bricks:
     devices:
     - remote_camera_0
 - arduino:web_ui: {}
-- arduino:cloud_llm: {}
 icon: 📽️
