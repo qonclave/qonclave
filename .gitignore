@@ -20,7 +20,14 @@ env/
 *.onnx
 *.bin
 *.gguf
-models/
+# Exclude the CONTENTS, not the directory itself: git never descends into an
+# excluded directory, so "models/" would make the negation below dead - the
+# README stays tracked only because it predates the rule, and could not be
+# re-added after a `git rm --cached`.
+# "**/" because a pattern with an internal slash is anchored to this file's
+# directory - plain "models/*" would only match <repo>/models/, not the one
+# nested under hub/framework/face_id/.
+**/models/*
 !hub/framework/face_id/models/README.txt
 
 # OS / editor
