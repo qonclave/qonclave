@@ -4,9 +4,16 @@
 # separately on the Snapdragon laptop via scripts/setup_geniex.ps1.
 flask>=3.0
 
+# Loads .env into os.environ at startup (hub/server.py).
+python-dotenv>=1.0
+
 # MQTT hub->edge command channel (hub/framework/mqtt_bus.py). Imported
 # conditionally at runtime; the hub still runs with no broker present.
 paho-mqtt>=2.0
+
+# SMS notifications via Twilio (hub/framework/sms_bus.py). Imported
+# conditionally at runtime; the hub still runs if credentials are absent.
+twilio>=9.0
 
 # Optional, only for the sample tooling in hub/samples/:
 #   Pillow  -> regenerate synthetic samples (make_samples.py)

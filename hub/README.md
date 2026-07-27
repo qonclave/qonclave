@@ -188,12 +188,13 @@ hub/
   server.py                # entrypoint: picks an app, runs framework.server.create_app()
   requirements.txt
   framework/                # reusable, use-case agnostic
-    server.py               # create_app(policy, vlm, mqtt, static_dir) -> Flask
+    server.py               # create_app(policy, vlm, mqtt, sms, static_dir) -> Flask
     transport.py            # upload handling + edge-event parsing
     events.py               # event ring buffer for the dashboard
     vlm.py                  # VLMBackend: reason() + structured_query()
-    mqtt_bus.py              # MQTTBus: publish_command() hub->edge push channel
-    policy.py               # Policy ABC + Verdict dataclass (the app contract)
+    mqtt_bus.py             # MQTTBus: publish_command() hub->edge push channel
+    sms_bus.py              # SMSBus: send() SMS notifications via Twilio
+    policy.py               # Policy ABC + Verdict + Notification dataclasses
   apps/
     security/                # this use case: stationary person detection
       policy.py              # SecurityPolicy(Policy)
@@ -286,6 +287,9 @@ Environment options:
 | `QONCLAVE_MQTT_HOST` | `127.0.0.1` | MQTT broker address |
 | `QONCLAVE_MQTT_PORT` | `1883` | MQTT broker port |
 | `QONCLAVE_MQTT_ENABLED` | `1` | Set `0` to skip MQTT entirely (HTTP-only mode) |
+| `QONCLAVE_SMS_ENABLED` | `1` | Set `0` to skip SMS entirely |
+| `TWILIO_ACCOUNT_SID` | – | Twilio account SID (required for SMS) |
+| `TWILIO_AUTH_TOKEN` | – | Twilio auth token (required for SMS) |
 
 ## Calling `/user/reason`
 
@@ -365,6 +369,84 @@ subscribed (not mid-request) still receives it.
   the hub's shared `MQTTBus` (browsers can't open a raw MQTT-over-TCP
   socket directly). See "Operator app vs. test consoles" above.
 
+## SMS notifications (hub->operator push channel)
+
+`framework/sms_bus.py`'s `SMSBus` gives a Policy a way to push an SMS to an
+operator when a significant event is verified. The trigger and message content
+are entirely up to the app — the framework just sends whatever the Policy's
+`notify_for()` method returns.
+
+### Trial mode
+
+SMS is currently in **trial mode**: the `Notification(message, recipient)`
+returned by `notify_for()` is accepted by the API but not yet used. The
+framework always sends a fixed Twilio template to a fixed phone number
+regardless of those fields. This is intentional — it lets apps wire up the
+hook now, and the real per-recipient routing will be enabled in a future
+release without any app changes.
+
+### How it works
+
+After the verdict and MQTT command are handled in `POST /edge/event`, the
+framework calls `policy.notify_for(verdict, event)`. If it returns a
+`Notification`, `SMSBus.send()` is called:
+
+```
+POST /edge/event
+  → policy.evaluate()    → Verdict
+  → policy.command_for() → MQTT publish (if non-None)
+  → policy.notify_for()  → SMSBus.send() (if non-None)
+```
+
+`SMSBus` follows the same "runs anywhere, best-effort" philosophy as
+`MQTTBus` and `VLMBackend`: the Twilio client is loaded lazily, failures
+are logged and return `False`, and the hub keeps serving all other traffic
+if SMS is unavailable.
+
+### Configuration
+
+Add to `.env` (copy from `.env.example`):
+
+```
+TWILIO_ACCOUNT_SID=<your_account_sid>
+TWILIO_AUTH_TOKEN=<your_auth_token>
+QONCLAVE_SMS_ENABLED=1
+```
+
+Set `QONCLAVE_SMS_ENABLED=0` to disable SMS without removing credentials.
+
+`/health` reports SMS status alongside VLM and MQTT:
+```json
+{"vlm": {...}, "mqtt": {...}, "sms": {"available": true, "enabled": true, ...}}
+```
+
+### Using `notify_for()` in an app
+
+The `Policy` base class provides a default that suppresses all SMS (`return
+None`). Override it in your app's Policy to opt in:
+
+```python
+from framework.policy import Policy, Verdict, Notification
+
+class MyPolicy(Policy):
+    def notify_for(self, verdict: Verdict, event: dict) -> Notification | None:
+        if verdict.verified:
+            return Notification(
+                message=verdict.alert,
+                recipient=event.get("device_id", "unknown"),
+            )
+        return None
+```
+
+`SecurityPolicy` already ships this override — it fires an SMS on every
+hub-verified person detection.
+
+### Adding SMS to a new app
+
+No framework changes are needed. Just override `notify_for()` in your
+`Policy` subclass (step 1 of "Building a new app" below). The framework
+calls it automatically on every `/edge/event` request.
+
 ## Sample images
 
 `hub/apps/security/samples/` ships ready-to-use test images (a person scene,
@@ -379,7 +461,8 @@ python hub/apps/security/samples/send_sample.py room_with_person   # -> /edge/ev
 1. Create `hub/apps/<name>/policy.py` with a class that subclasses
    `framework.policy.Policy` and implements `evaluate(image_path, event) ->
    Verdict`. Override `command_for()` if the use case needs to send a
-   command back to the edge device.
+   command back to the edge device. Override `notify_for()` if the use case
+   should send an SMS notification to an operator on verified events.
 2. Add `hub/apps/<name>/static/` with `dashboard.html` (copy from
    `apps/security/static/` and adjust labels — the JSON shape it polls is
    generic). `test_edge.html`/`test_hub.html` are optional to copy too if
