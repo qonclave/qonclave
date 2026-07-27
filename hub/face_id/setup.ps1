@@ -47,10 +47,10 @@ if ($arch -eq "ARM64") {
         Write-Host "  Run build_opencv_arm64.ps1 first to build it, then re-run setup.ps1." -ForegroundColor Yellow
         Fail "Missing ARM64 opencv wheel."
     }
-    & $python -m pip install $wheel.FullName --quiet
+    & $python -m pip install $wheel.FullName
     Ok "opencv installed from local wheel: $($wheel.Name)"
 } else {
-    & $python -m pip install opencv-python-headless --quiet
+    & $python -m pip install opencv-python-headless
     Ok "opencv-python-headless installed"
 }
 
@@ -58,18 +58,18 @@ if ($arch -eq "ARM64") {
 
 if ($arch -eq "ARM64") {
     Info "Installing onnxruntime-qnn (for NPU support)..."
-    & $python -m pip install onnxruntime-qnn --quiet
+    & $python -m pip install onnxruntime-qnn
     Ok "onnxruntime-qnn installed"
 }
 
 # ── Step 3: mediapipe + qai-hub-models ───────────────────────────────────────
 
 Info "Installing mediapipe..."
-& $python -m pip install mediapipe --no-deps --quiet
+& $python -m pip install mediapipe --no-deps
 Ok "mediapipe installed"
 
 Info "Installing qai-hub-models[cavaface] + pillow + numpy..."
-& $python -m pip install "qai-hub-models[cavaface]" pillow numpy --quiet -c "$ScriptDir\constraints.txt"
+& $python -m pip install "qai-hub-models[cavaface]" pillow numpy -c "$ScriptDir\constraints.txt"
 if ($LASTEXITCODE -ne 0) { Fail "pip install failed." }
 Ok "qai-hub-models installed"
 

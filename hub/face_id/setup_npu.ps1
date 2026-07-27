@@ -89,7 +89,7 @@ if (-not $Token) {
 
 Info "Installing qai-hub-models..."
 $python = (Get-Command python).Source
-& $python -m pip install --quiet qai-hub "qai-hub-models[mediapipe_face,cavaface]" -c "$ScriptDir\constraints.txt"
+& $python -m pip install qai-hub "qai-hub-models[mediapipe_face,cavaface]" -c "$ScriptDir\constraints.txt"
 Ok "Packages ready"
 
 Info "Configuring AI Hub..."
