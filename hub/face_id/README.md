@@ -10,14 +10,14 @@ Works on Windows x86, Windows ARM64 (WoS / Snapdragon X), Linux, macOS.
 ### Step 1 — Run setup script (once)
 
 **Using this from the Qonclave hub? You don't run anything here.**
-`scripts/setup_geniex.ps1` already calls this script for you, passing its own
+`hub/setup_hub.ps1` already calls this script for you, passing its own
 `geniex-env` interpreter — which is what you want, because `hub/server.py`
 imports `face_id.identity.FaceIdentityBackend` in-process (see
 `hub/README.md`), so face-ID's dependencies have to live in the environment
 that actually runs the hub server, not this machine's system Python:
 
 ```powershell
-.\scripts\setup_geniex.ps1 -AiHubToken YOUR_TOKEN
+.\hub\setup_hub.ps1 -AiHubToken YOUR_TOKEN
 ```
 
 See the root `README.md` for its `-SkipFaceId` / job-ID flags. Everything

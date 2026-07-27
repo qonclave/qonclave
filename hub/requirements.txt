@@ -1,7 +1,7 @@
 # Qonclave hub server dependencies.
 # NOTE: `geniex` is intentionally NOT listed here — it is Snapdragon-X-only and
 # is imported conditionally at runtime (see hub/framework/vlm.py). Install it
-# separately on the Snapdragon laptop via scripts/setup_geniex.ps1.
+# separately on the Snapdragon laptop via hub/setup_hub.ps1.
 flask>=3.0
 
 # MQTT hub->edge command channel (hub/framework/mqtt_bus.py). Imported

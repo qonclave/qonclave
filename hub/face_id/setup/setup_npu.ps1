@@ -25,7 +25,7 @@
 # job IDs from this repo's own export.
 #
 # Normally called from setup.ps1, which passes -PythonPath so both scripts
-# target the same environment (e.g. scripts/geniex-env). Only pass it
+# target the same environment (e.g. hub/geniex-env). Only pass it
 # yourself when running setup_npu.ps1 directly against a non-default python:
 #   .\setup_npu.ps1 -Token YOUR_TOKEN -PythonPath C:\path\to\python.exe
 
@@ -36,7 +36,7 @@ param(
     [string]$CavaFaceJobId      = "",   # reuse existing compile job for CavaFace.onnx
     [string]$PythonPath         = ""    # use this python.exe instead of resolving from PATH
                                          # (set by setup.ps1 to keep both scripts targeting
-                                         # the same environment, e.g. scripts/geniex-env)
+                                         # the same environment, e.g. hub/geniex-env)
 )
 
 $ErrorActionPreference = "Stop"
@@ -243,7 +243,7 @@ New-Item -ItemType Directory -Force -Path $ModelsDir   | Out-Null
 # "no release assets available" until one exists (content is never read,
 # only its presence is checked). This is a fresh-environment gotcha, not a
 # one-time fix: it recurs in ANY new venv qai-hub-models gets installed
-# into (e.g. scripts/geniex-env, a teammate's machine, CI), so create it
+# into (e.g. hub/geniex-env, a teammate's machine, CI), so create it
 # here rather than requiring a manual patch each time. No-ops harmlessly
 # if qai_hub_models isn't installed (pure job-ID-reuse mode needs only
 # bare qai_hub).

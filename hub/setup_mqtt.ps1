@@ -3,7 +3,7 @@
 
     Installs Eclipse Mosquitto (via winget) if it isn't already on this box,
     then starts it with the repo's local-loopback config
-    (scripts/mosquitto.conf). Idempotent: if mosquitto is already installed,
+    (hub/mosquitto.conf). Idempotent: if mosquitto is already installed,
     installation is skipped.
 
     This is a standalone process, independent of hub/server.py's lifecycle -
@@ -11,7 +11,7 @@
     broker or any devices subscribed to it.
 
     Usage (from an elevated or normal PowerShell prompt, inside the checkout):
-        powershell -ExecutionPolicy Bypass -File .\scripts\setup_mqtt.ps1
+        powershell -ExecutionPolicy Bypass -File .\hub\setup_mqtt.ps1
 
       -NoRun            stop after installing; don't start the broker
 #>
@@ -35,7 +35,7 @@ function Get-MosquittoExe {
     # Windows Mosquitto installer (including via winget) does not reliably
     # add its install directory to PATH, so `Get-Command mosquitto` can fail
     # even right after a successful install - check well-known install
-    # roots directly, same approach as Get-ArmPython in setup_geniex.ps1.
+    # roots directly, same approach as Get-ArmPython in setup_hub.ps1.
     $cmd = Get-Command mosquitto.exe -ErrorAction SilentlyContinue
     if ($cmd) { return $cmd.Source }
 
@@ -77,7 +77,7 @@ if ($MosquittoExe) {
 
 # --- 2. paho-mqtt (hub's client library) ------------------------------------
 Write-Step "Note: hub/requirements.txt includes paho-mqtt for the hub side"
-Write-Host "    Run scripts\setup_geniex.ps1 (or 'pip install -r hub\requirements.txt')" -ForegroundColor Yellow
+Write-Host "    Run hub\setup_hub.ps1 (or 'pip install -r hub\requirements.txt')" -ForegroundColor Yellow
 Write-Host "    to install it into the hub's venv, if you haven't already." -ForegroundColor Yellow
 
 Write-Host "`n===================================================================" -ForegroundColor Green

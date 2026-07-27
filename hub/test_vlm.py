@@ -11,8 +11,8 @@ Run inside the geniex-env on the Snapdragon X box:
     .\\geniex-env\\Scripts\\Activate.ps1
     # grab a sample image the first time:
     curl -o demo.jpg https://qaihub-public-assets.s3.us-west-2.amazonaws.com/qai-hub-geniex/demo.jpg
-    python scripts\\test_vlm.py                 # uses demo.jpg, default prompt
-    python scripts\\test_vlm.py my_frame.jpg "Is a person present? What are they doing?"
+    python hub\\test_vlm.py                 # uses demo.jpg, default prompt
+    python hub\\test_vlm.py my_frame.jpg "Is a person present? What are they doing?"
 
 Model bundle: ai-hub-models/Qwen2.5-VL-7B-Instruct  (Qualcomm AI Hub VLM bundle,
 runs on the Hexagon NPU via the qairt runtime; the largest VLM AI Hub lists for

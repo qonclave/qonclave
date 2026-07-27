@@ -18,7 +18,7 @@
 # actually runs the hub server - not necessarily this machine's system Python.
 # Pass that interpreter with -PythonPath:
 #   .\setup.ps1 -PythonPath C:\path\to\python.exe
-# scripts/setup_geniex.ps1 calls this script automatically and passes its own
+# hub/setup_hub.ps1 calls this script automatically and passes its own
 # geniex-env interpreter, so the normal hub flow needs no manual run at all.
 # Left unset, this installs into whatever `python` resolves to on PATH, which
 # is what you want for standalone face_id use (no hub server involved).
@@ -63,7 +63,7 @@ if ($PythonPath) {
     $python = $pythonCmd.Source
     Info "No -PythonPath given - using python from PATH: $python"
     Info "  (standalone face_id use. To make face-ID available inside the hub"
-    Info "   server, run scripts\setup_geniex.ps1 instead - it calls this script"
+    Info "   server, run hub\setup_hub.ps1 instead - it calls this script"
     Info "   with the interpreter that actually runs hub/server.py.)"
 }
 

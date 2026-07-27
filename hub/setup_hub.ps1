@@ -1,8 +1,8 @@
 <#
-    setup_geniex.ps1  -  Snapdragon X (Windows ARM64) bootstrap for GenieX + hub
+    setup_hub.ps1  -  Snapdragon X (Windows ARM64) bootstrap for GenieX + hub
 
     Run this at the start of every fresh cloud session, from inside an already
-    git-synced Qonclave checkout (this script lives at Qonclave/scripts/). It
+    git-synced Qonclave checkout (this script lives at Qonclave/hub/). It
     is idempotent: already-installed steps are skipped, so re-runs are quick.
 
     This script does NOT clone or pull the repo - sync git yourself first
@@ -26,7 +26,7 @@
       8. Runs hub/server.py.
 
     Usage (from an elevated or normal PowerShell prompt, inside the checkout):
-        powershell -ExecutionPolicy Bypass -File .\scripts\setup_geniex.ps1
+        powershell -ExecutionPolicy Bypass -File .\hub\setup_hub.ps1
 
       -NoRun            stop after installing requirements; don't start the server
       -Warmup           pre-load the VLM model at server start (default: off, loads lazily on first request)
@@ -40,7 +40,7 @@
                         reuse already-completed AI Hub compile jobs instead of
                         recompiling - see hub/face_id/README.md
       -- a b c          extra args forwarded to hub/server.py, e.g.:
-        .\scripts\setup_geniex.ps1 -- --verbose --port 8080
+        .\hub\setup_hub.ps1 -- --verbose --port 8080
 #>
 
 param(
@@ -75,7 +75,7 @@ $VenvDir         = Join-Path $PSScriptRoot 'geniex-env'
 # this script always ensures exactly this minor version is installed and uses
 # it to build the venv, so behavior is agnostic to whatever's already there.
 $RequiredMajor, $RequiredMinor = $PythonVersion.Split('.')[0..1] | ForEach-Object { [int]$_ }
-# This script lives at <repo>/scripts/setup_geniex.ps1; the repo root is its parent.
+# This script lives at <repo>/hub/setup_hub.ps1; the repo root is its parent.
 $RepoDir = Split-Path $PSScriptRoot -Parent
 # ---------------------------------------------------------------------------
 
@@ -101,7 +101,7 @@ Write-Step "Checking for a synced Qonclave checkout"
 $ServerPy = Join-Path $RepoDir 'hub\server.py'
 if (-not (Test-Path $ServerPy)) {
     throw ("hub\server.py not found under $RepoDir. This script assumes the repo is " +
-           "already git-synced and that this script is at <repo>\scripts\setup_geniex.ps1. " +
+           "already git-synced and that this script is at <repo>\hub\setup_hub.ps1. " +
            "Run 'git clone https://github.com/jogendar/Qonclave.git' (or 'git pull' in an " +
            "existing checkout) first, then re-run this script from inside it.")
 }
@@ -388,10 +388,10 @@ if ($SkipFaceId) {
 Write-Host "`n===================================================================" -ForegroundColor Green
 Write-Host " GenieX environment ready." -ForegroundColor Green
 Write-Host " Run scripts either by activating the venv:" -ForegroundColor Green
-Write-Host "     .\scripts\geniex-env\Scripts\Activate.ps1" -ForegroundColor Green
+Write-Host "     .\hub\geniex-env\Scripts\Activate.ps1" -ForegroundColor Green
 Write-Host "     python hub\server.py" -ForegroundColor Green
 Write-Host " ...or without activating, via the venv python directly:" -ForegroundColor Green
-Write-Host "     .\scripts\geniex-env\Scripts\python.exe hub\server.py" -ForegroundColor Green
+Write-Host "     .\hub\geniex-env\Scripts\python.exe hub\server.py" -ForegroundColor Green
 Write-Host "===================================================================" -ForegroundColor Green
 
 # --- 8. Run the hub server ---------------------------------------------------
