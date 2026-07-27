@@ -6,11 +6,18 @@
 ONE-TIME SETUP
 ----------------------------------------------------------------
 
-1. Clone repo and install dependencies
-   -----------------------------------
+1. Clone repo and run setup
+   -------------------------
    git clone https://github.com/jogendar/Qonclave.git
    cd Qonclave\hub\face_id
-   .\run.ps1
+
+   On Snapdragon X (ARM64 / WoS) -- NPU export runs automatically:
+     .\setup.ps1
+     (prompts for AI Hub token, exports both models, ~10 min first time)
+
+   On x86 dev machine (testing/development only):
+     .\setup.ps1
+     (installs deps, CPU mode only -- no NPU export)
 
 
 2. Add known faces
@@ -43,25 +50,36 @@ ONE-TIME SETUP
      - Takes ~5-10 minutes
      - Saves models to hub/face_id/models/
 
-   Skip this step if you only want CPU mode.
+   NOTE: On ARM64 (WoS) this is NOT optional -- it runs automatically
+   as part of .\setup.ps1. NPU is mandatory for real-time performance.
 
 
 ----------------------------------------------------------------
 RUNNING
 ----------------------------------------------------------------
 
-Windows (x86 or ARM64):
+Snapdragon X (ARM64) -- NPU mode (default after setup.ps1):
+
+  Identify a person:
+    .\run.ps1 identify  -Image unknown.jpg -Npu
+
+  Compare two photos:
+    .\run.ps1 compare   -Image1 photo1.jpg -Image2 photo2.jpg -Npu
+
+  Benchmark speed:
+    .\run.ps1 benchmark -Image photo.jpg -Npu
+
+
+x86 dev machine -- CPU mode:
 
   Identify a person:
     .\run.ps1 identify  -Image unknown.jpg
 
-  Compare two photos (same person?):
+  Compare two photos:
     .\run.ps1 compare   -Image1 photo1.jpg -Image2 photo2.jpg
 
   Benchmark speed:
     .\run.ps1 benchmark -Image photo.jpg
-
-  NPU mode (Snapdragon X, after setup_npu.ps1):
     .\run.ps1 identify  -Image unknown.jpg -Npu
     .\run.ps1 benchmark -Image photo.jpg   -Npu
 

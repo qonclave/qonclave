@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-# One-time setup for the face identification pipeline.
-# Run once after cloning the repo, then use run.sh for every identify/compare.
+# One-time setup for the face identification pipeline (Linux / macOS).
+# CPU mode only — NPU runs on Snapdragon X Windows (use setup.ps1 there).
 #
 # Usage:
-#   ./setup.sh            # CPU mode
-#   ./setup.sh --npu      # CPU + NPU (exports AI Hub models, prompts for token)
+#   ./setup.sh
 
 set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

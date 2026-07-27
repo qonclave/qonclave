@@ -1,14 +1,15 @@
 # setup.ps1
-# One-time setup: install all dependencies for the face identification pipeline.
-# Run this once after cloning the repo, then use run.ps1 for every identify/compare/benchmark.
+# One-time setup for the face identification pipeline.
+# Run once after cloning the repo, then use run.ps1 for every identify/compare/benchmark.
+#
+# On ARM64 (Snapdragon X / WoS): NPU export is automatic — it's mandatory for real-time perf.
+# On x86 (dev/test machine): CPU only, no NPU export needed.
 #
 # Usage:
-#   .\setup.ps1           # CPU mode setup
-#   .\setup.ps1 -Npu      # CPU + NPU setup (exports AI Hub models, prompts for token)
-#   .\setup.ps1 -Npu -Token YOUR_TOKEN
+#   .\setup.ps1                     # auto-detects platform
+#   .\setup.ps1 -Token YOUR_TOKEN   # pass AI Hub token directly (ARM64 only)
 
 param(
-    [switch]$Npu,
     [string]$Token = ""
 )
 
@@ -17,6 +18,7 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ScriptDir
 
 $arch = $env:PROCESSOR_ARCHITECTURE   # ARM64 on WoS, AMD64 on x86
+$isArm = ($arch -eq "ARM64")
 
 function Info { param($m) Write-Host "[INFO]  $m" -ForegroundColor Cyan  }
 function Ok   { param($m) Write-Host "[ OK ]  $m" -ForegroundColor Green }
@@ -25,6 +27,11 @@ function Fail { param($m) Write-Host "[FAIL]  $m" -ForegroundColor Red; exit 1 }
 Write-Host ""
 Write-Host "Face ID Pipeline — Setup" -ForegroundColor Green
 Write-Host "Platform: $arch" -ForegroundColor Cyan
+if ($isArm) {
+    Write-Host "Mode    : ARM64 — NPU export will run automatically" -ForegroundColor Cyan
+} else {
+    Write-Host "Mode    : x86 — CPU only" -ForegroundColor Cyan
+}
 Write-Host ""
 
 # ── Step 1: opencv (platform-aware) ──────────────────────────────────────────
@@ -77,17 +84,21 @@ if (-not (Test-Path $mpModel)) {
     Ok "face_detector.tflite already present"
 }
 
-# ── Step 5: (Optional) NPU model export ──────────────────────────────────────
+# ── Step 5: NPU model export (mandatory on ARM64, skipped on x86) ─────────────
 
-if ($Npu) {
+if ($isArm) {
     Write-Host ""
-    Info "Running NPU setup (exports MediaPipeFace + CavaFace via AI Hub)..."
+    Info "ARM64 detected — exporting NPU models (mandatory for real-time performance)..."
     if ($Token) {
         & "$ScriptDir\setup_npu.ps1" -Token $Token
     } else {
         & "$ScriptDir\setup_npu.ps1"
     }
     if ($LASTEXITCODE -ne 0) { Fail "NPU setup failed." }
+} else {
+    Write-Host ""
+    Info "x86 machine — skipping NPU export (CPU mode only)"
+    Info "To run on Snapdragon X with NPU, execute setup.ps1 on the ARM64 machine."
 }
 
 # ── Done ─────────────────────────────────────────────────────────────────────
@@ -97,7 +108,7 @@ Write-Host "================================================================" -F
 Write-Host " Setup complete!" -ForegroundColor Green
 Write-Host ""
 Write-Host " Add face photos to known_faces\ then run:" -ForegroundColor Cyan
-if ($Npu) {
+if ($isArm) {
     Write-Host "   .\run.ps1 identify -Image unknown.jpg -Npu" -ForegroundColor White
 } else {
     Write-Host "   .\run.ps1 identify -Image unknown.jpg" -ForegroundColor White
