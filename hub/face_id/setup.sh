@@ -72,8 +72,8 @@ echo " Setup complete!"
 echo ""
 echo " Add photos to known_faces/ then run:"
 if [ "$NPU" = "1" ]; then
-    echo "   ./run.sh --npu identify unknown.jpg"
+    echo "   python face_pipeline.py --npu identify unknown.jpg"
 else
-    echo "   ./run.sh identify unknown.jpg"
+    echo "   python face_pipeline.py identify unknown.jpg"
 fi
 echo "================================================================"

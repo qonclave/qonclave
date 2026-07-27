@@ -122,6 +122,6 @@ Write-Host "   CavaFace.onnx       (face embedding ~4.3ms NPU)" -ForegroundColor
 Write-Host "   CavaFace.data       (weights ~250MB)" -ForegroundColor White
 Write-Host ""
 Write-Host " Run with NPU:" -ForegroundColor Cyan
-Write-Host "   .\run.ps1 identify  -Image unknown.jpg -Npu" -ForegroundColor White
-Write-Host "   .\run.ps1 benchmark -Image photo.jpg   -Npu" -ForegroundColor White
+Write-Host "   python face_pipeline.py --npu identify  unknown.jpg" -ForegroundColor White
+Write-Host "   python face_pipeline.py --npu benchmark photo.jpg" -ForegroundColor White
 Write-Host "================================================================" -ForegroundColor Green

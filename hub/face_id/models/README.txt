@@ -20,5 +20,5 @@ How to generate (manual):
   6. Copy both here as CavaFace.onnx and CavaFace.data
 
 Run with NPU after setup:
-  .\run.ps1 identify  -Image unknown.jpg -Npu
-  .\run.ps1 benchmark -Image photo.jpg   -Npu
+  python face_pipeline.py --npu identify  unknown.jpg
+  python face_pipeline.py --npu benchmark photo.jpg

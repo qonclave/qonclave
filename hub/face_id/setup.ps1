@@ -1,6 +1,6 @@
 # setup.ps1
 # One-time setup for the face identification pipeline.
-# Run once after cloning the repo, then use run.ps1 for every identify/compare/benchmark.
+# Run once after cloning the repo, then run face_pipeline.py directly.
 #
 # On ARM64 (Snapdragon X / WoS): NPU export is automatic — it's mandatory for real-time perf.
 # On x86 (dev/test machine): CPU only, no NPU export needed.
@@ -109,8 +109,8 @@ Write-Host " Setup complete!" -ForegroundColor Green
 Write-Host ""
 Write-Host " Add face photos to known_faces\ then run:" -ForegroundColor Cyan
 if ($isArm) {
-    Write-Host "   .\run.ps1 identify -Image unknown.jpg -Npu" -ForegroundColor White
+    Write-Host "   python face_pipeline.py --npu identify unknown.jpg" -ForegroundColor White
 } else {
-    Write-Host "   .\run.ps1 identify -Image unknown.jpg" -ForegroundColor White
+    Write-Host "   python face_pipeline.py identify unknown.jpg" -ForegroundColor White
 }
 Write-Host "================================================================" -ForegroundColor Green
