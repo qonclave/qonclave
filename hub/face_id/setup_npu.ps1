@@ -3,15 +3,15 @@
 # and copies them to hub/face_id/models/ for full NPU inference.
 #
 # Both models run on Hexagon NPU (Snapdragon X Elite):
-#   MediaPipeFace  ~ 0.7ms  (face detection)
-#   CavaFace       ~ 4.3ms  (face embedding)
-#   Total pipeline ~ 5ms    (vs ~265ms CPU)
+#   MediaPipeFace  ~0.7ms  (face detection)
+#   CavaFace       ~4.3ms  (face embedding)
+#   Total pipeline ~5ms    (vs ~265ms CPU)
 #
-# AI Hub output structure (discovered empirically):
+#   AI Hub output structure:
 #   <name>.onnx.zip
-#     └── job_<jobid>_optimized_onnx/
-#           ├── model.onnx   (graph)
-#           └── model.data   (weights, referenced by model.onnx)
+#     +-- job_<jobid>_optimized_onnx/
+#           +-- model.onnx   (graph)
+#           +-- model.data   (weights, referenced by model.onnx)
 #
 # Usage:
 #   .\setup_npu.ps1                        # prompts for token
@@ -26,6 +26,7 @@ $ErrorActionPreference = "Stop"
 $ScriptDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ModelsDir   = Join-Path $ScriptDir "models"
 $DownloadDir = Join-Path $env:TEMP "qonclave_npu_export"
+$python      = (Get-Command python).Source
 
 function Info { param($m) Write-Host "[INFO]  $m" -ForegroundColor Cyan   }
 function Ok   { param($m) Write-Host "[ OK ]  $m" -ForegroundColor Green  }
@@ -73,7 +74,7 @@ function Export-Model {
     Extract-And-Copy -ZipPath $zipFile.FullName -DestName $DestName
 }
 
-# ── Step 1: Get token ─────────────────────────────────────────────────────────
+# Step 1: Get token
 
 if (-not $Token) {
     Write-Host ""
@@ -85,10 +86,9 @@ if (-not $Token) {
     if (-not $Token) { Fail "No token provided." }
 }
 
-# ── Step 2: Install and configure ────────────────────────────────────────────
+# Step 2: Install and configure
 
 Info "Installing qai-hub-models..."
-$python = (Get-Command python).Source
 & $python -m pip install qai-hub "qai-hub-models[mediapipe_face,cavaface]" -c "$ScriptDir\constraints.txt"
 Ok "Packages ready"
 
@@ -97,21 +97,19 @@ Info "Configuring AI Hub..."
 if ($LASTEXITCODE -ne 0) { Fail "AI Hub configuration failed. Check your token." }
 Ok "AI Hub configured"
 
-# ── Step 3: Create output dirs ────────────────────────────────────────────────
+# Step 3: Create output dirs
 
 New-Item -ItemType Directory -Force -Path $DownloadDir | Out-Null
 New-Item -ItemType Directory -Force -Path $ModelsDir   | Out-Null
 
-# ── Step 4: Export both models ────────────────────────────────────────────────
+# Step 4: Export both models
 
 Write-Host ""
-Write-Host "Exporting 2 models — this takes ~5-10 minutes total..." -ForegroundColor Cyan
+Write-Host "Exporting 2 models - this takes ~5-10 minutes total..." -ForegroundColor Cyan
 Write-Host ""
 
 Export-Model -ModelName "mediapipe_face" -DestName "MediaPipeFace"
 Export-Model -ModelName "cavaface"       -DestName "CavaFace"
-
-# ── Done ──────────────────────────────────────────────────────────────────────
 
 Write-Host ""
 Write-Host "================================================================" -ForegroundColor Green

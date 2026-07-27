@@ -2,7 +2,7 @@
 # One-time setup for the face identification pipeline.
 # Run once after cloning the repo, then run face_pipeline.py directly.
 #
-# On ARM64 (Snapdragon X / WoS): NPU export is automatic — it's mandatory for real-time perf.
+# On ARM64 (Snapdragon X / WoS): NPU export runs automatically.
 # On x86 (dev/test machine): CPU only, no NPU export needed.
 #
 # Usage:
@@ -19,32 +19,31 @@ Set-Location $ScriptDir
 
 $arch   = $env:PROCESSOR_ARCHITECTURE
 $isArm  = ($arch -eq "ARM64")
-$python = (Get-Command python).Source   # use the python that is actually on PATH
+$python = (Get-Command python).Source
 
 function Info { param($m) Write-Host "[INFO]  $m" -ForegroundColor Cyan  }
 function Ok   { param($m) Write-Host "[ OK ]  $m" -ForegroundColor Green }
 function Fail { param($m) Write-Host "[FAIL]  $m" -ForegroundColor Red; exit 1 }
 
 Write-Host ""
-Write-Host "Face ID Pipeline — Setup" -ForegroundColor Green
+Write-Host "Face ID Pipeline - Setup" -ForegroundColor Green
 Write-Host "Platform: $arch" -ForegroundColor Cyan
 if ($isArm) {
-    Write-Host "Mode    : ARM64 — NPU export will run automatically" -ForegroundColor Cyan
+    Write-Host "Mode    : ARM64 - NPU export will run automatically" -ForegroundColor Cyan
 } else {
-    Write-Host "Mode    : x86 — CPU only" -ForegroundColor Cyan
+    Write-Host "Mode    : x86 - CPU only" -ForegroundColor Cyan
 }
 Write-Host ""
 
-# ── Step 1: opencv (platform-aware) ──────────────────────────────────────────
+# Step 1: opencv (platform-aware)
 
 Info "Installing opencv..."
 if ($arch -eq "ARM64") {
     $wheel = Get-ChildItem "$ScriptDir\wheels" -Filter "opencv_python_headless-*-win_arm64.whl" |
              Sort-Object Name -Descending | Select-Object -First 1
     if (-not $wheel) {
-        Write-Host ""
         Write-Host "  No ARM64 opencv wheel found in wheels\." -ForegroundColor Yellow
-        Write-Host "  Run build_opencv_arm64.ps1 first to build it, then re-run setup.ps1." -ForegroundColor Yellow
+        Write-Host "  Run build_opencv_arm64.ps1 first, then re-run setup.ps1." -ForegroundColor Yellow
         Fail "Missing ARM64 opencv wheel."
     }
     & $python -m pip install $wheel.FullName
@@ -54,7 +53,7 @@ if ($arch -eq "ARM64") {
     Ok "opencv-python-headless installed"
 }
 
-# ── Step 2: onnxruntime-qnn (ARM64 only, needed for NPU) ─────────────────────
+# Step 2: onnxruntime-qnn (ARM64 only, for NPU)
 
 if ($arch -eq "ARM64") {
     Info "Installing onnxruntime-qnn (for NPU support)..."
@@ -62,7 +61,7 @@ if ($arch -eq "ARM64") {
     Ok "onnxruntime-qnn installed"
 }
 
-# ── Step 3: mediapipe + qai-hub-models ───────────────────────────────────────
+# Step 3: mediapipe + qai-hub-models
 
 Info "Installing mediapipe..."
 & $python -m pip install mediapipe --no-deps
@@ -73,7 +72,7 @@ Info "Installing qai-hub-models[cavaface] + pillow + numpy..."
 if ($LASTEXITCODE -ne 0) { Fail "pip install failed." }
 Ok "qai-hub-models installed"
 
-# ── Step 4: Download MediaPipe CPU model ─────────────────────────────────────
+# Step 4: Download MediaPipe CPU model
 
 $mpModel = "$ScriptDir\face_detector.tflite"
 if (-not (Test-Path $mpModel)) {
@@ -85,11 +84,11 @@ if (-not (Test-Path $mpModel)) {
     Ok "face_detector.tflite already present"
 }
 
-# ── Step 5: NPU model export (mandatory on ARM64, skipped on x86) ─────────────
+# Step 5: NPU model export (mandatory on ARM64, skipped on x86)
 
 if ($isArm) {
     Write-Host ""
-    Info "ARM64 detected — exporting NPU models (mandatory for real-time performance)..."
+    Info "ARM64 detected - exporting NPU models (mandatory for real-time performance)..."
     if ($Token) {
         & "$ScriptDir\setup_npu.ps1" -Token $Token
     } else {
@@ -98,11 +97,9 @@ if ($isArm) {
     if ($LASTEXITCODE -ne 0) { Fail "NPU setup failed." }
 } else {
     Write-Host ""
-    Info "x86 machine — skipping NPU export (CPU mode only)"
+    Info "x86 machine - skipping NPU export (CPU mode only)"
     Info "To run on Snapdragon X with NPU, execute setup.ps1 on the ARM64 machine."
 }
-
-# ── Done ─────────────────────────────────────────────────────────────────────
 
 Write-Host ""
 Write-Host "================================================================" -ForegroundColor Green
