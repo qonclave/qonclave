@@ -85,8 +85,14 @@ function Write-Warn($msg) { Write-Host "    [!]  $msg" -ForegroundColor Yellow }
 
 # --- 0. Sanity: this must be an ARM64 machine, running from inside a checkout
 Write-Step "Checking machine architecture"
-$osArch = $env:PROCESSOR_ARCHITECTURE
-Write-Host "    PROCESSOR_ARCHITECTURE = $osArch"
+# Read this from the registry, not $env:PROCESSOR_ARCHITECTURE - the env var
+# reflects the CALLING PROCESS's architecture, so a powershell.exe running
+# under x64 emulation on a Snapdragon X box reports AMD64 and this script
+# would mistake an ARM64 host for x86. That matters twice: the warning below,
+# and the face-ID model probe in step 6b, which only requires the exported
+# .onnx files on ARM64. hub\face_id\setup.ps1 reads the same registry value.
+$osArch = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment').PROCESSOR_ARCHITECTURE
+Write-Host "    PROCESSOR_ARCHITECTURE (OS) = $osArch"
 if ($osArch -notmatch 'ARM64') {
     Write-Warn "This does not look like an ARM64 host. GenieX only ships ARM64 wheels; continuing anyway."
 }
