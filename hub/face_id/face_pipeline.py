@@ -268,19 +268,46 @@ def mode_compare(detector, model, image1: str, image2: str, use_npu: bool):
     print(f"Time       : {elapsed:.0f}ms")
 
 
-def mode_identify(detector, model, unknown_path: str, db_dir: str, use_npu: bool):
-    db   = Path(db_dir)
-    exts = {".jpg", ".jpeg", ".png", ".webp"}
+def _cache_path(db_dir: Path, use_npu: bool) -> Path:
+    suffix = "npu" if use_npu else "cpu"
+    return db_dir / f".embeddings_{suffix}.npy"
 
-    print(f"\nBuilding face database from: {db}")
+
+def _load_db(detector, model, db_dir: Path, use_npu: bool) -> dict:
+    """Load embeddings from cache if up to date, else recompute and save."""
+    exts      = {".jpg", ".jpeg", ".png", ".webp"}
+    img_paths = sorted(p for p in db_dir.rglob("*") if p.suffix.lower() in exts)
+    cache     = _cache_path(db_dir, use_npu)
+
+    # Check if cache is still valid: exists and newer than all images
+    if cache.exists():
+        cache_mtime = cache.stat().st_mtime
+        if all(p.stat().st_mtime <= cache_mtime for p in img_paths):
+            data = np.load(str(cache), allow_pickle=True).item()
+            print(f"  Loaded {len(data)} embeddings from cache (instant)")
+            return data
+
+    # Recompute
+    print(f"  Computing embeddings for {len(img_paths)} known face(s)...")
     known = {}
-    for img_path in sorted(db.rglob("*")):
-        if img_path.suffix.lower() not in exts:
-            continue
+    for img_path in img_paths:
         emb = get_embedding(detector, model, str(img_path), use_npu)
         if emb is not None:
             known[img_path.stem] = emb
-            print(f"  enrolled: {img_path.stem}")
+            print(f"    enrolled: {img_path.stem}")
+
+    if known:
+        np.save(str(cache), known)
+        print(f"  Saved to cache: {cache.name}")
+
+    return known
+
+
+def mode_identify(detector, model, unknown_path: str, db_dir: str, use_npu: bool):
+    db = Path(db_dir)
+
+    print(f"\nLoading face database from: {db}")
+    known = _load_db(detector, model, db, use_npu)
 
     if not known:
         print("No faces enrolled - check db path and image files.")

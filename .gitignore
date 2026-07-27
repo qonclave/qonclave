@@ -34,8 +34,8 @@ Thumbs.db
 tmp/
 *.tmp
 
-# Hub runtime uploads
-hub/uploads/
+# Face ID embedding cache
+hub/face_id/known_faces/.embeddings_*.npy
 
 # Arduino App Lab build output
 .cache/
