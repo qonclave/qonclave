@@ -25,7 +25,7 @@ below is for running face_id **standalone**, with no hub involved.
 
 **Windows (x86 or ARM64), standalone:**
 ```powershell
-cd hub\face_id\setup
+cd hub\framework\face_id\setup
 .\setup.ps1
 ```
 This installs into whatever `python` resolves to on PATH. To target a specific
@@ -43,7 +43,7 @@ On x86 it installs CPU dependencies only.
 
 **Linux / macOS:**
 ```bash
-cd hub/face_id/setup
+cd hub/framework/face_id/setup
 chmod +x setup.sh && ./setup.sh
 ```
 
@@ -57,7 +57,7 @@ it), so re-running setup on the same machine/account doesn't need to
 recompile from scratch:
 
 ```powershell
-cd hub\face_id\setup
+cd hub\framework\face_id\setup
 .\setup_npu.ps1 -Token YOUR_TOKEN `
   -MediaPipeFaceJobId jpeyev475 `
   -CavaFaceJobId jg9dj44q5
@@ -162,7 +162,7 @@ auto-rebuilds when you add or replace photos.
 ## File layout
 
 ```
-hub/face_id/
+hub/framework/face_id/
   face_pipeline.py            main script / CLI
   identity.py                 FaceIdentityBackend, imported by hub/server.py
   setup/

@@ -13,7 +13,7 @@
 # (ARM64 only - see setup_npu.ps1 and README for details):
 #   .\setup.ps1 -Token YOUR_TOKEN -MediaPipeFaceJobId jXXXXXXXX -CavaFaceJobId jXXXXXXXX
 #
-# Target Python: hub/server.py imports hub/face_id/identity.py directly (see
+# Target Python: hub/server.py imports hub/framework/face_id/identity.py directly (see
 # hub/README.md), so face-ID's dependencies must live in whatever environment
 # actually runs the hub server - not necessarily this machine's system Python.
 # Pass that interpreter with -PythonPath:
@@ -31,7 +31,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-# This script lives in hub/face_id/setup/; $PkgDir is the face_id package
+# This script lives in hub/framework/face_id/setup/; $PkgDir is the face_id package
 # itself, which owns wheels/, models/ and the pipeline. Setup-time-only files
 # (constraints.txt, the sibling setup scripts) stay here under $ScriptDir.
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path

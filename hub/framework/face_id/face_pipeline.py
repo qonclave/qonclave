@@ -109,7 +109,7 @@ def _build_cavaface_npu():
             "  qai-hub configure --api_token YOUR_TOKEN\n"
             "  qai-hub-models export cavaface --target-runtime onnx "
             "--device \"Snapdragon X Elite\"\n"
-            "Then copy the resulting CavaFace.onnx to hub/face_id/models/"
+            "Then copy the resulting CavaFace.onnx to hub/framework/face_id/models/"
         )
 
     session = _qnn_session(CAVAFACE_ONNX_PATH, "CavaFace")

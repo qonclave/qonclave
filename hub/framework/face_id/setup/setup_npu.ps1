@@ -1,6 +1,6 @@
 # setup_npu.ps1
 # Exports MediaPipe Face Detector + CavaFace ONNX models via Qualcomm AI Hub
-# and copies them to hub/face_id/models/ for full NPU inference.
+# and copies them to hub/framework/face_id/models/ for full NPU inference.
 #
 # Both models run on Hexagon NPU (Snapdragon X Elite):
 #   MediaPipeFace  ~0.7ms  (face detection)
@@ -40,7 +40,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-# This script lives in hub/face_id/setup/, alongside constraints.txt; models/
+# This script lives in hub/framework/face_id/setup/, alongside constraints.txt; models/
 # belongs to the face_id package one level up.
 $ScriptDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
 $PkgDir      = Split-Path -Parent $ScriptDir

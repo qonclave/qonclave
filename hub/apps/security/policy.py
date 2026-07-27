@@ -14,7 +14,7 @@ import logging
 
 from framework.policy import Policy, Verdict
 from framework.vlm import VLMBackend
-from face_id.identity import FaceIdentityBackend
+from framework.face_id.identity import FaceIdentityBackend
 
 log = logging.getLogger("qonclave.hub")
 

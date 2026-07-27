@@ -92,7 +92,7 @@ reasoning, and only if the host is ARM64. Everything else in the diagram
   schema it expects back from the VLM, how that maps to an alert string, and
   `identity_status` — once the VLM confirms a person, `SecurityPolicy`
   additionally runs `face_id.identity.FaceIdentityBackend.identify()` (see
-  `hub/face_id/`) against `hub/face_id/known_faces/` and reports the match
+  `hub/framework/face_id/`) against `hub/framework/face_id/known_faces/` and reports the match
   (`"mahesh_babu (92%)"`, `"unknown"`, `"no_face_detected"`, or
   `"not_enabled"` if the face-ID backend/dependencies aren't set up on this
   hub). A new use case (fall detection, hazard detection, ...) means writing
@@ -199,15 +199,15 @@ hub/
     vlm.py                  # VLMBackend: reason() + structured_query()
     mqtt_bus.py              # MQTTBus: publish_command() hub->edge push channel
     policy.py               # Policy ABC + Verdict dataclass (the app contract)
+    face_id/                # face detection + identification (see face_id/README.md)
+      identity.py           # FaceIdentityBackend: conditional wrapper used by SecurityPolicy
+      face_pipeline.py      # MediaPipe detection + CavaFace embedding, CPU or NPU
+      known_faces/          # one reference photo per enrolled person
   apps/
     security/                # this use case: stationary person detection
       policy.py              # SecurityPolicy(Policy) — VLM verify + face-ID lookup
       static/                # dashboard.html, test_edge.html, test_hub.html
       samples/                # bundled test images + helpers
-  face_id/                   # face detection + identification (see hub/face_id/README.md)
-    identity.py              # FaceIdentityBackend: conditional wrapper used by SecurityPolicy
-    face_pipeline.py          # MediaPipe detection + CavaFace embedding, CPU or NPU
-    known_faces/              # one reference photo per enrolled person
 ```
 
 ### Operator app vs. test consoles
@@ -250,7 +250,7 @@ groups with **no hyperlinks between the groups**:
   ```
   `identity_status` is `"not_enabled"` when no person was confirmed or the
   face-ID backend/dependencies aren't set up on this hub (see
-  `hub/face_id/README.md`), `"no_face_detected"` when a person was confirmed
+  `hub/framework/face_id/README.md`), `"no_face_detected"` when a person was confirmed
   but no face could be cropped from the frame, or `"unknown"` for a detected
   face that doesn't match anyone in `known_faces/`.
 

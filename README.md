@@ -25,9 +25,9 @@ person as `known` / `unknown`.
 edge/     # UNO Q: capture, local detection, event sender
 hub/      # Snapdragon X laptop: HTTP server, verification, reasoning, alert
   setup_hub.ps1  # environment bootstrap (GenieX + hub deps + face ID)
-  framework/     # reusable: transport, event store, VLM, HTTP routes, Policy contract
+  framework/     # reusable: transport, event store, VLM, face ID, HTTP routes, Policy contract
+    face_id/     # face identification (MediaPipe + CavaFace)
   apps/          # use cases built on the framework (today: apps/security/)
-  face_id/       # face identification (MediaPipe + CavaFace)
   tests/         # GenieX / VLM smoke tests
 shared/   # event schema, sample events
 demo/     # runbook, fallback assets
@@ -59,7 +59,7 @@ you, first.
 - Re-running is idempotent: existing Python/venv/deps are detected and reused
   or upgraded as needed.
 
-Face ID (`hub/face_id/`) is set up as part of that same run, into the same venv
+Face ID (`hub/framework/face_id/`) is set up as part of that same run, into the same venv
 — `hub/server.py` imports it in-process, so it has to live there. On ARM64 the
 NPU model export needs a Qualcomm AI Hub token; pass it up front to keep the
 run unattended, otherwise you'll be prompted:
@@ -71,7 +71,7 @@ run unattended, otherwise you'll be prompted:
 - Skip face ID entirely: `.\hub\setup_hub.ps1 -SkipFaceId` (the hub still
   runs; face-ID reports `not_enabled`)
 - Reuse already-compiled AI Hub jobs instead of recompiling:
-  `-MediaPipeFaceJobId jXXXXXXXX -CavaFaceJobId jXXXXXXXX` — see `hub/face_id/README.md`
+  `-MediaPipeFaceJobId jXXXXXXXX -CavaFaceJobId jXXXXXXXX` — see `hub/framework/face_id/README.md`
 - Already-installed face ID is detected and skipped, and a face-ID failure warns
   rather than aborting the bootstrap.
 

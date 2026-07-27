@@ -6,7 +6,7 @@
 #   ./setup.sh
 
 set -e
-# This script lives in hub/face_id/setup/, alongside constraints.txt; PKG_DIR
+# This script lives in hub/framework/face_id/setup/, alongside constraints.txt; PKG_DIR
 # is the face_id package one level up, which owns models/ and the pipeline.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PKG_DIR="$(dirname "$SCRIPT_DIR")"

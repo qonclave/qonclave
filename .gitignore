@@ -21,7 +21,7 @@ env/
 *.bin
 *.gguf
 models/
-!hub/face_id/models/README.txt
+!hub/framework/face_id/models/README.txt
 
 # OS / editor
 .DS_Store
@@ -35,7 +35,7 @@ tmp/
 *.tmp
 
 # Face ID embedding cache
-hub/face_id/known_faces/.embeddings_*.npy
+hub/framework/face_id/known_faces/.embeddings_*.npy
 
 # Hub runtime uploads (camera frames received from edge devices)
 hub/uploads/

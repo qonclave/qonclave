@@ -41,7 +41,7 @@ log = logging.getLogger("qonclave.hub")
 from framework.server import create_app  # noqa: E402
 from framework.vlm import VLMBackend  # noqa: E402
 from framework.mqtt_bus import MQTTBus  # noqa: E402
-from face_id.identity import FaceIdentityBackend  # noqa: E402
+from framework.face_id.identity import FaceIdentityBackend  # noqa: E402
 from apps.security.policy import SecurityPolicy  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
