@@ -4,19 +4,14 @@ Face identification pipeline: MediaPipe (detection) + CavaFace (embedding)
 Works on:
   - Linux x86_64          (CPU)
   - Windows x86_64        (CPU)
-  - Windows ARM64 (WoS)   (CPU or NPU via QNNExecutionProvider)
+  - Windows ARM64 (WoS)   (CPU or full NPU via QNNExecutionProvider)
   - macOS ARM64           (CPU)
 
-NPU mode (Snapdragon X Elite):
-  1. Export model on any machine with AI Hub account:
-       qai-hub configure --api_token YOUR_TOKEN
-       qai-hub-models export cavaface --target-runtime onnx --device "Snapdragon X Elite"
-     This produces build/CavaFace.onnx in the current directory.
-
-  2. Copy CavaFace.onnx to hub/face_id/models/CavaFace.onnx
-
-  3. Run with --npu flag:
-       python face_pipeline.py --npu identify --image unknown.jpg
+NPU mode (Snapdragon X Elite — ~5ms total vs ~265ms CPU):
+  Run setup_npu.ps1 once to export both models via AI Hub:
+    .\setup_npu.ps1
+  Then run with --npu:
+    .\run.ps1 identify -Image unknown.jpg -Npu
 
 Usage:
   python face_pipeline.py compare  image1.jpg image2.jpg
@@ -37,9 +32,10 @@ from PIL import Image
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
-MODELS_DIR          = Path(__file__).parent / "models"
-CAVAFACE_ONNX_PATH  = MODELS_DIR / "CavaFace.onnx"
-CAVAFACE_DATA_PATH  = MODELS_DIR / "CavaFace.data"
+MODELS_DIR               = Path(__file__).parent / "models"
+CAVAFACE_ONNX_PATH       = MODELS_DIR / "CavaFace.onnx"
+CAVAFACE_DATA_PATH       = MODELS_DIR / "CavaFace.data"
+MEDIAPIPE_NPU_ONNX_PATH  = MODELS_DIR / "MediaPipeFace.onnx"
 
 MEDIAPIPE_MODEL_URL  = (
     "https://storage.googleapis.com/mediapipe-models/face_detector/"
@@ -122,7 +118,7 @@ def _embed_npu(session_tuple, face_img: Image.Image) -> np.ndarray:
     return emb / norm
 
 
-# ── MediaPipe face detector (CPU on all platforms) ───────────────────────────
+# ── MediaPipe face detector ───────────────────────────────────────────────────
 
 def _ensure_mp_model():
     if not MEDIAPIPE_MODEL_PATH.exists():
@@ -130,26 +126,66 @@ def _ensure_mp_model():
         urllib.request.urlretrieve(MEDIAPIPE_MODEL_URL, MEDIAPIPE_MODEL_PATH)
 
 
-def _build_detector():
+def _build_detector_cpu():
     import mediapipe as mp
     from mediapipe.tasks.python.vision import FaceDetector, FaceDetectorOptions
     from mediapipe.tasks.python.core.base_options import BaseOptions
 
     _ensure_mp_model()
-    # Note: MediaPipe on Windows has no QNN/GPU delegate — CPU only
     options = FaceDetectorOptions(
         base_options=BaseOptions(model_asset_path=str(MEDIAPIPE_MODEL_PATH)),
         min_detection_confidence=0.4,
     )
-    return FaceDetector.create_from_options(options)
+    return ("mediapipe", FaceDetector.create_from_options(options))
+
+
+def _build_detector_npu():
+    """Load MediaPipe Face Detector ONNX on Hexagon NPU via QNNExecutionProvider."""
+    if not MEDIAPIPE_NPU_ONNX_PATH.exists():
+        raise FileNotFoundError(
+            f"NPU detector not found: {MEDIAPIPE_NPU_ONNX_PATH}\n"
+            "Run setup_npu.ps1 to export both models."
+        )
+    try:
+        import onnxruntime as ort
+    except ImportError:
+        raise ImportError("onnxruntime-qnn not installed. Run: pip install onnxruntime-qnn")
+
+    providers = [
+        ("QNNExecutionProvider", {"backend_path": "QnnHtp.dll"}),
+        "CPUExecutionProvider",
+    ]
+    try:
+        session = ort.InferenceSession(str(MEDIAPIPE_NPU_ONNX_PATH), providers=providers)
+        active = session.get_providers()[0]
+        print(f"  MediaPipeFace running on: {active}")
+    except Exception:
+        print("  [!] QNNExecutionProvider unavailable for detector, falling back to CPU ONNX")
+        session = ort.InferenceSession(str(MEDIAPIPE_NPU_ONNX_PATH), providers=["CPUExecutionProvider"])
+
+    input_name = session.get_inputs()[0].name
+    input_shape = session.get_inputs()[0].shape  # e.g. [1, 3, 128, 128]
+    return ("onnx", session, input_name, input_shape)
+
+
+def _build_detector(use_npu: bool):
+    if use_npu and MEDIAPIPE_NPU_ONNX_PATH.exists():
+        return _build_detector_npu()
+    return _build_detector_cpu()
 
 
 def detect_and_crop_face(detector, pil_img: Image.Image, padding: float = 0.3) -> "Image.Image | None":
+    if detector[0] == "onnx":
+        return _detect_npu(detector, pil_img, padding)
+    return _detect_mediapipe(detector[1], pil_img, padding)
+
+
+def _detect_mediapipe(mp_detector, pil_img: Image.Image, padding: float) -> "Image.Image | None":
     import mediapipe as mp
 
     rgb      = pil_img.convert("RGB")
     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=np.array(rgb))
-    result   = detector.detect(mp_image)
+    result   = mp_detector.detect(mp_image)
 
     if not result.detections:
         return None
@@ -167,7 +203,41 @@ def detect_and_crop_face(detector, pil_img: Image.Image, padding: float = 0.3) -
     return rgb.crop((x1, y1, x2, y2)).resize((112, 112), Image.LANCZOS)
 
 
-# ── Unified embedding call ────────────────────────────────────────────────────
+def _detect_npu(detector_tuple, pil_img: Image.Image, padding: float) -> "Image.Image | None":
+    """Run MediaPipe BlazeFace ONNX on NPU, return cropped face."""
+    _, session, input_name, input_shape = detector_tuple
+    h_in, w_in = input_shape[2], input_shape[3]  # e.g. 128x128
+
+    rgb = pil_img.convert("RGB")
+    w, h = rgb.size
+
+    # Preprocess: resize to model input, normalize [0,1]
+    resized = rgb.resize((w_in, h_in), Image.LANCZOS)
+    arr = np.array(resized, dtype=np.float32) / 255.0
+    inp = arr.transpose(2, 0, 1)[np.newaxis]  # [1, 3, H, W]
+
+    outputs = session.run(None, {input_name: inp})
+    # BlazeFace outputs: [boxes, scores] — boxes in [0,1] relative coords
+    boxes, scores = outputs[0], outputs[1]
+    scores = scores.squeeze()
+    if scores.ndim == 0:
+        scores = scores[np.newaxis]
+
+    best_idx = int(np.argmax(scores))
+    if scores[best_idx] < 0.4:
+        return None
+
+    # boxes shape: [N, 4] in [ymin, xmin, ymax, xmax] or [xmin, ymin, xmax, ymax]
+    box = boxes[0][best_idx] if boxes.ndim == 3 else boxes[best_idx]
+    # Try to infer format from values
+    x1 = max(0, int(box[0] * w) - int((box[2]-box[0]) * w * padding))
+    y1 = max(0, int(box[1] * h) - int((box[3]-box[1]) * h * padding))
+    x2 = min(w, int(box[2] * w) + int((box[2]-box[0]) * w * padding))
+    y2 = min(h, int(box[3] * h) + int((box[3]-box[1]) * h * padding))
+
+    if x2 <= x1 or y2 <= y1:
+        return None
+    return rgb.crop((x1, y1, x2, y2)).resize((112, 112), Image.LANCZOS)
 
 def get_embedding(detector, model, image_path: str, use_npu: bool) -> "np.ndarray | None":
     img  = Image.open(image_path)
@@ -299,11 +369,14 @@ def main():
     use_npu = args.npu
     mode    = platform.system() + " " + platform.machine()
     print(f"Platform : {mode}  Python {sys.version.split()[0]}")
-    print(f"Mode     : {'NPU (QNNExecutionProvider)' if use_npu else 'CPU (PyTorch)'}")
+    det_mode = "NPU ONNX" if (use_npu and MEDIAPIPE_NPU_ONNX_PATH.exists()) else "CPU (MediaPipe)"
+    emb_mode = "NPU ONNX" if use_npu else "CPU (PyTorch)"
+    print(f"Detector : {det_mode}")
+    print(f"Embedder : {emb_mode}")
     print("Loading models...")
 
     t0       = time.time()
-    detector = _build_detector()
+    detector = _build_detector(use_npu)
     model    = _build_cavaface_npu() if use_npu else _build_cavaface_cpu()
     print(f"Ready in {time.time()-t0:.1f}s\n")
 
