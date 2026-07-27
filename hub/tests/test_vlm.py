@@ -6,13 +6,14 @@ Feeds an image + prompt to the VLM and prints its reasoning. This is the hub-sid
 "second-stage reasoning" step for Qonclave: once the edge device escalates a frame,
 the hub describes the scene and can generate alert text.
 
-Run inside the geniex-env on the Snapdragon X box:
+Run inside the geniex-env built by hub/setup_hub.ps1, from the repo root:
 
-    .\\geniex-env\\Scripts\\Activate.ps1
-    # grab a sample image the first time:
+    .\\hub\\geniex-env\\Scripts\\Activate.ps1
+    # grab a sample image the first time (image paths are relative to the
+    # directory you run from, not to this script):
     curl -o demo.jpg https://qaihub-public-assets.s3.us-west-2.amazonaws.com/qai-hub-geniex/demo.jpg
-    python hub\\test_vlm.py                 # uses demo.jpg, default prompt
-    python hub\\test_vlm.py my_frame.jpg "Is a person present? What are they doing?"
+    python hub\\tests\\test_vlm.py           # uses demo.jpg, default prompt
+    python hub\\tests\\test_vlm.py my_frame.jpg "Is a person present? What are they doing?"
 
 Model bundle: ai-hub-models/Qwen2.5-VL-7B-Instruct  (Qualcomm AI Hub VLM bundle,
 runs on the Hexagon NPU via the qairt runtime; the largest VLM AI Hub lists for

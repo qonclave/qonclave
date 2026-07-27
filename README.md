@@ -28,6 +28,7 @@ hub/      # Snapdragon X laptop: HTTP server, verification, reasoning, alert
   framework/     # reusable: transport, event store, VLM, HTTP routes, Policy contract
   apps/          # use cases built on the framework (today: apps/security/)
   face_id/       # face identification (MediaPipe + CavaFace)
+  tests/         # GenieX / VLM smoke tests
 shared/   # event schema, sample events
 demo/     # runbook, fallback assets
 ```
