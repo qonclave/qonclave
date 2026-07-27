@@ -90,12 +90,27 @@ if (-not $JobId) {
     New-Item -ItemType Directory -Force -Path $DownloadDir | Out-Null
 
     python -c "
-import qai_hub as hub
-job = hub.get_job('$JobId')
+import sys, qai_hub as hub
+
+try:
+    job = hub.get_job('$JobId')
+except Exception as e:
+    print(f'ERROR: Could not find job $JobId — {e}', file=sys.stderr)
+    sys.exit(1)
+
+status = job.get_status().code
+if status != 'SUCCESS':
+    print(f'ERROR: Job $JobId is not complete (status: {status}). Wait for it to finish or run a new export.', file=sys.stderr)
+    sys.exit(2)
+
 target = job.get_target_model()
 target.download(r'$DownloadDir\cavaface_npu')
 print('Downloaded')
 "
+    if ($LASTEXITCODE -eq 1) { Fail "Job '$JobId' not found on AI Hub. Check the job ID." }
+    if ($LASTEXITCODE -eq 2) { Fail "Job '$JobId' is not complete yet. Check status at https://workbench.aihub.qualcomm.com/jobs/$JobId/" }
+    if ($LASTEXITCODE -ne 0) { Fail "Download failed (exit $LASTEXITCODE)." }
+
     $zipFile = Get-ChildItem $DownloadDir -Filter "*.onnx.zip" | Select-Object -First 1
     if (-not $zipFile) { Fail "Download failed — no .onnx.zip in $DownloadDir" }
 }
