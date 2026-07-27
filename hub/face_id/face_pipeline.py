@@ -39,6 +39,7 @@ from PIL import Image
 
 MODELS_DIR          = Path(__file__).parent / "models"
 CAVAFACE_ONNX_PATH  = MODELS_DIR / "CavaFace.onnx"
+CAVAFACE_DATA_PATH  = MODELS_DIR / "CavaFace.data"
 
 MEDIAPIPE_MODEL_URL  = (
     "https://storage.googleapis.com/mediapipe-models/face_detector/"
