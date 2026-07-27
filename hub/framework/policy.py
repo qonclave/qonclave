@@ -16,6 +16,13 @@ from dataclasses import dataclass, field
 
 
 @dataclass
+class Notification:
+    """An SMS notification request from a Policy to the framework."""
+    message: str
+    recipient: str
+
+
+@dataclass
 class Verdict:
     """Result of a policy evaluating one escalated frame."""
 
@@ -50,5 +57,15 @@ class Policy(ABC):
         Optional hub->edge command to send back in the response (e.g.
         {"type": "navigate_to", "target": "living_room"}). Most apps have
         no edge actuator to command, so the default is no command.
+        """
+        return None
+
+    def notify_for(self, verdict: Verdict, event: dict) -> Notification | None:
+        """
+        Optional SMS notification to send after a verdict. Return a
+        Notification(message, recipient) to trigger an SMS; None to suppress.
+        In trial mode the framework sends a fixed template to a fixed number
+        regardless of the Notification's field values — they are accepted now
+        and will be used in a future release.
         """
         return None

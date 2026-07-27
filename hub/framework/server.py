@@ -50,6 +50,7 @@ from flask import Flask, jsonify, redirect, request, send_from_directory
 from . import discovery, events, icons, transport
 from .mqtt_bus import MQTTBus
 from .policy import Policy
+from .sms_bus import SMSBus
 from .vlm import VLMBackend
 
 log = logging.getLogger("qonclave.hub")
@@ -57,15 +58,18 @@ log = logging.getLogger("qonclave.hub")
 MAX_UPLOAD_MB = int(os.environ.get("QONCLAVE_MAX_UPLOAD_MB", "16"))
 
 
-def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, static_dir: str) -> Flask:
+def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
+               static_dir: str) -> Flask:
     """
     Build the Qonclave hub Flask app for one Policy.
 
-    policy      the app's Policy instance (evaluate/command_for)
+    policy      the app's Policy instance (evaluate/command_for/notify_for)
     vlm         shared VLMBackend, exposed via /health and /user/reason
     mqtt        shared MQTTBus; commands from command_for() are also
                 published here so a device can receive them without an
                 open HTTP request
+    sms         shared SMSBus; sends an SMS when notify_for() returns a
+                Notification (trial mode: fixed template + fixed number)
     static_dir  directory holding the app's dashboard.html, test_*.html
     """
     app = Flask(__name__, static_folder=None)
@@ -88,6 +92,7 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, static_dir: str) 
             "time": transport.now_iso(),
             "vlm": vlm.status(),
             "mqtt": mqtt.status(),
+            "sms": sms.status(),
         })
 
     @app.get("/")
@@ -162,6 +167,10 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, static_dir: str) 
         device_id = event.get("device_id")
         if command is not None and device_id:
             mqtt.publish_command(device_id, command)
+
+        notification = policy.notify_for(verdict, event)
+        if notification is not None:
+            sms.send(notification)
 
         response = {
             "schema_version": events.SCHEMA_VERSION,
