@@ -21,6 +21,7 @@ env/
 *.bin
 *.gguf
 models/
+!hub/face_id/models/README.txt
 
 # OS / editor
 .DS_Store
