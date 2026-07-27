@@ -234,6 +234,27 @@ Ok "AI Hub configured"
 New-Item -ItemType Directory -Force -Path $DownloadDir | Out-Null
 New-Item -ItemType Directory -Force -Path $ModelsDir   | Out-Null
 
+# qai-hub-models 0.58.0's own info.yaml "is this model published" validator
+# requires a release-assets.yaml sidecar file next to each model that the
+# PyPI wheel simply doesn't ship - every model's export crashes with
+# "no release assets available" until one exists (content is never read,
+# only its presence is checked). This is a fresh-environment gotcha, not a
+# one-time fix: it recurs in ANY new venv qai-hub-models gets installed
+# into (e.g. scripts/geniex-env, a teammate's machine, CI), so create it
+# here rather than requiring a manual patch each time. No-ops harmlessly
+# if qai_hub_models isn't installed (pure job-ID-reuse mode needs only
+# bare qai_hub).
+& $python -c @"
+try:
+    from qai_hub_models.utils.path_helpers import QAIHM_MODELS_ROOT
+    for model_id in ('mediapipe_face', 'cavaface'):
+        p = QAIHM_MODELS_ROOT / model_id / 'release-assets.yaml'
+        if not p.exists():
+            p.touch()
+except ImportError:
+    pass
+"@ 2>$null
+
 # Step 4: Export both models (or download from reused jobs)
 
 Write-Host ""
