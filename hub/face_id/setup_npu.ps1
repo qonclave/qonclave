@@ -58,7 +58,7 @@ function Export-Model {
     New-Item -ItemType Directory -Force -Path "$DownloadDir\$DestName" | Out-Null
 
     Push-Location "$DownloadDir\$DestName"
-    qai-hub-models export $ModelName `
+    & $python -m qai_hub_models.cli export $ModelName `
         --target-runtime onnx `
         --device $Device `
         --output-dir "$DownloadDir\$DestName\export_assets"
@@ -88,11 +88,12 @@ if (-not $Token) {
 # ── Step 2: Install and configure ────────────────────────────────────────────
 
 Info "Installing qai-hub-models..."
-pip install --quiet qai-hub "qai-hub-models[mediapipe_face,cavaface]" -c "$ScriptDir\constraints.txt"
+$python = (Get-Command python).Source
+& $python -m pip install --quiet qai-hub "qai-hub-models[mediapipe_face,cavaface]" -c "$ScriptDir\constraints.txt"
 Ok "Packages ready"
 
 Info "Configuring AI Hub..."
-qai-hub configure --api_token $Token
+& $python -m qai_hub configure --api_token $Token
 if ($LASTEXITCODE -ne 0) { Fail "AI Hub configuration failed. Check your token." }
 Ok "AI Hub configured"
 

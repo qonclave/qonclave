@@ -17,8 +17,9 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ScriptDir
 
-$arch = $env:PROCESSOR_ARCHITECTURE   # ARM64 on WoS, AMD64 on x86
-$isArm = ($arch -eq "ARM64")
+$arch   = $env:PROCESSOR_ARCHITECTURE
+$isArm  = ($arch -eq "ARM64")
+$python = (Get-Command python).Source   # use the python that is actually on PATH
 
 function Info { param($m) Write-Host "[INFO]  $m" -ForegroundColor Cyan  }
 function Ok   { param($m) Write-Host "[ OK ]  $m" -ForegroundColor Green }
@@ -46,10 +47,10 @@ if ($arch -eq "ARM64") {
         Write-Host "  Run build_opencv_arm64.ps1 first to build it, then re-run setup.ps1." -ForegroundColor Yellow
         Fail "Missing ARM64 opencv wheel."
     }
-    pip install $wheel.FullName --quiet
+    & $python -m pip install $wheel.FullName --quiet
     Ok "opencv installed from local wheel: $($wheel.Name)"
 } else {
-    pip install opencv-python-headless --quiet
+    & $python -m pip install opencv-python-headless --quiet
     Ok "opencv-python-headless installed"
 }
 
@@ -57,18 +58,18 @@ if ($arch -eq "ARM64") {
 
 if ($arch -eq "ARM64") {
     Info "Installing onnxruntime-qnn (for NPU support)..."
-    pip install onnxruntime-qnn --quiet
+    & $python -m pip install onnxruntime-qnn --quiet
     Ok "onnxruntime-qnn installed"
 }
 
 # ── Step 3: mediapipe + qai-hub-models ───────────────────────────────────────
 
 Info "Installing mediapipe..."
-pip install mediapipe --no-deps --quiet
+& $python -m pip install mediapipe --no-deps --quiet
 Ok "mediapipe installed"
 
 Info "Installing qai-hub-models[cavaface] + pillow + numpy..."
-pip install "qai-hub-models[cavaface]" pillow numpy --quiet -c "$ScriptDir\constraints.txt"
+& $python -m pip install "qai-hub-models[cavaface]" pillow numpy --quiet -c "$ScriptDir\constraints.txt"
 if ($LASTEXITCODE -ne 0) { Fail "pip install failed." }
 Ok "qai-hub-models installed"
 

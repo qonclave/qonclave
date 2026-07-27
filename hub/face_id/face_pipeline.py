@@ -1,4 +1,4 @@
-"""
+r"""
 Face identification pipeline: MediaPipe (detection) + CavaFace (embedding)
 
 Works on:
@@ -7,11 +7,10 @@ Works on:
   - Windows ARM64 (WoS)   (CPU or full NPU via QNNExecutionProvider)
   - macOS ARM64           (CPU)
 
-NPU mode (Snapdragon X Elite — ~5ms total vs ~265ms CPU):
-  Run setup_npu.ps1 once to export both models via AI Hub:
-    .\setup_npu.ps1
+NPU mode (Snapdragon X Elite -- ~5ms total vs ~265ms CPU):
+  Run setup.ps1 once on the Snapdragon X machine.
   Then run with --npu:
-    .\run.ps1 identify -Image unknown.jpg -Npu
+    python face_pipeline.py --npu identify unknown.jpg
 
 Usage:
   python face_pipeline.py compare  image1.jpg image2.jpg
