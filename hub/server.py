@@ -41,6 +41,7 @@ log = logging.getLogger("qonclave.hub")
 from framework.server import create_app  # noqa: E402
 from framework.vlm import VLMBackend  # noqa: E402
 from framework.mqtt_bus import MQTTBus  # noqa: E402
+from face_id.identity import FaceIdentityBackend  # noqa: E402
 from apps.security.policy import SecurityPolicy  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -54,8 +55,9 @@ MQTT_ENABLED = os.environ.get("QONCLAVE_MQTT_ENABLED", "1") == "1"
 
 vlm = VLMBackend()
 mqtt = MQTTBus(host=MQTT_HOST, port=MQTT_PORT, enabled=MQTT_ENABLED)
-policy = SecurityPolicy(vlm)
-app = create_app(policy=policy, vlm=vlm, mqtt=mqtt, static_dir=STATIC_DIR)
+face_id = FaceIdentityBackend()
+policy = SecurityPolicy(vlm, face_id)
+app = create_app(policy=policy, vlm=vlm, mqtt=mqtt, face_id=face_id, static_dir=STATIC_DIR)
 
 
 def main():
@@ -81,10 +83,13 @@ def main():
     log.info("Static dir : %s", STATIC_DIR)
     log.info("VLM status : %s", vlm.status())
     log.info("MQTT status: %s", mqtt.status())
+    log.info("Face ID    : %s", face_id.status())
     if os.environ.get("QONCLAVE_WARMUP") == "1":
-        log.info("QONCLAVE_WARMUP=1 -> loading VLM model now...")
+        log.info("QONCLAVE_WARMUP=1 -> loading VLM + face ID models now...")
         vlm.warmup()
+        face_id.warmup()
         log.info("VLM status after warmup: %s", vlm.status())
+        log.info("Face ID status after warmup: %s", face_id.status())
     log.info("Edge  : POST /edge/event")
     log.info("User  : GET /user/dashboard | GET /user/events | GET /user/latest.jpg")
     log.info("        GET /user/frames/<name> | POST /user/reason | GET /user/")

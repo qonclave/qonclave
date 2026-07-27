@@ -57,7 +57,8 @@ log = logging.getLogger("qonclave.hub")
 MAX_UPLOAD_MB = int(os.environ.get("QONCLAVE_MAX_UPLOAD_MB", "16"))
 
 
-def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, static_dir: str) -> Flask:
+def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, static_dir: str,
+               face_id=None) -> Flask:
     """
     Build the Qonclave hub Flask app for one Policy.
 
@@ -66,6 +67,8 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, static_dir: str) 
     mqtt        shared MQTTBus; commands from command_for() are also
                 published here so a device can receive them without an
                 open HTTP request
+    face_id     optional FaceIdentityBackend, exposed via /health only —
+                actual identification happens inside the Policy, not here
     static_dir  directory holding the app's dashboard.html, test_*.html
     """
     app = Flask(__name__, static_folder=None)
@@ -83,6 +86,7 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, static_dir: str) 
             "time": transport.now_iso(),
             "vlm": vlm.status(),
             "mqtt": mqtt.status(),
+            "face_id": face_id.status() if face_id else {"available": False},
         })
 
     @app.get("/")
