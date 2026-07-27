@@ -24,7 +24,8 @@ person as `known` / `unknown`.
 ```
 edge/     # UNO Q: capture, local detection, event sender
 hub/      # Snapdragon X laptop: HTTP server, verification, reasoning, alert
-  framework/   # reusable: transport, event store, VLM, HTTP routes, Policy contract
+  framework/   # reusable: transport, event store, VLM, HTTP routes, Policy contract,
+               #           MQTT push channel, SMS notifications
   apps/        # use cases built on the framework (today: apps/security/)
 shared/   # event schema, sample events
 demo/     # runbook, fallback assets
@@ -49,6 +50,16 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 This installs Git + ARM64 Python, creates the `geniex-env` venv, installs the
 GenieX SDK and `hub/requirements.txt`, then runs `hub/server.py`. It does
 **not** clone or pull the repo — that's on you, first.
+
+> **Windows Long Path requirement** — `hub/requirements.txt` includes packages
+> (e.g. `twilio`) with deeply nested install paths that exceed Windows' default
+> 260-character limit. Enable long paths once before running `pip install`,
+> from an **Administrator** PowerShell:
+> ```powershell
+> New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" `
+>     -Name "LongPathsEnabled" -Value 1 -PropertyType DWORD -Force
+> ```
+> No reboot needed. This is a one-time machine setting.
 
 - Stop after installing, without starting the server: `.\scripts\setup_geniex.ps1 -NoRun`
 - By default, the heavy VLM model is pre-loaded into memory immediately upon startup. To launch the server faster and load the model lazily on the first request instead, use: `.\scripts\setup_geniex.ps1 -NoWarmup`

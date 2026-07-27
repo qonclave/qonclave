@@ -27,6 +27,11 @@ import logging
 import os
 import sys
 
+from dotenv import load_dotenv
+
+# Load .env from the repo root before any framework imports read os.environ.
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env"))
+
 # Make "import framework" / "import apps" work regardless of CWD.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -41,6 +46,7 @@ log = logging.getLogger("qonclave.hub")
 from framework.server import create_app  # noqa: E402
 from framework.vlm import VLMBackend  # noqa: E402
 from framework.mqtt_bus import MQTTBus  # noqa: E402
+from framework.sms_bus import SMSBus  # noqa: E402
 from apps.security.policy import SecurityPolicy  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -54,8 +60,9 @@ MQTT_ENABLED = os.environ.get("QONCLAVE_MQTT_ENABLED", "1") == "1"
 
 vlm = VLMBackend()
 mqtt = MQTTBus(host=MQTT_HOST, port=MQTT_PORT, enabled=MQTT_ENABLED)
+sms = SMSBus()
 policy = SecurityPolicy(vlm)
-app = create_app(policy=policy, vlm=vlm, mqtt=mqtt, static_dir=STATIC_DIR)
+app = create_app(policy=policy, vlm=vlm, mqtt=mqtt, sms=sms, static_dir=STATIC_DIR)
 
 
 def main():
@@ -81,6 +88,7 @@ def main():
     log.info("Static dir : %s", STATIC_DIR)
     log.info("VLM status : %s", vlm.status())
     log.info("MQTT status: %s", mqtt.status())
+    log.info("SMS status : %s", sms.status())
     if os.environ.get("QONCLAVE_WARMUP") == "1":
         log.info("QONCLAVE_WARMUP=1 -> loading VLM model now...")
         vlm.warmup()
