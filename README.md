@@ -71,7 +71,9 @@ run unattended, otherwise you'll be prompted:
 - Skip face ID entirely: `.\hub\setup_hub.ps1 -SkipFaceId` (the hub still
   runs; face-ID reports `not_enabled`)
 - Reuse already-compiled AI Hub jobs instead of recompiling:
-  `-MediaPipeFaceJobId jXXXXXXXX -CavaFaceJobId jXXXXXXXX` — see `hub/framework/face_id/README.md`
+  `-MediaPipeFaceJobId jXXXXXXXX -CavaFaceJobId jXXXXXXXX` — see `hub/framework/face_id/README.md`.
+  Passing both also skips the `qai-hub-models`/torch install, since NPU
+  inference needs neither (at the cost of the CPU embedder fallback).
 - Already-installed face ID is detected and skipped, and a face-ID failure warns
   rather than aborting the bootstrap.
 

@@ -38,7 +38,11 @@
                         (Account -> Settings -> API Token).
       -MediaPipeFaceJobId / -CavaFaceJobId
                         reuse already-completed AI Hub compile jobs instead of
-                        recompiling - see hub/framework/face_id/README.md
+                        recompiling - see hub/framework/face_id/README.md.
+                        Passing BOTH also skips installing qai-hub-models and
+                        torch: they are the exporter and the CPU embedder, and
+                        NPU inference needs neither. Trade-off: no CPU embedder
+                        to fall back on if CavaFace.onnx later goes missing.
       -- a b c          extra args forwarded to hub/server.py, e.g.:
         .\hub\setup_hub.ps1 -- --verbose --port 8080
 #>
@@ -331,8 +335,16 @@ if ($SkipFaceId) {
     $FaceIdModels = Join-Path $RepoDir 'hub\framework\face_id\models'
 
     # Idempotency probe, so re-running this bootstrap every session stays quick:
-    # face-ID is already usable if its Python stack is present in THIS venv and -
-    # on ARM64, where the NPU export is mandatory - both exported models exist.
+    # face-ID is already usable if the stack its CHOSEN MODE needs is present in
+    # THIS venv and - on ARM64, where the NPU export is mandatory - both exported
+    # models exist.
+    #
+    # Probe per mode, not a fixed list: ARM64 runs both models through
+    # onnxruntime-qnn and touches neither mediapipe nor qai_hub_models, and with
+    # both -*JobId flags face_id/setup/setup.ps1 deliberately never installs
+    # them. Probing for qai_hub_models there would report "not installed" every
+    # single run and redo face-ID setup each session. x86 has no NPU path, so it
+    # genuinely needs both.
     #
     # find_spec (not `import`) so this doesn't actually load the torch-backed
     # stack just to answer a yes/no question, and everything is wrapped so the
@@ -341,10 +353,15 @@ if ($SkipFaceId) {
     # ErrorRecord, which $ErrorActionPreference='Stop' turns into a TERMINATING
     # error - aborting this whole bootstrap just because a module was missing,
     # which is the normal first-run case. Emitting no stderr avoids that entirely.
+    $probeModules = if ($osArch -match 'ARM64') {
+        '"onnxruntime", "onnxruntime_qnn"'
+    } else {
+        '"mediapipe", "qai_hub_models"'
+    }
     $probe = 'import sys' + "`n" +
              'try:' + "`n" +
              '    from importlib.util import find_spec' + "`n" +
-             '    ok = all(find_spec(m) is not None for m in ("mediapipe", "qai_hub_models"))' + "`n" +
+             "    ok = all(find_spec(m) is not None for m in ($probeModules))" + "`n" +
              'except Exception:' + "`n" +
              '    ok = False' + "`n" +
              'sys.exit(0 if ok else 1)'

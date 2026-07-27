@@ -69,6 +69,18 @@ existing job) and skips the compile/profile/inference cloud wait entirely —
 it just downloads the already-compiled `.onnx` directly. You can pass either
 flag alone to reuse one model while exporting the other fresh.
 
+**Passing both flags is what actually skips the torch install.** `setup.ps1`
+needs `qai-hub-models` for two things: exporting models, and the CPU embedder.
+With both jobs reused, neither applies on ARM64 — NPU inference only ever
+touches `onnxruntime-qnn` — so Step 3 skips it entirely. With one flag or
+none, the exporter is still required and the full stack is installed.
+
+The trade-off is the CPU embedder fallback. `identity.py` picks its mode from
+whether `CavaFace.onnx` exists; without `qai_hub_models` installed there is no
+PyTorch path to fall back to, so a missing `CavaFace.onnx` means face-ID
+reports unavailable rather than running slowly. Re-run `setup.ps1` without the
+job-ID flags to get that safety net back.
+
 The job IDs above are **this repo's own verified-working exports** (`jpeyev475`
 = MediaPipeFace face detector, compiled with `--include-detector-postprocessing`
 so the graph itself does anchor-decoding — see `face_pipeline.py`'s `_detect_npu`;

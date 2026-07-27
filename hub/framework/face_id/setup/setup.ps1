@@ -12,6 +12,10 @@
 # Reuse an already-completed AI Hub compile job instead of recompiling
 # (ARM64 only - see setup_npu.ps1 and README for details):
 #   .\setup.ps1 -Token YOUR_TOKEN -MediaPipeFaceJobId jXXXXXXXX -CavaFaceJobId jXXXXXXXX
+# Giving BOTH job IDs also skips installing qai-hub-models/torch entirely -
+# they are the exporter and the CPU embedder, and NPU inference needs neither.
+# Trade-off: no CPU embedder to fall back on if CavaFace.onnx later goes
+# missing. See "Step 3" below.
 #
 # Target Python: hub/server.py imports hub/framework/face_id/identity.py directly (see
 # hub/README.md), so face-ID's dependencies must live in whatever environment
@@ -112,7 +116,22 @@ Info "Installing mediapipe..."
 if ($LASTEXITCODE -ne 0) { Fail "pip install failed." }
 Ok "mediapipe installed"
 
-if ($isArm) {
+# qai-hub-models is the EXPORTER (and the CPU embedder). Neither is needed on
+# ARM64 when both models are being pulled from already-compiled AI Hub jobs:
+# setup_npu.ps1 installs just qai_hub + onnx for that, and NPU inference only
+# ever touches onnxruntime-qnn. Skipping it here is what makes the job-ID flags
+# actually cheap - otherwise this step downloads torch two steps before
+# setup_npu.ps1 announces it is skipping torch.
+#
+# The cost is the CPU embedder fallback: with no qai_hub_models, a CavaFace.onnx
+# that goes missing later means face-ID reports unavailable rather than running
+# slowly on PyTorch. Re-run this script without the job-ID flags to get it back.
+$reuseBoth = $isArm -and $MediaPipeFaceJobId -and $CavaFaceJobId
+
+if ($reuseBoth) {
+    Info "Both job IDs given - skipping qai-hub-models/torch (NPU inference doesn't need them)"
+    Info "  setup_npu.ps1 will install just qai_hub + onnx to download those jobs."
+} elseif ($isArm) {
     # On win_arm64 + cp313, PyPI has no onnxruntime wheel below 1.24.2, which
     # conflicts with every qai-hub-models[cavaface] release (pins onnxruntime<1.23).
     # PyPI also has no torch/torchvision wheels at all for win_arm64 (only
@@ -146,7 +165,7 @@ if ($isArm) {
     & $python -m pip install "qai-hub-models[cavaface]" pillow numpy -c "$ScriptDir\constraints.txt"
     if ($LASTEXITCODE -ne 0) { Fail "pip install failed." }
 }
-Ok "qai-hub-models installed"
+if (-not $reuseBoth) { Ok "qai-hub-models installed" }
 
 # Step 4: Download MediaPipe CPU model (x86 only)
 
