@@ -23,20 +23,33 @@
 # Job IDs only work with the AI Hub account/token that created them, and AI
 # Hub may eventually garbage-collect old job artifacts. See README for the
 # job IDs from this repo's own export.
+#
+# Normally called from setup.ps1, which passes -PythonPath so both scripts
+# target the same environment (e.g. scripts/geniex-env). Only pass it
+# yourself when running setup_npu.ps1 directly against a non-default python:
+#   .\setup_npu.ps1 -Token YOUR_TOKEN -PythonPath C:\path\to\python.exe
 
 param(
     [string]$Token  = "",
     [string]$Device = "Snapdragon X Elite CRD",
     [string]$MediaPipeFaceJobId = "",   # reuse existing compile job for MediaPipeFace.onnx
-    [string]$CavaFaceJobId      = ""    # reuse existing compile job for CavaFace.onnx
+    [string]$CavaFaceJobId      = "",   # reuse existing compile job for CavaFace.onnx
+    [string]$PythonPath         = ""    # use this python.exe instead of resolving from PATH
+                                         # (set by setup.ps1 to keep both scripts targeting
+                                         # the same environment, e.g. scripts/geniex-env)
 )
 
 $ErrorActionPreference = "Stop"
 $ScriptDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ModelsDir   = Join-Path $ScriptDir "models"
 $DownloadDir = Join-Path $env:TEMP "qonclave_npu_export"
-$python      = (Get-Command python).Source
-$ScriptsDir  = Join-Path (Split-Path -Parent $python) "Scripts"
+$python      = if ($PythonPath) { $PythonPath } else { (Get-Command python).Source }
+# A system install has python.exe at <root>\python.exe with entry-point
+# scripts in a sibling <root>\Scripts\; a venv has python.exe ALREADY inside
+# its own Scripts\ folder, with entry-point scripts as siblings of python.exe
+# itself (no nested Scripts\Scripts\). sysconfig knows which layout this
+# particular interpreter uses, so ask it instead of guessing from the path.
+$ScriptsDir  = (& $python -c "import sysconfig; print(sysconfig.get_path('scripts'))").Trim()
 $qaiHub      = Join-Path $ScriptsDir "qai-hub.exe"
 $qaiHubModels = Join-Path $ScriptsDir "qai-hub-models.exe"
 

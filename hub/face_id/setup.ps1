@@ -12,11 +12,21 @@
 # Reuse an already-completed AI Hub compile job instead of recompiling
 # (ARM64 only - see setup_npu.ps1 and README for details):
 #   .\setup.ps1 -Token YOUR_TOKEN -MediaPipeFaceJobId jXXXXXXXX -CavaFaceJobId jXXXXXXXX
+#
+# Target Python: if hub/face_id/identity.py is imported directly by
+# hub/server.py (see hub/README.md), face-ID's dependencies must live in
+# whatever environment actually runs the hub server - which is
+# scripts/geniex-env (created by scripts/setup_geniex.ps1), not this
+# machine's system Python. So this script auto-detects and installs into
+# scripts/geniex-env if it exists, falling back to system Python only for
+# standalone face_id testing (no hub involved). Override explicitly with:
+#   .\setup.ps1 -VenvPython C:\path\to\python.exe
 
 param(
     [string]$Token = "",
     [string]$MediaPipeFaceJobId = "",
-    [string]$CavaFaceJobId = ""
+    [string]$CavaFaceJobId = "",
+    [string]$VenvPython = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -33,7 +43,24 @@ Set-Location $ScriptDir
 # per-process redirection.
 $arch   = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment').PROCESSOR_ARCHITECTURE
 $isArm  = ($arch -eq "ARM64")
-$python = (Get-Command python).Source
+
+$RepoRoot          = Split-Path (Split-Path $ScriptDir -Parent) -Parent
+$GeniexEnvPython   = Join-Path $RepoRoot "scripts\geniex-env\Scripts\python.exe"
+
+if ($VenvPython) {
+    if (-not (Test-Path $VenvPython)) { Fail "Given -VenvPython does not exist: $VenvPython" }
+    $python = $VenvPython
+    Write-Host "[INFO]  Using explicitly given Python: $python" -ForegroundColor Cyan
+} elseif (Test-Path $GeniexEnvPython) {
+    $python = $GeniexEnvPython
+    Write-Host "[INFO]  Found scripts/geniex-env - installing there so hub/server.py's" -ForegroundColor Cyan
+    Write-Host "        face_id.identity import has these deps available: $python" -ForegroundColor Cyan
+} else {
+    $python = (Get-Command python).Source
+    Write-Host "[INFO]  No scripts/geniex-env found - using system Python: $python" -ForegroundColor Cyan
+    Write-Host "        (standalone face_id use; run scripts/setup_geniex.ps1 first if you" -ForegroundColor Cyan
+    Write-Host "        want face-ID available inside the hub server)" -ForegroundColor Cyan
+}
 
 function Info { param($m) Write-Host "[INFO]  $m" -ForegroundColor Cyan  }
 function Ok   { param($m) Write-Host "[ OK ]  $m" -ForegroundColor Green }
@@ -136,7 +163,7 @@ if (-not (Test-Path $mpModel)) {
 if ($isArm) {
     Write-Host ""
     Info "ARM64 detected - exporting NPU models (mandatory for real-time performance)..."
-    $npuArgs = @{}
+    $npuArgs = @{ PythonPath = $python }
     if ($Token) { $npuArgs.Token = $Token }
     if ($MediaPipeFaceJobId) { $npuArgs.MediaPipeFaceJobId = $MediaPipeFaceJobId }
     if ($CavaFaceJobId) { $npuArgs.CavaFaceJobId = $CavaFaceJobId }

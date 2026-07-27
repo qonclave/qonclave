@@ -20,6 +20,22 @@ then Account → Settings → API Token). Takes ~10 minutes on first run.
 
 On x86 it installs CPU dependencies only.
 
+**Using this from the Qonclave hub?** `hub/server.py` imports
+`face_id.identity.FaceIdentityBackend` directly (see `hub/README.md`), so
+face-ID's dependencies must live in whatever Python environment actually
+runs the hub server — not necessarily this machine's system Python.
+`setup.ps1` auto-detects `scripts/geniex-env` (created by
+`scripts/setup_geniex.ps1`) and installs there if it exists, so the usual
+order is:
+```powershell
+.\scripts\setup_geniex.ps1 -NoRun     # create geniex-env first
+cd hub\face_id
+.\setup.ps1 -Token YOUR_TOKEN         # now installs into geniex-env
+```
+Falls back to system Python only if `scripts/geniex-env` doesn't exist yet
+(e.g. testing face_id standalone, no hub involved). Override explicitly with
+`-VenvPython C:\path\to\python.exe` if neither applies.
+
 **Linux / macOS:**
 ```bash
 cd hub/face_id
