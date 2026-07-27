@@ -8,16 +8,30 @@
 # Usage:
 #   .\setup.ps1                     # auto-detects platform
 #   .\setup.ps1 -Token YOUR_TOKEN   # pass AI Hub token directly (ARM64 only)
+#
+# Reuse an already-completed AI Hub compile job instead of recompiling
+# (ARM64 only - see setup_npu.ps1 and README for details):
+#   .\setup.ps1 -Token YOUR_TOKEN -MediaPipeFaceJobId jXXXXXXXX -CavaFaceJobId jXXXXXXXX
 
 param(
-    [string]$Token = ""
+    [string]$Token = "",
+    [string]$MediaPipeFaceJobId = "",
+    [string]$CavaFaceJobId = ""
 )
 
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ScriptDir
 
-$arch   = $env:PROCESSOR_ARCHITECTURE
+# $env:PROCESSOR_ARCHITECTURE reflects the CALLING PROCESS's architecture, not
+# the OS - if powershell.exe itself is running under x64 emulation (WOW64
+# file-system redirection silently substitutes the x64 System32 binary when
+# launched from an x64/emulated parent shell), this reports AMD64 even on
+# real ARM64 hardware, causing a fresh clone's setup to install the wrong
+# (x86/CPU-only) dependency branch entirely. The registry value is a plain
+# read of the true native system architecture and isn't subject to that
+# per-process redirection.
+$arch   = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment').PROCESSOR_ARCHITECTURE
 $isArm  = ($arch -eq "ARM64")
 $python = (Get-Command python).Source
 
@@ -122,11 +136,11 @@ if (-not (Test-Path $mpModel)) {
 if ($isArm) {
     Write-Host ""
     Info "ARM64 detected - exporting NPU models (mandatory for real-time performance)..."
-    if ($Token) {
-        & "$ScriptDir\setup_npu.ps1" -Token $Token
-    } else {
-        & "$ScriptDir\setup_npu.ps1"
-    }
+    $npuArgs = @{}
+    if ($Token) { $npuArgs.Token = $Token }
+    if ($MediaPipeFaceJobId) { $npuArgs.MediaPipeFaceJobId = $MediaPipeFaceJobId }
+    if ($CavaFaceJobId) { $npuArgs.CavaFaceJobId = $CavaFaceJobId }
+    & "$ScriptDir\setup_npu.ps1" @npuArgs
     if ($LASTEXITCODE -ne 0) { Fail "NPU setup failed." }
 } else {
     Write-Host ""
