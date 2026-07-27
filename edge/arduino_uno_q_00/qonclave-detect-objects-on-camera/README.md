@@ -17,17 +17,17 @@ interface.
 
 ## Camera Source
 
-Controlled by `CAMERA_SOURCE` — switching between USB and IP camera is purely a
-`CAMERA_SOURCE` change, no `app.yaml` edits needed. In both modes the app itself
-opens the camera (`V4LCamera` or `IPCamera`) and hands it to
-`VideoObjectDetection`, which captures from it and forwards frames to the
-detection runner; the runner never needs direct device access, so
-`app.yaml` declares `devices: [remote_camera_0]` on the `video_object_detection`
-brick unconditionally.
+Controlled by `CAMERA_SOURCE` — switching between USB, IP camera, and video file is
+purely a `CAMERA_SOURCE` change, no `app.yaml` edits needed. In every mode the app
+itself opens the camera (`V4LCamera`, `IPCamera`, or the local `FileCamera`) and
+hands it to `VideoObjectDetection`, which captures from it and forwards frames to
+the detection runner; the runner never needs direct device access, so `app.yaml`
+declares `devices: [remote_camera_0]` on the `video_object_detection` brick
+unconditionally.
 
 | Var | Default | Meaning |
 |-----|---------|---------|
-| `CAMERA_SOURCE` | `usb` | `usb` for a physically-connected USB camera, or `ip` for an Android IP-camera stream |
+| `CAMERA_SOURCE` | `file` | `usb` for a physically-connected USB camera, `ip` for an Android IP-camera stream, or `file` to loop a local video file instead of a live feed |
 
 ### USB (default)
 
@@ -57,6 +57,23 @@ since `app.yaml` no longer declares a hard physical-camera requirement.
 | `IP_CAMERA_USERNAME` | _(none)_ | Optional stream auth username |
 | `IP_CAMERA_PASSWORD` | _(none)_ | Optional stream auth password |
 | `IP_CAMERA_FPS` | `10` | Frames per second to pull from the stream |
+
+### Video file (optional)
+
+Loops a local video file as the detection input — useful for testing/demoing
+without any camera attached. The file must be reachable inside the app container;
+place it somewhere under the app folder (e.g. `media/`, next to `python/`), which
+is bind-mounted to `/app`, and point `VIDEO_FILE_PATH` at its in-container path.
+
+A sample clip is bundled at `media/sample.mp4` (stock footage from Pexels, free
+license) — set `VIDEO_FILE_PATH=/app/media/sample.mp4` to try this mode out of
+the box.
+
+| Var | Default | Meaning |
+|-----|---------|---------|
+| `VIDEO_FILE_PATH` | `/app/media/sample.mp4` | Path to the video file, as seen inside the container |
+| `VIDEO_FILE_LOOP` | `true` | Rewind and replay the file once it ends, so detection keeps running continuously |
+| `VIDEO_FILE_FPS` | `10` | Frames per second to read from the file |
 
 ## Brick Used
 
@@ -92,6 +109,7 @@ App Lab):
 - USB camera (x1) — _or_ an Android phone running an IP-camera app on the same network (see Camera Source above)
 - USB-C® hub adapter with external power (x1) _(only for UNO Q, only in USB camera mode)_
 - A power supply (5 V, 3 A) for the USB hub (e.g. a phone charger) _(only for UNO Q, only in USB camera mode)_
+- Potentiometer connected to analog pin A0 (optional, for physical threshold control)
 - Personal computer with internet access
 
 ### Software
@@ -105,12 +123,15 @@ App Lab):
    ![Hardware setup](assets/docs_assets/hardware-setup.png)
    IP camera mode: start the IP-camera app on the phone and set `CAMERA_SOURCE=ip` /
    `IP_CAMERA_URL` as described in Camera Source above.
-2. Run the App.
+2. (Optional) Connect a potentiometer wiper to analog pin A0 on the UNO Q for physical confidence threshold control.
+3. Run the App.
    ![Arduino App Lab - Run App](assets/docs_assets/launch-app.png)
-3. The App should open automatically in the web browser. You can open it manually via `<board-name>.local:7000`.
-4. Position any object in front of the camera and watch as the App detects and recognizes them.
+4. The App should open automatically in the web browser. You can open it manually via `<board-name>.local:7000`.
+5. Position any object in front of the camera and watch as the App detects and recognizes them.
+6. Observe the UNO Q's onboard **12x8 LED Matrix**: it will dynamically render custom hardware-aligned icons corresponding to detected objects!
+7. Rotate the potentiometer knob to dynamically adjust the AI detection confidence threshold in real-time.
 
-Try with one of the following objects for a special reaction:
+Try with one of the following objects for a special reaction (both on the Web UI and the LED Matrix):
 
 - Cat
 - Cell phone
@@ -118,6 +139,7 @@ Try with one of the following objects for a special reaction:
 - Cup
 - Dog
 - Potted plant
+- Person
 
 ![Example of special reaction](assets/docs_assets/special-detection.png)
 
@@ -143,6 +165,17 @@ Here is a brief explanation of the full-stack application:
   - **Realtime messaging**: publishes detection updates to the frontend via `ui.send_message("detection", message=entry)` so the UI can display live detections.
 
 - Runs with `App.run()` which starts the internal event loop and keeps the detection stream and UI messaging alive.
+
+---
+
+### ⚡ Microcontroller & Hardware Bridge (sketch/sketch.ino)
+
+- **12x8 LED Matrix Icon Display**:
+  - Uses the `Arduino_LED_Matrix` library configured with a **13-column hardware stride buffer** (`byte frame[8][13]`) required by the UNO Q and Zephyr OS architecture.
+  - Receives `set_led_state` commands over the Bridge from `main.py` (e.g. `"cat"`, `"person"`, `"cell phone"`, `"green"`, `"clear"`) and renders hardware-aligned bitmap icons in real-time.
+- **Physical Potentiometer Threshold Control**:
+  - Continuously samples analog pin A0 (`analogRead(A0)`) with debounce and noise filtering.
+  - When the knob is adjusted, it transmits percentage changes over the Bridge via `Bridge.call("on_knob_change", str(percentage))` to dynamically adjust the AI detection confidence threshold in Python and update the Web UI slider simultaneously.
 
 ---
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 
-from framework.policy import Policy, Verdict
+from framework.policy import Policy, Verdict, Notification
 from framework.vlm import VLMBackend
 from framework.face_id.identity import FaceIdentityBackend
 
@@ -141,3 +141,11 @@ class SecurityPolicy(Policy):
             "identity_name": identity.get("name"),
             "identity_confidence": identity.get("confidence"),
         }
+
+    def notify_for(self, verdict: Verdict, event: dict) -> Notification | None:
+        if verdict.verified:
+            return Notification(
+                message=verdict.alert,
+                recipient=event.get("device_id", "unknown"),
+            )
+        return None
