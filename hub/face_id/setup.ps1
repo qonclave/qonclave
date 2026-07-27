@@ -65,11 +65,44 @@ if ($arch -eq "ARM64") {
 
 Info "Installing mediapipe..."
 & $python -m pip install mediapipe --no-deps
+& $python -m pip install matplotlib absl-py sounddevice
+if ($LASTEXITCODE -ne 0) { Fail "pip install failed." }
 Ok "mediapipe installed"
 
-Info "Installing qai-hub-models[cavaface] + pillow + numpy..."
-& $python -m pip install "qai-hub-models[cavaface]" pillow numpy -c "$ScriptDir\constraints.txt"
-if ($LASTEXITCODE -ne 0) { Fail "pip install failed." }
+if ($isArm) {
+    # On win_arm64 + cp313, PyPI has no onnxruntime wheel below 1.24.2, which
+    # conflicts with every qai-hub-models[cavaface] release (pins onnxruntime<1.23).
+    # PyPI also has no torch/torchvision wheels at all for win_arm64 (only
+    # download.pytorch.org does), and no pandas<=2.2.3 wheel either (only pandas
+    # 3.x ships one, which needs a full C++ toolchain to build from source
+    # otherwise). So: pull torch/torchvision from the PyTorch index, use pandas
+    # 3.x, install the rest of qai-hub-models' deps explicitly, then install
+    # qai-hub-models itself with --no-deps so its unsatisfiable pins are never
+    # evaluated (the already-installed onnxruntime-qnn keeps satisfying
+    # onnxruntime at runtime).
+    Info "Installing qai-hub-models[cavaface] dependencies (ARM64 workaround)..."
+    & $python -m pip install `
+        "huggingface_hub<2.0,>=0.34.0" `
+        "numpy<=2.4.4" "onnx<=1.18.0,>=1.17" `
+        "torch<=2.11.0,>=2.4" "torchvision<=0.26.0,>=0.19" `
+        "typing-extensions<=4.15.0,>=4.12.2" "tqdm<=4.67.3,>=4.66" `
+        "qai_hub>=0.51.0" "filelock<=3.29.0,>=3.16.1" `
+        inputimeout "pydantic<=2.13.3,>=2" pydantic_yaml `
+        "packaging<=26.2.0,>24.2" platformdirs "qai_hub_models_cli==0.58.0" `
+        yacs gitpython pillow schema requests_toolbelt "httpx<=0.28.1,>=0.27" `
+        gdown boto3 "boto3-stubs[s3]" numpydoc pandas `
+        tabulate ipython scipy coverage `
+        --extra-index-url https://download.pytorch.org/whl/cpu -c "$ScriptDir\constraints.txt"
+    if ($LASTEXITCODE -ne 0) { Fail "pip install failed." }
+
+    Info "Installing qai-hub-models[cavaface] (--no-deps)..."
+    & $python -m pip install "qai-hub-models[cavaface]==0.58.0" --no-deps
+    if ($LASTEXITCODE -ne 0) { Fail "pip install failed." }
+} else {
+    Info "Installing qai-hub-models[cavaface] + pillow + numpy..."
+    & $python -m pip install "qai-hub-models[cavaface]" pillow numpy -c "$ScriptDir\constraints.txt"
+    if ($LASTEXITCODE -ne 0) { Fail "pip install failed." }
+}
 Ok "qai-hub-models installed"
 
 # Step 4: Download MediaPipe CPU model

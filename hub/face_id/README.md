@@ -26,6 +26,35 @@ cd hub/face_id
 chmod +x setup.sh && ./setup.sh
 ```
 
+#### Reusing an existing NPU export (faster re-setup)
+
+Compiling `MediaPipeFace` and `CavaFace` submits jobs to Qualcomm AI Hub's
+cloud and can take several minutes each (model upload, compile, and — unless
+skipped — profiling/inference on a real device queue). A compiled job's
+result stays downloadable by job ID indefinitely (until AI Hub garbage-collects
+it), so re-running setup on the same machine/account doesn't need to
+recompile from scratch:
+
+```powershell
+.\setup_npu.ps1 -Token YOUR_TOKEN `
+  -MediaPipeFaceJobId jpeyev475 `
+  -CavaFaceJobId jg9dj44q5
+```
+
+This skips installing the full `qai-hub-models`/torch dependency stack (only
+the lightweight `qai_hub` client is needed to look up and download an
+existing job) and skips the compile/profile/inference cloud wait entirely —
+it just downloads the already-compiled `.onnx` directly. You can pass either
+flag alone to reuse one model while exporting the other fresh.
+
+The job IDs above are **this repo's own verified-working exports** (`jpeyev475`
+= MediaPipeFace face detector, compiled with `--include-detector-postprocessing`
+so the graph itself does anchor-decoding — see `face_pipeline.py`'s `_detect_npu`;
+`jg9dj44q5` = CavaFace). They only resolve for the AI Hub account/token that
+created them — a different developer's token can't look them up. If you get a
+"not found" error, they've likely been garbage-collected or belong to a
+different account; just omit the job ID flags to export fresh.
+
 ### Step 2 — Add known faces
 
 Drop one clear front-facing photo per person into `known_faces/`, named as the person:
@@ -176,6 +205,14 @@ rm known_faces/.embeddings_cpu.npy     # Linux/macOS
 **NPU not activating**
 → Run `setup.ps1` on the Snapdragon X machine to export models.
 → Verify `models/CavaFace.onnx` and `models/MediaPipeFace.onnx` exist.
+→ Note: onnxruntime's QNN support is a dynamically-registered "plugin"
+execution provider — passing `"QNNExecutionProvider"` as a plain string to
+`InferenceSession(providers=...)` silently falls back to CPU on current
+onnxruntime versions. `face_pipeline.py`'s `_qnn_session()` handles the real
+registration sequence (`register_execution_provider_library` +
+`SessionOptions.add_provider_for_devices` against the actual NPU `OrtEpDevice`).
+If you're debugging this yourself, check `session.get_providers()[0]` —
+if it prints `CPUExecutionProvider`, the NPU device wasn't found/bound.
 
 **opencv install fails on ARM64**
 → Run `build_opencv_arm64.ps1` to build from source, then re-run `setup.ps1`.

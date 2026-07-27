@@ -63,6 +63,43 @@ def _embed_cpu(app, face_img: Image.Image) -> np.ndarray:
 
 # ── CavaFace: NPU (onnxruntime-qnn + QNNExecutionProvider) ───────────────────
 
+def _qnn_session(onnx_path: Path, label: str):
+    """Create an InferenceSession on the Hexagon NPU via onnxruntime-qnn.
+
+    onnxruntime's QNN support is a dynamically-registered "plugin" execution
+    provider (added in the 1.20+ device-based EP API): the provider library
+    must be registered by path, then bound to the actual NPU OrtEpDevice via
+    SessionOptions.add_provider_for_devices — passing "QNNExecutionProvider"
+    as a plain string to InferenceSession(providers=...) silently no-ops and
+    falls back to CPU on this onnxruntime version.
+    """
+    import onnxruntime as ort
+
+    try:
+        import onnxruntime_qnn as qnn
+
+        try:
+            ort.register_execution_provider_library(qnn.get_ep_name(), qnn.get_library_path())
+        except Exception:
+            pass  # already registered from a previous _qnn_session() call
+
+        npu_devices = [
+            d for d in ort.get_ep_devices()
+            if d.ep_name == qnn.get_ep_name() and d.device.type == ort.OrtHardwareDeviceType.NPU
+        ]
+        if not npu_devices:
+            raise RuntimeError("no QNN NPU device found")
+
+        so = ort.SessionOptions()
+        so.add_provider_for_devices(npu_devices, {"backend_path": qnn.get_qnn_htp_path()})
+        session = ort.InferenceSession(str(onnx_path), sess_options=so)
+        print(f"  {label} running on: {session.get_providers()[0]}")
+        return session
+    except Exception as e:
+        print(f"  [!] QNNExecutionProvider unavailable for {label} ({e}), falling back to CPU ONNX")
+        return ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
+
+
 def _build_cavaface_npu():
     """Load CavaFace ONNX on Hexagon NPU via QNNExecutionProvider."""
     if not CAVAFACE_ONNX_PATH.exists():
@@ -75,30 +112,7 @@ def _build_cavaface_npu():
             "Then copy the resulting CavaFace.onnx to hub/face_id/models/"
         )
 
-    try:
-        import onnxruntime as ort
-    except ImportError:
-        raise ImportError("onnxruntime-qnn not installed. Run: pip install onnxruntime-qnn")
-
-    # QnnHtp.dll = Hexagon NPU backend (ships with QNN SDK / Qualcomm AI Stack)
-    # Falls back to CPU if HTP not available
-    providers = [
-        ("QNNExecutionProvider", {"backend_path": "QnnHtp.dll"}),
-        "CPUExecutionProvider",
-    ]
-
-    try:
-        session = ort.InferenceSession(str(CAVAFACE_ONNX_PATH), providers=providers)
-        active = session.get_providers()[0]
-        print(f"  CavaFace running on: {active}")
-    except Exception:
-        # If QNN fails (e.g. QnnHtp.dll not on PATH), fall back to CPU ONNX
-        print("  [!] QNNExecutionProvider unavailable, falling back to CPU ONNX")
-        session = ort.InferenceSession(
-            str(CAVAFACE_ONNX_PATH),
-            providers=["CPUExecutionProvider"],
-        )
-
+    session = _qnn_session(CAVAFACE_ONNX_PATH, "CavaFace")
     input_name = session.get_inputs()[0].name
     return session, input_name
 
@@ -145,23 +159,8 @@ def _build_detector_npu():
             f"NPU detector not found: {MEDIAPIPE_NPU_ONNX_PATH}\n"
             "Run setup_npu.ps1 to export both models."
         )
-    try:
-        import onnxruntime as ort
-    except ImportError:
-        raise ImportError("onnxruntime-qnn not installed. Run: pip install onnxruntime-qnn")
 
-    providers = [
-        ("QNNExecutionProvider", {"backend_path": "QnnHtp.dll"}),
-        "CPUExecutionProvider",
-    ]
-    try:
-        session = ort.InferenceSession(str(MEDIAPIPE_NPU_ONNX_PATH), providers=providers)
-        active = session.get_providers()[0]
-        print(f"  MediaPipeFace running on: {active}")
-    except Exception:
-        print("  [!] QNNExecutionProvider unavailable for detector, falling back to CPU ONNX")
-        session = ort.InferenceSession(str(MEDIAPIPE_NPU_ONNX_PATH), providers=["CPUExecutionProvider"])
-
+    session = _qnn_session(MEDIAPIPE_NPU_ONNX_PATH, "MediaPipeFace")
     input_name = session.get_inputs()[0].name
     input_shape = session.get_inputs()[0].shape  # e.g. [1, 3, 128, 128]
     return ("onnx", session, input_name, input_shape)
@@ -216,23 +215,26 @@ def _detect_npu(detector_tuple, pil_img: Image.Image, padding: float) -> "Image.
     inp = arr.transpose(2, 0, 1)[np.newaxis]  # [1, 3, H, W]
 
     outputs = session.run(None, {input_name: inp})
-    # BlazeFace outputs: [boxes, scores] — boxes in [0,1] relative coords
+    # Exported with --include-detector-postprocessing: outputs are already
+    # decoded + sigmoid-scored (no raw-anchor math needed here).
+    #   boxes:  [1, N, 16] pixel coords relative to the (w_in, h_in) resize,
+    #           first 4 values per anchor are (x_min, y_min, x_max, y_max)
+    #   scores: [1, N] sigmoid confidence per anchor
     boxes, scores = outputs[0], outputs[1]
     scores = scores.squeeze()
-    if scores.ndim == 0:
-        scores = scores[np.newaxis]
 
     best_idx = int(np.argmax(scores))
     if scores[best_idx] < 0.4:
         return None
 
-    # boxes shape: [N, 4] in [ymin, xmin, ymax, xmax] or [xmin, ymin, xmax, ymax]
-    box = boxes[0][best_idx] if boxes.ndim == 3 else boxes[best_idx]
-    # Try to infer format from values
-    x1 = max(0, int(box[0] * w) - int((box[2]-box[0]) * w * padding))
-    y1 = max(0, int(box[1] * h) - int((box[3]-box[1]) * h * padding))
-    x2 = min(w, int(box[2] * w) + int((box[2]-box[0]) * w * padding))
-    y2 = min(h, int(box[3] * h) + int((box[3]-box[1]) * h * padding))
+    box = boxes[0][best_idx][:4]
+    sx, sy = w / w_in, h / h_in  # scale from model-input space back to original image
+    bw = (box[2] - box[0]) * sx
+    bh = (box[3] - box[1]) * sy
+    x1 = max(0, int(box[0] * sx - bw * padding))
+    y1 = max(0, int(box[1] * sy - bh * padding))
+    x2 = min(w, int(box[2] * sx + bw * padding))
+    y2 = min(h, int(box[3] * sy + bh * padding))
 
     if x2 <= x1 or y2 <= y1:
         return None
