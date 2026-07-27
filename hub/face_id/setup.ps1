@@ -6,32 +6,37 @@
 # On x86 (dev/test machine): CPU only, no NPU export needed.
 #
 # Usage:
-#   .\setup.ps1                     # auto-detects platform
+#   .\setup.ps1                     # auto-detects platform, uses python from PATH
 #   .\setup.ps1 -Token YOUR_TOKEN   # pass AI Hub token directly (ARM64 only)
 #
 # Reuse an already-completed AI Hub compile job instead of recompiling
 # (ARM64 only - see setup_npu.ps1 and README for details):
 #   .\setup.ps1 -Token YOUR_TOKEN -MediaPipeFaceJobId jXXXXXXXX -CavaFaceJobId jXXXXXXXX
 #
-# Target Python: if hub/face_id/identity.py is imported directly by
-# hub/server.py (see hub/README.md), face-ID's dependencies must live in
-# whatever environment actually runs the hub server - which is
-# scripts/geniex-env (created by scripts/setup_geniex.ps1), not this
-# machine's system Python. So this script auto-detects and installs into
-# scripts/geniex-env if it exists, falling back to system Python only for
-# standalone face_id testing (no hub involved). Override explicitly with:
-#   .\setup.ps1 -VenvPython C:\path\to\python.exe
+# Target Python: hub/server.py imports hub/face_id/identity.py directly (see
+# hub/README.md), so face-ID's dependencies must live in whatever environment
+# actually runs the hub server - not necessarily this machine's system Python.
+# Pass that interpreter with -PythonPath:
+#   .\setup.ps1 -PythonPath C:\path\to\python.exe
+# scripts/setup_geniex.ps1 calls this script automatically and passes its own
+# geniex-env interpreter, so the normal hub flow needs no manual run at all.
+# Left unset, this installs into whatever `python` resolves to on PATH, which
+# is what you want for standalone face_id use (no hub server involved).
 
 param(
     [string]$Token = "",
     [string]$MediaPipeFaceJobId = "",
     [string]$CavaFaceJobId = "",
-    [string]$VenvPython = ""
+    [string]$PythonPath = ""
 )
 
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ScriptDir
+
+function Info { param($m) Write-Host "[INFO]  $m" -ForegroundColor Cyan  }
+function Ok   { param($m) Write-Host "[ OK ]  $m" -ForegroundColor Green }
+function Fail { param($m) Write-Host "[FAIL]  $m" -ForegroundColor Red; exit 1 }
 
 # $env:PROCESSOR_ARCHITECTURE reflects the CALLING PROCESS's architecture, not
 # the OS - if powershell.exe itself is running under x64 emulation (WOW64
@@ -44,27 +49,19 @@ Set-Location $ScriptDir
 $arch   = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment').PROCESSOR_ARCHITECTURE
 $isArm  = ($arch -eq "ARM64")
 
-$RepoRoot          = Split-Path (Split-Path $ScriptDir -Parent) -Parent
-$GeniexEnvPython   = Join-Path $RepoRoot "scripts\geniex-env\Scripts\python.exe"
-
-if ($VenvPython) {
-    if (-not (Test-Path $VenvPython)) { Fail "Given -VenvPython does not exist: $VenvPython" }
-    $python = $VenvPython
-    Write-Host "[INFO]  Using explicitly given Python: $python" -ForegroundColor Cyan
-} elseif (Test-Path $GeniexEnvPython) {
-    $python = $GeniexEnvPython
-    Write-Host "[INFO]  Found scripts/geniex-env - installing there so hub/server.py's" -ForegroundColor Cyan
-    Write-Host "        face_id.identity import has these deps available: $python" -ForegroundColor Cyan
+if ($PythonPath) {
+    if (-not (Test-Path $PythonPath)) { Fail "Given -PythonPath does not exist: $PythonPath" }
+    $python = $PythonPath
+    Info "Installing into the given Python: $python"
 } else {
-    $python = (Get-Command python).Source
-    Write-Host "[INFO]  No scripts/geniex-env found - using system Python: $python" -ForegroundColor Cyan
-    Write-Host "        (standalone face_id use; run scripts/setup_geniex.ps1 first if you" -ForegroundColor Cyan
-    Write-Host "        want face-ID available inside the hub server)" -ForegroundColor Cyan
+    $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
+    if (-not $pythonCmd) { Fail "No -PythonPath given and no 'python' on PATH." }
+    $python = $pythonCmd.Source
+    Info "No -PythonPath given - using python from PATH: $python"
+    Info "  (standalone face_id use. To make face-ID available inside the hub"
+    Info "   server, run scripts\setup_geniex.ps1 instead - it calls this script"
+    Info "   with the interpreter that actually runs hub/server.py.)"
 }
-
-function Info { param($m) Write-Host "[INFO]  $m" -ForegroundColor Cyan  }
-function Ok   { param($m) Write-Host "[ OK ]  $m" -ForegroundColor Green }
-function Fail { param($m) Write-Host "[FAIL]  $m" -ForegroundColor Red; exit 1 }
 
 Write-Host ""
 Write-Host "Face ID Pipeline - Setup" -ForegroundColor Green

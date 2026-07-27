@@ -9,32 +9,37 @@ Works on Windows x86, Windows ARM64 (WoS / Snapdragon X), Linux, macOS.
 
 ### Step 1 — Run setup script (once)
 
-**Windows (x86 or ARM64):**
+**Using this from the Qonclave hub? You don't run anything here.**
+`scripts/setup_geniex.ps1` already calls this script for you, passing its own
+`geniex-env` interpreter — which is what you want, because `hub/server.py`
+imports `face_id.identity.FaceIdentityBackend` in-process (see
+`hub/README.md`), so face-ID's dependencies have to live in the environment
+that actually runs the hub server, not this machine's system Python:
+
+```powershell
+.\scripts\setup_geniex.ps1 -AiHubToken YOUR_TOKEN
+```
+
+See the root `README.md` for its `-SkipFaceId` / job-ID flags. Everything
+below is for running face_id **standalone**, with no hub involved.
+
+**Windows (x86 or ARM64), standalone:**
 ```powershell
 cd hub\face_id
 .\setup.ps1
 ```
+This installs into whatever `python` resolves to on PATH. To target a specific
+interpreter instead, pass it explicitly:
+```powershell
+.\setup.ps1 -PythonPath C:\path\to\python.exe
+```
+
 On ARM64 (Snapdragon X) this automatically exports both AI models for NPU — it
 will prompt for your Qualcomm AI Hub token (free at https://workbench.aihub.qualcomm.com,
-then Account → Settings → API Token). Takes ~10 minutes on first run.
+then Account → Settings → API Token), or pass it with `-Token YOUR_TOKEN`.
+Takes ~10 minutes on first run.
 
 On x86 it installs CPU dependencies only.
-
-**Using this from the Qonclave hub?** `hub/server.py` imports
-`face_id.identity.FaceIdentityBackend` directly (see `hub/README.md`), so
-face-ID's dependencies must live in whatever Python environment actually
-runs the hub server — not necessarily this machine's system Python.
-`setup.ps1` auto-detects `scripts/geniex-env` (created by
-`scripts/setup_geniex.ps1`) and installs there if it exists, so the usual
-order is:
-```powershell
-.\scripts\setup_geniex.ps1 -NoRun     # create geniex-env first
-cd hub\face_id
-.\setup.ps1 -Token YOUR_TOKEN         # now installs into geniex-env
-```
-Falls back to system Python only if `scripts/geniex-env` doesn't exist yet
-(e.g. testing face_id standalone, no hub involved). Override explicitly with
-`-VenvPython C:\path\to\python.exe` if neither applies.
 
 **Linux / macOS:**
 ```bash

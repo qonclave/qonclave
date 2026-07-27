@@ -20,13 +20,25 @@
          version and installs `geniex` from PyPI into it.
       5. Verifies the install by importing geniex and printing its version.
       6. Installs hub/requirements.txt (from this checkout) into the venv.
-      7. Runs hub/server.py.
+      7. Installs face ID (hub/face_id/setup.ps1) into that same venv, since
+         hub/server.py imports face_id.identity in-process. Skipped when
+         already installed, so re-runs stay quick.
+      8. Runs hub/server.py.
 
     Usage (from an elevated or normal PowerShell prompt, inside the checkout):
         powershell -ExecutionPolicy Bypass -File .\scripts\setup_geniex.ps1
 
       -NoRun            stop after installing requirements; don't start the server
       -Warmup           pre-load the VLM model at server start (default: off, loads lazily on first request)
+      -SkipFaceId       don't install face ID at all (hub still runs; face-ID
+                        reports "not_enabled")
+      -AiHubToken       Qualcomm AI Hub token for the ARM64 NPU model export.
+                        Omitted on ARM64, face_id/setup_npu.ps1 prompts for it
+                        interactively. Free at https://workbench.aihub.qualcomm.com
+                        (Account -> Settings -> API Token).
+      -MediaPipeFaceJobId / -CavaFaceJobId
+                        reuse already-completed AI Hub compile jobs instead of
+                        recompiling - see hub/face_id/README.md
       -- a b c          extra args forwarded to hub/server.py, e.g.:
         .\scripts\setup_geniex.ps1 -- --verbose --port 8080
 #>
@@ -34,6 +46,10 @@
 param(
     [switch]$NoRun,
     [switch]$Warmup,
+    [switch]$SkipFaceId,
+    [string]$AiHubToken = '',
+    [string]$MediaPipeFaceJobId = '',
+    [string]$CavaFaceJobId = '',
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$ServerArgs
 )
@@ -297,6 +313,72 @@ Write-Step "Installing hub requirements into the venv"
 & $VenvPython -m pip install -r (Join-Path $RepoDir 'hub\requirements.txt')
 Write-Ok "requirements installed"
 
+# --- 6b. Install face ID into the SAME venv ----------------------------------
+# hub/server.py imports face_id.identity in-process, so face-ID's dependencies
+# must live in this venv - not system Python - or the hub reports face-ID as
+# "not_enabled" even after a successful standalone face_id setup.
+Write-Step "Installing face ID into the venv"
+if ($SkipFaceId) {
+    Write-Ok "-SkipFaceId set - skipping (hub will report face-ID as not_enabled)"
+} else {
+    $FaceIdSetup = Join-Path $RepoDir 'hub\face_id\setup.ps1'
+    $FaceIdModels = Join-Path $RepoDir 'hub\face_id\models'
+
+    # Idempotency probe, so re-running this bootstrap every session stays quick:
+    # face-ID is already usable if its Python stack is present in THIS venv and -
+    # on ARM64, where the NPU export is mandatory - both exported models exist.
+    #
+    # find_spec (not `import`) so this doesn't actually load the torch-backed
+    # stack just to answer a yes/no question, and everything is wrapped so the
+    # probe writes NOTHING to stderr: in Windows PowerShell 5.1, redirecting a
+    # native command's stderr (`2>$null`) wraps each line as a NativeCommandError
+    # ErrorRecord, which $ErrorActionPreference='Stop' turns into a TERMINATING
+    # error - aborting this whole bootstrap just because a module was missing,
+    # which is the normal first-run case. Emitting no stderr avoids that entirely.
+    $probe = 'import sys' + "`n" +
+             'try:' + "`n" +
+             '    from importlib.util import find_spec' + "`n" +
+             '    ok = all(find_spec(m) is not None for m in ("mediapipe", "qai_hub_models"))' + "`n" +
+             'except Exception:' + "`n" +
+             '    ok = False' + "`n" +
+             'sys.exit(0 if ok else 1)'
+    & $VenvPython -c $probe
+    $depsOk = ($LASTEXITCODE -eq 0)
+    $modelsOk = (-not ($osArch -match 'ARM64')) -or (
+        (Test-Path (Join-Path $FaceIdModels 'CavaFace.onnx')) -and
+        (Test-Path (Join-Path $FaceIdModels 'MediaPipeFace.onnx'))
+    )
+
+    if ($depsOk -and $modelsOk) {
+        Write-Ok "face ID already installed in this venv, skipping"
+        Write-Host "        (re-run hub\face_id\setup.ps1 -PythonPath `"$VenvPython`" to force)"
+    } else {
+        $faceArgs = @{ PythonPath = $VenvPython }
+        if ($AiHubToken)         { $faceArgs.Token              = $AiHubToken }
+        if ($MediaPipeFaceJobId) { $faceArgs.MediaPipeFaceJobId = $MediaPipeFaceJobId }
+        if ($CavaFaceJobId)      { $faceArgs.CavaFaceJobId      = $CavaFaceJobId }
+
+        # Non-fatal: the hub server runs fine without face ID (it degrades to
+        # "not_enabled"), and on ARM64 this step can need an AI Hub token /
+        # network round-trip. Don't strand the whole bootstrap over it.
+        Push-Location (Split-Path $FaceIdSetup -Parent)
+        try {
+            & $FaceIdSetup @faceArgs
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warn "face ID setup exited $LASTEXITCODE - hub will report face-ID as not_enabled."
+                Write-Warn "Re-run it directly: hub\face_id\setup.ps1 -PythonPath `"$VenvPython`""
+            } else {
+                Write-Ok "face ID installed"
+            }
+        } catch {
+            Write-Warn "face ID setup failed ($($_.Exception.Message)) - hub will report face-ID as not_enabled."
+            Write-Warn "Re-run it directly: hub\face_id\setup.ps1 -PythonPath `"$VenvPython`""
+        } finally {
+            Pop-Location
+        }
+    }
+}
+
 Write-Host "`n===================================================================" -ForegroundColor Green
 Write-Host " GenieX environment ready." -ForegroundColor Green
 Write-Host " Run scripts either by activating the venv:" -ForegroundColor Green
@@ -306,7 +388,7 @@ Write-Host " ...or without activating, via the venv python directly:" -Foregroun
 Write-Host "     .\scripts\geniex-env\Scripts\python.exe hub\server.py" -ForegroundColor Green
 Write-Host "===================================================================" -ForegroundColor Green
 
-# --- 7. Run the hub server ---------------------------------------------------
+# --- 8. Run the hub server ---------------------------------------------------
 if ($NoRun) {
     Write-Step "NoRun set - skipping server start"
 } else {

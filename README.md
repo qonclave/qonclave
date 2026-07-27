@@ -47,14 +47,31 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ```
 
 This installs Git + ARM64 Python, creates the `geniex-env` venv, installs the
-GenieX SDK and `hub/requirements.txt`, then runs `hub/server.py`. It does
-**not** clone or pull the repo — that's on you, first.
+GenieX SDK and `hub/requirements.txt`, installs face ID into that same venv,
+then runs `hub/server.py`. It does **not** clone or pull the repo — that's on
+you, first.
 
 - Stop after installing, without starting the server: `.\scripts\setup_geniex.ps1 -NoRun`
 - By default, the heavy VLM model is pre-loaded into memory immediately upon startup. To launch the server faster and load the model lazily on the first request instead, use: `.\scripts\setup_geniex.ps1 -NoWarmup`
 - Pass server flags through: `.\scripts\setup_geniex.ps1 -- --verbose --port 8080`
 - Re-running is idempotent: existing Python/venv/deps are detected and reused
   or upgraded as needed.
+
+Face ID (`hub/face_id/`) is set up as part of that same run, into the same venv
+— `hub/server.py` imports it in-process, so it has to live there. On ARM64 the
+NPU model export needs a Qualcomm AI Hub token; pass it up front to keep the
+run unattended, otherwise you'll be prompted:
+
+```powershell
+.\scripts\setup_geniex.ps1 -AiHubToken YOUR_TOKEN
+```
+
+- Skip face ID entirely: `.\scripts\setup_geniex.ps1 -SkipFaceId` (the hub still
+  runs; face-ID reports `not_enabled`)
+- Reuse already-compiled AI Hub jobs instead of recompiling:
+  `-MediaPipeFaceJobId jXXXXXXXX -CavaFaceJobId jXXXXXXXX` — see `hub/face_id/README.md`
+- Already-installed face ID is detected and skipped, and a face-ID failure warns
+  rather than aborting the bootstrap.
 
 ## Configuration
 
