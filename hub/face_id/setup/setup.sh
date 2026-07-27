@@ -6,8 +6,11 @@
 #   ./setup.sh
 
 set -e
+# This script lives in hub/face_id/setup/, alongside constraints.txt; PKG_DIR
+# is the face_id package one level up, which owns models/ and the pipeline.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$SCRIPT_DIR"
+PKG_DIR="$(dirname "$SCRIPT_DIR")"
+cd "$PKG_DIR"
 
 NPU=0
 if [ "$1" = "--npu" ]; then NPU=1; fi
@@ -20,17 +23,23 @@ echo ""
 echo "[INFO]  Installing dependencies..."
 pip install --quiet opencv-python-headless
 pip install --quiet mediapipe --no-deps
-pip install --quiet "qai-hub-models[cavaface]" pillow numpy -c constraints.txt
+pip install --quiet "qai-hub-models[cavaface]" pillow numpy -c "$SCRIPT_DIR/constraints.txt"
 echo "[ OK ]  Dependencies installed"
 
-# Step 2: Download MediaPipe CPU model
-if [ ! -f "$SCRIPT_DIR/face_detector.tflite" ]; then
+# Step 2: Download MediaPipe CPU model (skipped when step 3 exports for NPU)
+# face_pipeline owns the URL and the destination path - call its helper rather
+# than restating either here. Gated for the same reason as setup.ps1: with an
+# NPU export the detector runs from MediaPipeFace.onnx and never opens this
+# file, and ensure_detector_model() still fetches on demand if the CPU
+# detector is ever reached.
+if [ "$NPU" = "1" ]; then
+    echo "[ OK ]  Skipping CPU detector download (step 3 exports it for NPU)"
+elif [ ! -f "$PKG_DIR/models/face_detector.tflite" ]; then
     echo "[INFO]  Downloading MediaPipe face detector (~228KB)..."
-    curl -sL "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite" \
-        -o "$SCRIPT_DIR/face_detector.tflite"
-    echo "[ OK ]  face_detector.tflite downloaded"
+    python -c "import sys; sys.path.insert(0, '$PKG_DIR'); import face_pipeline; face_pipeline.ensure_detector_model()"
+    echo "[ OK ]  models/face_detector.tflite downloaded"
 else
-    echo "[ OK ]  face_detector.tflite already present"
+    echo "[ OK ]  models/face_detector.tflite already present"
 fi
 
 # Step 3: (Optional) NPU model export
@@ -42,7 +51,7 @@ if [ "$NPU" = "1" ]; then
     read -p "Enter your AI Hub API token: " TOKEN
     qai-hub configure --api_token "$TOKEN"
 
-    mkdir -p "$SCRIPT_DIR/models"
+    mkdir -p "$PKG_DIR/models"
     mkdir -p /tmp/qonclave_npu_export
 
     echo "[INFO]  Exporting CavaFace..."
@@ -51,8 +60,8 @@ if [ "$NPU" = "1" ]; then
         --output-dir /tmp/qonclave_npu_export/cavaface
     ONNX=$(find /tmp/qonclave_npu_export/cavaface -name "*.onnx.zip" | head -1)
     unzip -o "$ONNX" -d /tmp/qonclave_npu_export/cavaface_unzipped
-    cp /tmp/qonclave_npu_export/cavaface_unzipped/*/model.onnx "$SCRIPT_DIR/models/CavaFace.onnx"
-    cp /tmp/qonclave_npu_export/cavaface_unzipped/*/model.data "$SCRIPT_DIR/models/CavaFace.data" 2>/dev/null || true
+    cp /tmp/qonclave_npu_export/cavaface_unzipped/*/model.onnx "$PKG_DIR/models/CavaFace.onnx"
+    cp /tmp/qonclave_npu_export/cavaface_unzipped/*/model.data "$PKG_DIR/models/CavaFace.data" 2>/dev/null || true
     echo "[ OK ]  CavaFace.onnx copied"
 
     echo "[INFO]  Exporting MediaPipeFace..."
@@ -60,10 +69,10 @@ if [ "$NPU" = "1" ]; then
         --output-dir /tmp/qonclave_npu_export/mp_face
     ONNX2=$(find /tmp/qonclave_npu_export/mp_face -name "*.onnx.zip" | head -1)
     unzip -o "$ONNX2" -d /tmp/qonclave_npu_export/mp_face_unzipped
-    cp /tmp/qonclave_npu_export/mp_face_unzipped/*/model.onnx "$SCRIPT_DIR/models/MediaPipeFace.onnx"
+    cp /tmp/qonclave_npu_export/mp_face_unzipped/*/model.onnx "$PKG_DIR/models/MediaPipeFace.onnx"
     echo "[ OK ]  MediaPipeFace.onnx copied"
 
-    cd "$SCRIPT_DIR"
+    cd "$PKG_DIR"
 fi
 
 echo ""

@@ -25,7 +25,7 @@ below is for running face_id **standalone**, with no hub involved.
 
 **Windows (x86 or ARM64), standalone:**
 ```powershell
-cd hub\face_id
+cd hub\face_id\setup
 .\setup.ps1
 ```
 This installs into whatever `python` resolves to on PATH. To target a specific
@@ -43,7 +43,7 @@ On x86 it installs CPU dependencies only.
 
 **Linux / macOS:**
 ```bash
-cd hub/face_id
+cd hub/face_id/setup
 chmod +x setup.sh && ./setup.sh
 ```
 
@@ -57,6 +57,7 @@ it), so re-running setup on the same machine/account doesn't need to
 recompile from scratch:
 
 ```powershell
+cd hub\face_id\setup
 .\setup_npu.ps1 -Token YOUR_TOKEN `
   -MediaPipeFaceJobId jpeyev475 `
   -CavaFaceJobId jg9dj44q5
@@ -162,20 +163,25 @@ auto-rebuilds when you add or replace photos.
 
 ```
 hub/face_id/
-  face_pipeline.py            main script
-  setup.ps1                   Windows one-time setup
-  setup.sh                    Linux/macOS one-time setup
-  setup_npu.ps1               called by setup.ps1 on ARM64 (NPU export)
-  build_opencv_arm64.ps1      build opencv from source for ARM64 if needed
-  constraints.txt             forces opencv-headless (no ARM64 issue)
-  face_detector.tflite        auto-downloaded by setup script
+  face_pipeline.py            main script / CLI
+  identity.py                 FaceIdentityBackend, imported by hub/server.py
+  setup/
+    setup.ps1                 Windows one-time setup
+    setup.sh                  Linux/macOS one-time setup
+    setup_npu.ps1             called by setup.ps1 on ARM64 (NPU export)
+    constraints.txt           pip constraints: forces opencv-headless
+  tools/
+    build_opencv_arm64.ps1    build opencv from source for ARM64 if needed
   known_faces/
     mahesh_babu.jpg
     pawan_kalyan.jpg
     .embeddings_cpu.npy       auto-generated cache, gitignored
     .embeddings_npu.npy       auto-generated cache, gitignored
-  models/                     populated by setup.ps1 on ARM64
-    CavaFace.onnx
+  models/                     all model files, gitignored
+    face_detector.tflite      CPU detector. Pre-fetched by setup on x86; on
+                              ARM64 fetched on demand, only if the NPU
+                              detector is unavailable
+    CavaFace.onnx             NPU, populated by setup.ps1 on ARM64
     CavaFace.data             (~250MB)
     MediaPipeFace.onnx
   wheels/
@@ -236,4 +242,8 @@ If you're debugging this yourself, check `session.get_providers()[0]` —
 if it prints `CPUExecutionProvider`, the NPU device wasn't found/bound.
 
 **opencv install fails on ARM64**
-→ Run `build_opencv_arm64.ps1` to build from source, then re-run `setup.ps1`.
+→ `setup.ps1` installs opencv from the pre-built wheel in `wheels/`. If that
+wheel is missing or doesn't match your Python version, run
+`tools\build_opencv_arm64.ps1` to build one from source (~30-50 min, needs the
+VS 2022 ARM64 toolchain — the script installs it), copy the resulting `.whl`
+into `wheels/`, then re-run `setup\setup.ps1`.

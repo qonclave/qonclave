@@ -31,8 +31,12 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# This script lives in hub/face_id/setup/; $PkgDir is the face_id package
+# itself, which owns wheels/, models/ and the pipeline. Setup-time-only files
+# (constraints.txt, the sibling setup scripts) stay here under $ScriptDir.
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-Set-Location $ScriptDir
+$PkgDir    = Split-Path -Parent $ScriptDir
+Set-Location $PkgDir
 
 function Info { param($m) Write-Host "[INFO]  $m" -ForegroundColor Cyan  }
 function Ok   { param($m) Write-Host "[ OK ]  $m" -ForegroundColor Green }
@@ -77,11 +81,12 @@ Write-Host ""
 
 Info "Installing opencv..."
 if ($arch -eq "ARM64") {
-    $wheel = Get-ChildItem "$ScriptDir\wheels" -Filter "opencv_python_headless-*-win_arm64.whl" |
+    $wheel = Get-ChildItem "$PkgDir\wheels" -Filter "opencv_python_headless-*-win_arm64.whl" |
              Sort-Object Name -Descending | Select-Object -First 1
     if (-not $wheel) {
         Write-Host "  No ARM64 opencv wheel found in wheels\." -ForegroundColor Yellow
-        Write-Host "  Run build_opencv_arm64.ps1 first, then re-run setup.ps1." -ForegroundColor Yellow
+        Write-Host "  Build one with tools\build_opencv_arm64.ps1, copy the resulting .whl" -ForegroundColor Yellow
+        Write-Host "  into wheels\, then re-run this script." -ForegroundColor Yellow
         Fail "Missing ARM64 opencv wheel."
     }
     & $python -m pip install $wheel.FullName
@@ -143,16 +148,34 @@ if ($isArm) {
 }
 Ok "qai-hub-models installed"
 
-# Step 4: Download MediaPipe CPU model
+# Step 4: Download MediaPipe CPU model (x86 only)
 
-$mpModel = "$ScriptDir\face_detector.tflite"
-if (-not (Test-Path $mpModel)) {
-    Info "Downloading MediaPipe face detector model (~228KB)..."
-    Invoke-WebRequest -Uri "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite" `
-        -OutFile $mpModel -UseBasicParsing
-    Ok "face_detector.tflite downloaded"
+# x86 has no NPU export, so the TFLite detector is THE detector - pre-fetch it
+# here rather than at first inference, so a machine that is online now but
+# offline later still works.
+#
+# On ARM64 step 5 exports MediaPipeFace.onnx and the detector runs on the NPU,
+# never opening this file - so don't spend the download. The CPU detector is
+# still reachable there if that export half-fails (face_pipeline's
+# _build_detector falls back when MediaPipeFace.onnx is absent), but
+# ensure_detector_model() fetches on demand at that point, so the fallback
+# still works - it just needs network at first inference instead of now.
+#
+# Either way face_pipeline owns the URL and the destination path; call its
+# helper instead of restating either here (it also doubles as a smoke test
+# that the package imports with what we just installed).
+if ($isArm) {
+    Info "ARM64 - skipping the CPU detector download (step 5 exports it for NPU)"
 } else {
-    Ok "face_detector.tflite already present"
+    $mpModel = "$PkgDir\models\face_detector.tflite"
+    if (-not (Test-Path $mpModel)) {
+        Info "Downloading MediaPipe face detector model (~228KB)..."
+        & $python -c "import sys; sys.path.insert(0, r'$PkgDir'); import face_pipeline; face_pipeline.ensure_detector_model()"
+        if ($LASTEXITCODE -ne 0) { Fail "Failed to download the MediaPipe face detector." }
+        Ok "models\face_detector.tflite downloaded"
+    } else {
+        Ok "models\face_detector.tflite already present"
+    }
 }
 
 # Step 5: NPU model export (mandatory on ARM64, skipped on x86)

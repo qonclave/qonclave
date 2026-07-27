@@ -20,7 +20,7 @@
          version and installs `geniex` from PyPI into it.
       5. Verifies the install by importing geniex and printing its version.
       6. Installs hub/requirements.txt (from this checkout) into the venv.
-      7. Installs face ID (hub/face_id/setup.ps1) into that same venv, since
+      7. Installs face ID (hub/face_id/setup/setup.ps1) into that same venv, since
          hub/server.py imports face_id.identity in-process. Skipped when
          already installed, so re-runs stay quick.
       8. Runs hub/server.py.
@@ -33,7 +33,7 @@
       -SkipFaceId       don't install face ID at all (hub still runs; face-ID
                         reports "not_enabled")
       -AiHubToken       Qualcomm AI Hub token for the ARM64 NPU model export.
-                        Omitted on ARM64, face_id/setup_npu.ps1 prompts for it
+                        Omitted on ARM64, face_id/setup/setup_npu.ps1 prompts for it
                         interactively. Free at https://workbench.aihub.qualcomm.com
                         (Account -> Settings -> API Token).
       -MediaPipeFaceJobId / -CavaFaceJobId
@@ -90,7 +90,7 @@ Write-Step "Checking machine architecture"
 # under x64 emulation on a Snapdragon X box reports AMD64 and this script
 # would mistake an ARM64 host for x86. That matters twice: the warning below,
 # and the face-ID model probe in step 6b, which only requires the exported
-# .onnx files on ARM64. hub\face_id\setup.ps1 reads the same registry value.
+# .onnx files on ARM64. hub\face_id\setup\setup.ps1 reads the same registry value.
 $osArch = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment').PROCESSOR_ARCHITECTURE
 Write-Host "    PROCESSOR_ARCHITECTURE (OS) = $osArch"
 if ($osArch -notmatch 'ARM64') {
@@ -327,7 +327,7 @@ Write-Step "Installing face ID into the venv"
 if ($SkipFaceId) {
     Write-Ok "-SkipFaceId set - skipping (hub will report face-ID as not_enabled)"
 } else {
-    $FaceIdSetup = Join-Path $RepoDir 'hub\face_id\setup.ps1'
+    $FaceIdSetup = Join-Path $RepoDir 'hub\face_id\setup\setup.ps1'
     $FaceIdModels = Join-Path $RepoDir 'hub\face_id\models'
 
     # Idempotency probe, so re-running this bootstrap every session stays quick:
@@ -357,7 +357,7 @@ if ($SkipFaceId) {
 
     if ($depsOk -and $modelsOk) {
         Write-Ok "face ID already installed in this venv, skipping"
-        Write-Host "        (re-run hub\face_id\setup.ps1 -PythonPath `"$VenvPython`" to force)"
+        Write-Host "        (re-run hub\face_id\setup\setup.ps1 -PythonPath `"$VenvPython`" to force)"
     } else {
         $faceArgs = @{ PythonPath = $VenvPython }
         if ($AiHubToken)         { $faceArgs.Token              = $AiHubToken }
@@ -372,7 +372,7 @@ if ($SkipFaceId) {
             & $FaceIdSetup @faceArgs
             if ($LASTEXITCODE -ne 0) {
                 Write-Warn "face ID setup exited $LASTEXITCODE - hub will report face-ID as not_enabled."
-                Write-Warn "Re-run it directly: hub\face_id\setup.ps1 -PythonPath `"$VenvPython`""
+                Write-Warn "Re-run it directly: hub\face_id\setup\setup.ps1 -PythonPath `"$VenvPython`""
             } else {
                 Write-Ok "face ID installed"
             }

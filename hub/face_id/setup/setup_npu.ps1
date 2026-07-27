@@ -40,8 +40,11 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# This script lives in hub/face_id/setup/, alongside constraints.txt; models/
+# belongs to the face_id package one level up.
 $ScriptDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
-$ModelsDir   = Join-Path $ScriptDir "models"
+$PkgDir      = Split-Path -Parent $ScriptDir
+$ModelsDir   = Join-Path $PkgDir "models"
 $DownloadDir = Join-Path $env:TEMP "qonclave_npu_export"
 $python      = if ($PythonPath) { $PythonPath } else { (Get-Command python).Source }
 # A system install has python.exe at <root>\python.exe with entry-point

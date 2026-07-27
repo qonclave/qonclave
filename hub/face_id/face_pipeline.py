@@ -40,7 +40,7 @@ MEDIAPIPE_MODEL_URL  = (
     "https://storage.googleapis.com/mediapipe-models/face_detector/"
     "blaze_face_short_range/float16/1/blaze_face_short_range.tflite"
 )
-MEDIAPIPE_MODEL_PATH = Path(__file__).parent / "face_detector.tflite"
+MEDIAPIPE_MODEL_PATH = MODELS_DIR / "face_detector.tflite"
 
 THRESHOLD = 0.3   # cosine similarity threshold for same/different person
 
@@ -133,9 +133,12 @@ def _embed_npu(session_tuple, face_img: Image.Image) -> np.ndarray:
 
 # ── MediaPipe face detector ───────────────────────────────────────────────────
 
-def _ensure_mp_model():
+def ensure_detector_model():
+    """Fetch the BlazeFace TFLite detector if absent. Public so the setup
+    scripts can pre-fetch it without restating the URL (see setup/)."""
     if not MEDIAPIPE_MODEL_PATH.exists():
         print("Downloading MediaPipe face detector (~228KB)...")
+        MODELS_DIR.mkdir(parents=True, exist_ok=True)
         urllib.request.urlretrieve(MEDIAPIPE_MODEL_URL, MEDIAPIPE_MODEL_PATH)
 
 
@@ -144,7 +147,7 @@ def _build_detector_cpu():
     from mediapipe.tasks.python.vision import FaceDetector, FaceDetectorOptions
     from mediapipe.tasks.python.core.base_options import BaseOptions
 
-    _ensure_mp_model()
+    ensure_detector_model()
     options = FaceDetectorOptions(
         base_options=BaseOptions(model_asset_path=str(MEDIAPIPE_MODEL_PATH)),
         min_detection_confidence=0.4,
@@ -157,7 +160,7 @@ def _build_detector_npu():
     if not MEDIAPIPE_NPU_ONNX_PATH.exists():
         raise FileNotFoundError(
             f"NPU detector not found: {MEDIAPIPE_NPU_ONNX_PATH}\n"
-            "Run setup_npu.ps1 to export both models."
+            "Run setup/setup_npu.ps1 to export both models."
         )
 
     session = _qnn_session(MEDIAPIPE_NPU_ONNX_PATH, "MediaPipeFace")
