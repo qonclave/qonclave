@@ -125,10 +125,20 @@ class SecurityPolicy(Policy):
 
         if len(names) == 1:
             who = f'"{names[0]}"'
-            phrasing = f'the visible person to {who}'
+            phrasing = f'the visible person as {who}'
+            requirement = (
+                f'the description MUST refer to them by name, {who}, and MUST NOT '
+                'use generic terms such as "a person", "an individual", "someone", '
+                'or "a man"/"a woman" in place of the name'
+            )
         else:
             who = ", ".join(f'"{n}"' for n in names)
-            phrasing = f'visible people to {who}'
+            phrasing = f'visible people as {who}'
+            requirement = (
+                f'the description MUST refer to each of them by name ({who}) and '
+                'MUST NOT use generic terms such as "a person", "an individual", '
+                '"someone", or "people" in place of their names'
+            )
 
         return (
             "You are a security camera verifier. Look at the image and respond with "
@@ -136,9 +146,9 @@ class SecurityPolicy(Policy):
             '{"person_present": true or false, '
             '"confidence": a number from 0 to 1, '
             '"description": "a short description of the scene"}\n'
-            f'Face recognition has matched {phrasing}. If that matches what you '
-            f'see, refer to them by name ({who}) in the description instead of '
-            'generic terms like "a person" or "an individual".\n'
+            f'A trusted face-recognition system has already run on this exact frame '
+            f'and identified {phrasing} — this is a fact about the image, not a '
+            f'guess for you to double-check. If person_present is true, {requirement}.\n'
             "Set person_present to true only if a human is clearly visible."
         )
 
