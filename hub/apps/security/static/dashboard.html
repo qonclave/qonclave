@@ -43,6 +43,20 @@
   nav { display:flex; gap:14px; margin-bottom:14px; font-size:14px; }
   nav a { color:var(--muted); text-decoration:none; }
   nav a:hover { color:var(--fg); }
+  .enroll { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  .enroll input[type=text] { flex:1 1 200px; min-width:160px; padding:8px 10px;
+        background:#0f1218; color:var(--fg); border:1px solid var(--border);
+        border-radius:8px; font-size:14px; }
+  .enroll input[type=file] { flex:1 1 200px; color:var(--muted); font-size:13px; }
+  .enroll button { padding:8px 18px; background:var(--accent); color:#06101f;
+        border:none; border-radius:8px; font-size:14px; font-weight:600;
+        cursor:pointer; }
+  .enroll button:disabled { opacity:.5; cursor:default; }
+  .enroll-msg { font-size:13px; margin-top:10px; min-height:18px; }
+  .enroll-msg.ok { color:var(--ok); }
+  .enroll-msg.err { color:var(--err); }
+  .known-list { margin-top:12px; display:flex; gap:8px; flex-wrap:wrap; }
+  .known-list .pill { color:var(--muted); }
 </style>
 </head>
 <body>
@@ -79,6 +93,23 @@
         <div class="reason" id="reason">—</div>
       </div>
     </div>
+  </div>
+
+  <div class="card" style="margin-bottom:18px;">
+    <label>Enroll a known face</label>
+    <div class="sub" style="margin-bottom:12px;">
+      Add a photo to the known-faces database. The next inference run will
+      recognize this person by name.
+    </div>
+    <form id="enrollForm" class="enroll">
+      <input id="enrollName" type="text" placeholder="Person's name (e.g. Jane Doe)"
+             autocomplete="off" />
+      <input id="enrollFile" type="file"
+             accept=".jpg,.jpeg,.png,.webp,image/*" />
+      <button id="enrollBtn" type="submit">Enroll</button>
+    </form>
+    <div id="enrollMsg" class="enroll-msg"></div>
+    <div id="knownList" class="known-list"></div>
   </div>
 
   <div class="card">
@@ -156,6 +187,58 @@ async function refresh() {
     $("hubPill").className = "pill err";
   }
 }
+
+async function loadKnownFaces() {
+  try {
+    const r = await fetch("/user/known_faces");
+    const j = await r.json();
+    const el = $("knownList");
+    if (!j.available) {
+      el.innerHTML = '<span class="pill warn">face ID not available on this hub</span>';
+      return;
+    }
+    el.innerHTML = j.names && j.names.length
+      ? j.names.map(n => `<span class="pill">${n}</span>`).join("")
+      : '<span class="pill">no faces enrolled yet</span>';
+  } catch (e) { /* leave prior state */ }
+}
+
+async function enroll(ev) {
+  ev.preventDefault();
+  const name = $("enrollName").value.trim();
+  const file = $("enrollFile").files[0];
+  const msg = $("enrollMsg");
+  if (!name) { msg.className = "enroll-msg err"; msg.textContent = "Enter a name."; return; }
+  if (!file) { msg.className = "enroll-msg err"; msg.textContent = "Choose a photo."; return; }
+
+  const fd = new FormData();
+  fd.append("name", name);
+  fd.append("image", file);
+
+  $("enrollBtn").disabled = true;
+  msg.className = "enroll-msg"; msg.textContent = "Enrolling…";
+  try {
+    const r = await fetch("/user/known_faces", { method: "POST", body: fd });
+    const j = await r.json();
+    if (r.ok && j.ok) {
+      msg.className = "enroll-msg ok";
+      msg.textContent = `Enrolled "${j.name}"${j.replaced ? " (replaced existing photo)" : ""}. Future inference will recognize them.`;
+      $("enrollName").value = ""; $("enrollFile").value = "";
+      loadKnownFaces();
+    } else {
+      msg.className = "enroll-msg err";
+      msg.textContent = j.error || "Enrollment failed.";
+    }
+  } catch (e) {
+    msg.className = "enroll-msg err";
+    msg.textContent = "Network error — hub unreachable.";
+  } finally {
+    $("enrollBtn").disabled = false;
+  }
+}
+
+$("enrollForm").addEventListener("submit", enroll);
+loadKnownFaces();
 
 refresh();
 setInterval(refresh, 2000);

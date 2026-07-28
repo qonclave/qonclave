@@ -100,6 +100,16 @@ known_faces/
 ```
 Supported formats: `.jpg` `.jpeg` `.png` `.webp`
 
+**Or enroll from the hub dashboard** — the security app's dashboard has an
+"Enroll a known face" card (name + photo). It posts to `POST /user/known_faces`,
+which calls `FaceIdentityBackend.enroll(name, image_path)`: the name is
+slugified to the same `first_last` filename convention, the photo is validated
+to contain a detectable face (when the model is loaded), saved into
+`known_faces/`, and the embeddings cache is invalidated so the **next inference
+recognizes the new person automatically** — no restart. Re-enrolling a name
+replaces that person's existing photo. `GET /user/known_faces` returns the
+current roster.
+
 ---
 
 ## Running
@@ -153,6 +163,22 @@ Cosine similarity vs known_faces/ embeddings
     v
 "Identified as: mahesh_babu (45.2%)"  or  "Unknown person"
 ```
+
+**Multiple faces per frame** — the detector returns every face it finds, not
+just the most prominent one. The CLI `identify` mode prints a per-face verdict
+(bbox, best match, known/unknown) for each. In-process, `identity.py` exposes
+two entry points:
+
+- `identify(image_path)` — single best face, flat dict (unchanged).
+- `identify_all(image_path)` — one result per detected face:
+  `{"face_count": N, "faces": [{"name", "confidence", "identified", "bbox",
+  "scores", "detector_score"}, ...]}`, highest detector-confidence first.
+
+So a two-person frame yields e.g. `mahesh_babu` + `unknown` together. On CPU
+(MediaPipe) the detector already de-duplicates; on NPU (raw BlazeFace anchors)
+`face_pipeline.py` applies non-max suppression so each real face counts once.
+The security app (`apps/security/policy.py`) uses `identify_all` and summarizes
+all faces into `identity_status` (e.g. `"2 faces: mahesh_babu (98%), unknown"`).
 
 **Known face embeddings are cached** after first run — subsequent calls load
 from `known_faces/.embeddings_cpu.npy` (or `_npu.npy`) instantly. Cache

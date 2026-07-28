@@ -28,6 +28,8 @@ Endpoints:
     GET  /user/frames/<name>  a specific stored frame
     POST /user/reason         raw VLM tester (free-form reasoning; no browser
                                page — curl/API only)
+    GET  /user/known_faces    names currently enrolled for face-ID
+    POST /user/known_faces     enroll a known face (multipart 'image' + 'name')
 
 Design goals:
     * Runs on ANY laptop (regular x86 Windows/Linux included). Reasoning is
@@ -290,6 +292,49 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
             "image_saved_as": os.path.basename(path),
             **result,
         })
+
+    # --- /user/known_faces: enroll people for face-ID ----------------------
+    @app.get("/user/known_faces")
+    def list_known_faces():
+        """Names currently enrolled (drives the dashboard's roster)."""
+        names = face_id.known_names() if face_id else []
+        return jsonify({
+            "available": bool(face_id and face_id.status().get("available")),
+            "count": len(names),
+            "names": names,
+        })
+
+    @app.post("/user/known_faces")
+    def enroll_known_face():
+        """Add a known face: multipart 'image' + a 'name' field. The next
+        inference run will match against the newly enrolled person."""
+        client = request.remote_addr
+        if face_id is None:
+            return jsonify({"ok": False, "error": "face ID not enabled on this hub"}), 501
+
+        name = (request.form.get("name") or request.args.get("name") or "").strip()
+        if not name:
+            return jsonify({"ok": False, "error": "missing 'name'"}), 400
+
+        path, err = transport.save_incoming_image()
+        if err:
+            log.warning("POST /user/known_faces rejected from %s: %s", client, err)
+            return jsonify({"ok": False, "error": err}), 400
+
+        result = face_id.enroll(name, path)
+        # The uploaded copy in uploads/ was only a staging file; enroll() has
+        # written its own copy into known_faces/, so drop the staging one.
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+        if not result.get("ok"):
+            log.warning("Enroll failed for '%s' from %s: %s", name, client, result.get("error"))
+            return jsonify(result), 400
+
+        log.info("Enrolled '%s' (slug=%s) from %s", name, result.get("slug"), client)
+        return jsonify({**result, "names": face_id.known_names()})
 
     # --- app pages (served from the app's own static_dir) -------------------
     @app.get("/user/dashboard")

@@ -175,37 +175,95 @@ def _build_detector(use_npu: bool):
     return _build_detector_cpu()
 
 
-def detect_and_crop_face(detector, pil_img: Image.Image, padding: float = 0.3) -> "Image.Image | None":
+DETECT_MIN_SCORE = 0.4  # min detector confidence to accept a face
+
+
+def _crop_box(rgb: Image.Image, x1: int, y1: int, x2: int, y2: int,
+              padding: float) -> "Image.Image | None":
+    """Pad a detected box, clamp to image bounds, crop and resize to 112x112."""
+    w, h = rgb.size
+    pad_x = int((x2 - x1) * padding)
+    pad_y = int((y2 - y1) * padding)
+    cx1 = max(0, x1 - pad_x)
+    cy1 = max(0, y1 - pad_y)
+    cx2 = min(w, x2 + pad_x)
+    cy2 = min(h, y2 + pad_y)
+    if cx2 <= cx1 or cy2 <= cy1:
+        return None
+    return rgb.crop((cx1, cy1, cx2, cy2)).resize((112, 112), Image.LANCZOS)
+
+
+def _iou(a, b) -> float:
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+    iw, ih = max(0, ix2 - ix1), max(0, iy2 - iy1)
+    inter = iw * ih
+    if inter == 0:
+        return 0.0
+    area_a = max(0, ax2 - ax1) * max(0, ay2 - ay1)
+    area_b = max(0, bx2 - bx1) * max(0, by2 - by1)
+    return inter / float(area_a + area_b - inter + 1e-9)
+
+
+def _nms(boxes: list, scores: list, iou_thresh: float = 0.3) -> list:
+    """Greedy non-max suppression; returns kept indices, highest score first."""
+    order = sorted(range(len(scores)), key=lambda i: -scores[i])
+    kept: list[int] = []
+    for i in order:
+        if all(_iou(boxes[i], boxes[j]) <= iou_thresh for j in kept):
+            kept.append(i)
+    return kept
+
+
+def detect_faces(detector, pil_img: Image.Image, padding: float = 0.3,
+                 min_score: float = DETECT_MIN_SCORE) -> list:
+    """Detect every face in the image, highest-confidence first.
+
+    Returns a list of {"face": 112x112 RGB PIL crop, "bbox": (x1,y1,x2,y2) in
+    original-image pixels, "score": float}. Empty list if no face is found.
+    """
     if detector[0] == "onnx":
-        return _detect_npu(detector, pil_img, padding)
-    return _detect_mediapipe(detector[1], pil_img, padding)
+        return _detect_faces_npu(detector, pil_img, padding, min_score)
+    return _detect_faces_mediapipe(detector[1], pil_img, padding, min_score)
 
 
-def _detect_mediapipe(mp_detector, pil_img: Image.Image, padding: float) -> "Image.Image | None":
+def detect_and_crop_face(detector, pil_img: Image.Image,
+                         padding: float = 0.3) -> "Image.Image | None":
+    """Backward-compatible single-face helper: the highest-confidence crop."""
+    faces = detect_faces(detector, pil_img, padding)
+    return faces[0]["face"] if faces else None
+
+
+def _detect_faces_mediapipe(mp_detector, pil_img: Image.Image, padding: float,
+                            min_score: float) -> list:
     import mediapipe as mp
 
     rgb      = pil_img.convert("RGB")
     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=np.array(rgb))
     result   = mp_detector.detect(mp_image)
 
-    if not result.detections:
-        return None
+    # MediaPipe already applies non-max suppression, so its detections are
+    # one-per-face; we just filter by score and crop each.
+    faces = []
+    for det in result.detections:
+        score = float(det.categories[0].score)
+        if score < min_score:
+            continue
+        bb = det.bounding_box
+        x1, y1 = bb.origin_x, bb.origin_y
+        x2, y2 = bb.origin_x + bb.width, bb.origin_y + bb.height
+        crop = _crop_box(rgb, x1, y1, x2, y2, padding)
+        if crop is not None:
+            faces.append({"face": crop, "bbox": (x1, y1, x2, y2), "score": score})
+    faces.sort(key=lambda f: -f["score"])
+    return faces
 
-    det   = max(result.detections, key=lambda d: d.categories[0].score)
-    bb    = det.bounding_box
-    w, h  = rgb.size
-    pad_x = int(bb.width * padding)
-    pad_y = int(bb.height * padding)
-    x1    = max(0, bb.origin_x - pad_x)
-    y1    = max(0, bb.origin_y - pad_y)
-    x2    = min(w, bb.origin_x + bb.width + pad_x)
-    y2    = min(h, bb.origin_y + bb.height + pad_y)
 
-    return rgb.crop((x1, y1, x2, y2)).resize((112, 112), Image.LANCZOS)
-
-
-def _detect_npu(detector_tuple, pil_img: Image.Image, padding: float) -> "Image.Image | None":
-    """Run MediaPipe BlazeFace ONNX on NPU, return cropped face."""
+def _detect_faces_npu(detector_tuple, pil_img: Image.Image, padding: float,
+                      min_score: float) -> list:
+    """Run MediaPipe BlazeFace ONNX on NPU, return all faces (post-NMS)."""
     _, session, input_name, input_shape = detector_tuple
     h_in, w_in = input_shape[2], input_shape[3]  # e.g. 128x128
 
@@ -226,30 +284,54 @@ def _detect_npu(detector_tuple, pil_img: Image.Image, padding: float) -> "Image.
     boxes, scores = outputs[0], outputs[1]
     scores = scores.squeeze()
 
-    best_idx = int(np.argmax(scores))
-    if scores[best_idx] < 0.4:
-        return None
-
-    box = boxes[0][best_idx][:4]
     sx, sy = w / w_in, h / h_in  # scale from model-input space back to original image
-    bw = (box[2] - box[0]) * sx
-    bh = (box[3] - box[1]) * sy
-    x1 = max(0, int(box[0] * sx - bw * padding))
-    y1 = max(0, int(box[1] * sy - bh * padding))
-    x2 = min(w, int(box[2] * sx + bw * padding))
-    y2 = min(h, int(box[3] * sy + bh * padding))
 
-    if x2 <= x1 or y2 <= y1:
-        return None
-    return rgb.crop((x1, y1, x2, y2)).resize((112, 112), Image.LANCZOS)
+    # Unlike MediaPipe (single argmax), the raw anchor grid fires many
+    # overlapping boxes per face — collect all above threshold, then NMS so
+    # each real face is represented once.
+    cand_boxes, cand_scores = [], []
+    for i in np.where(scores >= min_score)[0]:
+        box = boxes[0][int(i)][:4]
+        cand_boxes.append((box[0] * sx, box[1] * sy, box[2] * sx, box[3] * sy))
+        cand_scores.append(float(scores[int(i)]))
+
+    faces = []
+    for i in _nms(cand_boxes, cand_scores):
+        bx1, by1, bx2, by2 = cand_boxes[i]
+        crop = _crop_box(rgb, int(bx1), int(by1), int(bx2), int(by2), padding)
+        if crop is not None:
+            faces.append({
+                "face": crop,
+                "bbox": (int(bx1), int(by1), int(bx2), int(by2)),
+                "score": cand_scores[i],
+            })
+    return faces
+
 
 def get_embedding(detector, model, image_path: str, use_npu: bool) -> "np.ndarray | None":
+    """Embed the single highest-confidence face (compare/benchmark modes)."""
     img  = Image.open(image_path)
     face = detect_and_crop_face(detector, img)
     if face is None:
         print(f"  [!] No face detected in {image_path}")
         return None
     return _embed_npu(model, face) if use_npu else _embed_cpu(model, face)
+
+
+def get_embeddings(detector, model, image_path: str, use_npu: bool) -> list:
+    """Embed every detected face. Returns a list of
+    {"embedding": np.ndarray, "bbox": tuple, "score": float}, highest-confidence
+    first; empty list if no face is found."""
+    img   = Image.open(image_path)
+    faces = detect_faces(detector, img)
+    if not faces:
+        print(f"  [!] No face detected in {image_path}")
+        return []
+    out = []
+    for f in faces:
+        emb = _embed_npu(model, f["face"]) if use_npu else _embed_cpu(model, f["face"])
+        out.append({"embedding": emb, "bbox": f["bbox"], "score": f["score"]})
+    return out
 
 
 # ── Modes ─────────────────────────────────────────────────────────────────────
@@ -318,24 +400,26 @@ def mode_identify(detector, model, unknown_path: str, db_dir: str, use_npu: bool
         return
 
     print(f"\nIdentifying: {unknown_path}")
-    unknown_emb = get_embedding(detector, model, unknown_path, use_npu)
-    if unknown_emb is None:
+    faces = get_embeddings(detector, model, unknown_path, use_npu)
+    if not faces:
         return
 
-    scores    = {name: float(np.dot(emb, unknown_emb)) for name, emb in known.items()}
-    best_name = max(scores, key=scores.get)
-    best_score = scores[best_name]
+    print(f"\nDetected {len(faces)} face(s):")
+    for i, f in enumerate(faces, 1):
+        scores    = {name: float(np.dot(emb, f["embedding"])) for name, emb in known.items()}
+        best_name = max(scores, key=scores.get)
+        best_score = scores[best_name]
 
-    print("\n--- Scores ---")
-    for name, score in sorted(scores.items(), key=lambda x: -x[1]):
-        marker = " <- best match" if name == best_name else ""
-        print(f"  {name:30s}  {score*100:.1f}%{marker}")
+        print(f"\n[Face {i}] bbox={f['bbox']} detector_score={f['score']*100:.1f}%")
+        print("  --- Scores ---")
+        for name, score in sorted(scores.items(), key=lambda x: -x[1]):
+            marker = " <- best match" if name == best_name else ""
+            print(f"    {name:30s}  {score*100:.1f}%{marker}")
 
-    print()
-    if best_score > THRESHOLD:
-        print(f"Identified as : {best_name}  ({best_score*100:.1f}%)")
-    else:
-        print(f"Unknown person  (best '{best_name}' only {best_score*100:.1f}%)")
+        if best_score > THRESHOLD:
+            print(f"  => Identified as : {best_name}  ({best_score*100:.1f}%)")
+        else:
+            print(f"  => Unknown person  (best '{best_name}' only {best_score*100:.1f}%)")
 
 
 def mode_benchmark(detector, model, image_path: str, runs: int, use_npu: bool):
