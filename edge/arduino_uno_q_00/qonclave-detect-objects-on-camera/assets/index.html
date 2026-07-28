@@ -15,7 +15,13 @@ SPDX-License-Identifier: MPL-2.0
   <body>
     <div>
       <div class="header">
-        <h1 class="arduino-text">Video Generic Object Detection</h1>
+        <div style="display: flex; flex-direction: column; gap: 6px;">
+          <h1 class="arduino-text">Video Generic Object Detection</h1>
+          <div id="hubStatusBadge" class="hub-status offline">
+            <span class="status-dot"></span>
+            <span id="hubStatusText">Hub Offline (Searching...)</span>
+          </div>
+        </div>
         <img class="arduino-logo" src="./img/logo.svg" alt="Arduino Logo" />
       </div>
 
