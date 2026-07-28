@@ -100,6 +100,16 @@ known_faces/
 ```
 Supported formats: `.jpg` `.jpeg` `.png` `.webp`
 
+**Or enroll from the hub dashboard** — the security app's dashboard has an
+"Enroll a known face" card (name + photo). It posts to `POST /user/known_faces`,
+which calls `FaceIdentityBackend.enroll(name, image_path)`: the name is
+slugified to the same `first_last` filename convention, the photo is validated
+to contain a detectable face (when the model is loaded), saved into
+`known_faces/`, and the embeddings cache is invalidated so the **next inference
+recognizes the new person automatically** — no restart. Re-enrolling a name
+replaces that person's existing photo. `GET /user/known_faces` returns the
+current roster.
+
 ---
 
 ## Running

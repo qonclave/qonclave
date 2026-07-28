@@ -21,12 +21,15 @@ Public API:
     face_id.status()
     result = face_id.identify(image_path)   # -> dict (single, best face)
     result = face_id.identify_all(image_path)  # -> dict (one entry per face)
+    face_id.enroll(name, image_path)        # -> dict; add a known face
+    face_id.known_names()                   # -> list[str]; enrolled people
 """
 
 from __future__ import annotations
 
 import logging
 import platform
+import re
 import threading
 import time
 from pathlib import Path
@@ -36,6 +39,15 @@ from . import face_pipeline as fp
 log = logging.getLogger("qonclave.face_id")
 
 KNOWN_FACES_DIR = Path(__file__).parent / "known_faces"
+
+ENROLL_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
+
+
+def _slugify_name(name: str) -> str:
+    """Person name -> safe filename stem, matching the repo's existing
+    'mahesh_babu' / 'pawan_kalyan' convention. Also neutralizes path traversal:
+    every non-alphanumeric char (incl. '/', '.', '\\') collapses to '_'."""
+    return re.sub(r"[^A-Za-z0-9]+", "_", (name or "").strip()).strip("_").lower()
 
 
 def _is_arm64() -> bool:
@@ -243,6 +255,101 @@ class FaceIdentityBackend:
             "mode": mode, "latency_s": latency,
             "error": None if known or not results else "no known faces enrolled",
         }
+
+    # --- enrollment -----------------------------------------------------------
+    def known_names(self) -> list[str]:
+        """Names currently enrolled in known_faces_dir (one photo -> one name),
+        derived from filenames the same way _load_db() enrolls them."""
+        d = self.known_faces_dir
+        if not d.is_dir():
+            return []
+        return sorted({p.stem for p in d.iterdir()
+                       if p.is_file() and p.suffix.lower() in ENROLL_EXTS})
+
+    def _invalidate_db_cache(self):
+        """Drop the cached embeddings so the next identify() rebuilds the DB
+        and picks up a freshly enrolled face. _load_db() already rebuilds when
+        an image is newer than the cache, but deleting is robust to clock skew
+        and same-second writes."""
+        for use_npu in (True, False):
+            cache = fp._cache_path(self.known_faces_dir, use_npu)
+            try:
+                cache.unlink(missing_ok=True)
+            except OSError as e:
+                log.warning("could not remove embeddings cache %s: %s", cache, e)
+
+    def enroll(self, name: str, image_path: str) -> dict:
+        """
+        Add a person to known_faces_dir from an uploaded image so subsequent
+        inference recognizes them. Validates that a face is actually detectable
+        (when the model is available) before saving, then invalidates the
+        embeddings cache. Always returns a dict; never raises for the caller.
+
+        {"ok": bool, "name": str|None, "slug": str|None, "path": str|None,
+         "replaced": bool, "error": str|None}
+        """
+        slug = _slugify_name(name)
+        if not slug:
+            return {"ok": False, "name": None, "slug": None, "path": None,
+                    "replaced": False, "error": "empty or invalid name"}
+
+        src = Path(image_path)
+        ext = src.suffix.lower()
+        if ext not in ENROLL_EXTS:
+            return {"ok": False, "name": name, "slug": slug, "path": None,
+                    "replaced": False,
+                    "error": f"unsupported image type '{ext or '(none)'}'; "
+                             f"use one of {sorted(ENROLL_EXTS)}"}
+
+        # Reject a photo with no detectable face up front, so we don't enroll a
+        # name that can never match. Only possible when the model loaded; if it
+        # didn't (e.g. deps missing), we still save the file so enrollment works
+        # on hubs where face-ID isn't running.
+        if self.is_available():
+            try:
+                from PIL import Image
+                with self._lock:
+                    faces = fp.detect_faces(self._detector, Image.open(image_path))
+            except Exception as e:
+                log.exception("enroll() face check failed")
+                return {"ok": False, "name": name, "slug": slug, "path": None,
+                        "replaced": False, "error": f"face check failed: {e}"}
+            if not faces:
+                return {"ok": False, "name": name, "slug": slug, "path": None,
+                        "replaced": False,
+                        "error": "no face detected in the uploaded photo; "
+                                 "use a clear, front-facing image"}
+
+        self.known_faces_dir.mkdir(parents=True, exist_ok=True)
+
+        # One photo per person: a re-enroll replaces any prior photo for this
+        # slug (possibly under a different extension) so there's no stale copy.
+        replaced = False
+        for existing in self.known_faces_dir.iterdir():
+            if (existing.is_file() and existing.suffix.lower() in ENROLL_EXTS
+                    and existing.stem == slug):
+                try:
+                    existing.unlink()
+                    replaced = True
+                except OSError as e:
+                    return {"ok": False, "name": name, "slug": slug, "path": None,
+                            "replaced": False,
+                            "error": f"could not replace existing photo: {e}"}
+
+        dest = self.known_faces_dir / f"{slug}{ext}"
+        try:
+            with open(src, "rb") as fin, open(dest, "wb") as fout:
+                fout.write(fin.read())
+        except OSError as e:
+            log.exception("enroll() save failed")
+            return {"ok": False, "name": name, "slug": slug, "path": None,
+                    "replaced": replaced, "error": f"could not save photo: {e}"}
+
+        self._invalidate_db_cache()
+        log.info("Enrolled known face: %s -> %s%s", name, dest.name,
+                 " (replaced existing)" if replaced else "")
+        return {"ok": True, "name": name, "slug": slug, "path": str(dest),
+                "replaced": replaced, "error": None}
 
     def close(self):
         with self._lock:
