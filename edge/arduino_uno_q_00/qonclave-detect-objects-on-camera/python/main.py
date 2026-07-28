@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
+import json
 import os
 import threading
 import time
@@ -78,9 +79,48 @@ HUB_PORT = int(os.environ.get("HUB_PORT", "8000"))
 PERSON_CONFIDENCE_THRESHOLD = float(os.environ.get("PERSON_CONFIDENCE_THRESHOLD", "0.7"))
 HUB_EVENT_HYSTERESIS_SEC = float(os.environ.get("HUB_EVENT_HYSTERESIS_SEC", "10"))
 HUB_EVENT_TIMEOUT_SEC = float(os.environ.get("HUB_EVENT_TIMEOUT_SEC", "5"))
+ESCALATION_DIR = os.environ.get("ESCALATION_DIR", "/app/escalations")
+ESCALATION_MAX_FILES = int(os.environ.get("ESCALATION_MAX_FILES", "100"))
 
 _hub_event_lock = threading.Lock()
 _last_hub_event_at = 0.0
+
+
+def _prune_escalation_frames():
+  # Filenames are ISO-8601 timestamps (colons swapped for dashes), so a
+  # plain lexicographic sort is also a chronological sort.
+  try:
+    names = sorted(f[:-4] for f in os.listdir(ESCALATION_DIR) if f.endswith(".jpg"))
+  except OSError:
+    return
+
+  excess = len(names) - ESCALATION_MAX_FILES
+  if excess <= 0:
+    return
+
+  for name in names[:excess]:
+    for ext in (".jpg", ".json"):
+      try:
+        os.remove(os.path.join(ESCALATION_DIR, f"{name}{ext}"))
+      except OSError:
+        pass
+
+
+def _save_escalation_frame(confidence: float, frame: bytes, timestamp: str):
+  base_path = os.path.join(ESCALATION_DIR, timestamp.replace(":", "-"))
+  try:
+    os.makedirs(ESCALATION_DIR, exist_ok=True)
+    with open(f"{base_path}.jpg", "wb") as f:
+      f.write(frame)
+    with open(f"{base_path}.json", "w") as f:
+      json.dump({
+        "timestamp": timestamp,
+        "threshold": PERSON_CONFIDENCE_THRESHOLD,
+        "confidence": confidence,
+      }, f)
+    _prune_escalation_frames()
+  except OSError as e:
+    log.error(f"Failed to save escalation frame locally: {e}")
 
 
 def _post_person_event(confidence: float, frame: bytes):
@@ -120,6 +160,8 @@ def maybe_notify_hub(detections: dict, frame: bytes | None):
       return
     _last_hub_event_at = now
 
+  timestamp = datetime.now(UTC).isoformat()
+  threading.Thread(target=_save_escalation_frame, args=(best_confidence, frame, timestamp), daemon=True).start()
   threading.Thread(target=_post_person_event, args=(best_confidence, frame), daemon=True).start()
 
 

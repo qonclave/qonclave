@@ -88,6 +88,29 @@ def save_incoming_image() -> tuple[str | None, str | None]:
     )
 
 
+def result_sidecar_path(frame_name: str) -> str:
+    """Path of the JSON sidecar for a stored frame: '<frame>.json', living
+    next to the frame in UPLOAD_DIR so /user/frames/<name> serves it too."""
+    return os.path.join(UPLOAD_DIR, f"{frame_name}.json")
+
+
+def save_result_sidecar(frame_name: str, result: dict) -> str | None:
+    """Persist the hub's verification/VLM result next to its frame as
+    '<frame>.json'. Best-effort: logs and returns None on failure (a disk
+    error must never break the /edge/event response). Returns the path on
+    success."""
+    if not frame_name:
+        return None
+    path = result_sidecar_path(frame_name)
+    try:
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(result, fh, indent=2, ensure_ascii=False, default=str)
+        return path
+    except OSError as e:
+        log.warning("could not write result sidecar %s: %s", path, e)
+        return None
+
+
 def parse_edge_event() -> dict:
     """
     Extract the edge event metadata that accompanies a frame. Tolerant of how a
