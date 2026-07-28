@@ -9,6 +9,7 @@ import uuid
 from datetime import datetime, UTC
 
 import requests
+from dotenv import load_dotenv
 
 from arduino.app_utils import App, Logger, Bridge
 from arduino.app_bricks.web_ui import WebUI
@@ -16,6 +17,8 @@ from arduino.app_bricks.video_objectdetection import VideoObjectDetection
 from arduino.app_peripherals.camera import IPCamera, V4LCamera
 
 from file_camera import FileCamera
+
+load_dotenv()
 
 log = Logger("qonclave.edge")
 
