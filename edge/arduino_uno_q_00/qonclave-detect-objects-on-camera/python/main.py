@@ -20,6 +20,7 @@ from arduino.app_peripherals.camera import IPCamera, V4LCamera
 
 import json
 from file_camera import FileCamera
+from mqtt_client import EdgeMQTTClient
 
 load_dotenv()
 
@@ -29,6 +30,15 @@ DEVICE_ID = os.environ.get("DEVICE_ID", "unoq-01")
 HUB_MDNS_NAME = os.environ.get("HUB_MDNS_NAME", "qonclave-hub.local").strip()
 HUB_IP = os.environ.get("HUB_IP", "192.168.50.207").strip()
 HUB_PORT = int(os.environ.get("HUB_PORT", "8000"))
+
+# --- Hub->edge command channel (MQTT) -------------------------------------
+# The MQTT broker runs on the hub machine, so the edge connects to the hub's
+# host by default; MQTT_HOST overrides it (e.g. a standalone broker). The hub
+# publishes commands to qonclave/<device_id>/command.
+MQTT_ENABLED = os.environ.get("EDGE_MQTT_ENABLED", "1") == "1"
+MQTT_HOST = os.environ.get("MQTT_HOST", HUB_IP).strip()
+MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
+TTL_SECONDS = 1800.0  # 30 minutes
 TTL_SECONDS = 1800.0  # 30 minutes
 
 _resolved_hub_host = None
@@ -350,5 +360,22 @@ def send_detections_to_ui(detections: dict, frame: bytes | None = None):
   maybe_notify_hub(detections, frame)
 
 detection_stream.on_detect_all(send_detections_to_ui)
+
+# --- Hub->edge command channel: connect to the MQTT broker and listen for
+# commands the hub pushes to this device. For now we just log received
+# commands; acting on them (motor control, capture-now, ...) is layered on
+# later.
+def _handle_hub_command(command: dict):
+  log.info(f"Received hub command: {command}")
+
+mqtt_client = EdgeMQTTClient(
+  device_id=DEVICE_ID,
+  host=MQTT_HOST,
+  port=MQTT_PORT,
+  enabled=MQTT_ENABLED,
+  on_command=_handle_hub_command,
+  logger=log,
+)
+mqtt_client.start()
 
 App.run()
