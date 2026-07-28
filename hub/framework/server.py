@@ -187,7 +187,7 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
             log.info("No alert [%s]: %s", event_id, verdict.alert)
 
         # record for the dashboard (includes reasoning text + edge context)
-        events.record_event({
+        record = {
             **response,
             "device_id": event.get("device_id"),
             "edge_confidence": event.get("edge_confidence"),
@@ -197,7 +197,16 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
             "reasoning_available": verdict.reasoning_available,
             "latency_s": verdict.latency_s,
             "received_at": transport.now_iso(),
-        }, frame_name)
+        }
+        events.record_event(record, frame_name)
+
+        # persist the VLM/verification result next to the frame as
+        # <frame>.json, so stored frames carry their result on disk (and are
+        # fetchable via /user/frames/<frame>.json) — not just in the in-memory
+        # ring buffer the dashboard reads.
+        sidecar = transport.save_result_sidecar(frame_name, record)
+        if sidecar:
+            log.info("Saved result sidecar -> %s", os.path.basename(sidecar))
 
         return jsonify(response)
 
