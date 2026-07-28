@@ -154,6 +154,22 @@ Cosine similarity vs known_faces/ embeddings
 "Identified as: mahesh_babu (45.2%)"  or  "Unknown person"
 ```
 
+**Multiple faces per frame** — the detector returns every face it finds, not
+just the most prominent one. The CLI `identify` mode prints a per-face verdict
+(bbox, best match, known/unknown) for each. In-process, `identity.py` exposes
+two entry points:
+
+- `identify(image_path)` — single best face, flat dict (unchanged).
+- `identify_all(image_path)` — one result per detected face:
+  `{"face_count": N, "faces": [{"name", "confidence", "identified", "bbox",
+  "scores", "detector_score"}, ...]}`, highest detector-confidence first.
+
+So a two-person frame yields e.g. `mahesh_babu` + `unknown` together. On CPU
+(MediaPipe) the detector already de-duplicates; on NPU (raw BlazeFace anchors)
+`face_pipeline.py` applies non-max suppression so each real face counts once.
+The security app (`apps/security/policy.py`) uses `identify_all` and summarizes
+all faces into `identity_status` (e.g. `"2 faces: mahesh_babu (98%), unknown"`).
+
 **Known face embeddings are cached** after first run — subsequent calls load
 from `known_faces/.embeddings_cpu.npy` (or `_npu.npy`) instantly. Cache
 auto-rebuilds when you add or replace photos.

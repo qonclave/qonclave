@@ -19,7 +19,8 @@ Public API:
     face_id.is_available()
     face_id.warmup()
     face_id.status()
-    result = face_id.identify(image_path)   # -> dict
+    result = face_id.identify(image_path)   # -> dict (single, best face)
+    result = face_id.identify_all(image_path)  # -> dict (one entry per face)
 """
 
 from __future__ import annotations
@@ -169,6 +170,78 @@ class FaceIdentityBackend:
             "confidence": round(best_score, 4),
             "scores": {k: round(v, 4) for k, v in scores.items()},
             "mode": mode, "latency_s": latency, "error": None,
+        }
+
+    def identify_all(self, image_path: str, threshold: float = fp.THRESHOLD) -> dict:
+        """
+        Detect *every* face in image_path and match each against known_faces_dir.
+        Always returns a dict; never raises for the caller.
+
+        {"available": bool, "face_count": int, "faces": [ {face-result}, ... ],
+         "mode": "npu"|"cpu"|None, "latency_s": float|None, "error": str|None}
+
+        Each entry in "faces" mirrors identify()'s per-face shape:
+        {"face_detected": True, "identified": bool, "name": str|None,
+         "confidence": float|None, "scores": dict, "bbox": (x1,y1,x2,y2),
+         "detector_score": float}, ordered highest detector-confidence first.
+        """
+        if not self.is_available():
+            return {
+                "available": False, "face_count": 0, "faces": [], "mode": None,
+                "latency_s": None,
+                "error": self._load_error or "face ID not available on this hub",
+            }
+
+        mode = "npu" if self._use_npu else "cpu"
+
+        with self._lock:
+            t0 = time.time()
+            try:
+                known = fp._load_db(self._detector, self._model, self.known_faces_dir, self._use_npu)
+                faces = fp.get_embeddings(self._detector, self._model, image_path, self._use_npu)
+            except Exception as e:
+                log.exception("Face ID identify_all() failed")
+                return {
+                    "available": True, "face_count": 0, "faces": [], "mode": mode,
+                    "latency_s": None, "error": f"identify failed: {e}",
+                }
+            latency = round(time.time() - t0, 3)
+
+        import numpy as np
+
+        results = []
+        for f in faces:
+            emb = f["embedding"]
+            if not known:
+                results.append({
+                    "face_detected": True, "identified": False, "name": None,
+                    "confidence": None, "scores": {}, "bbox": f["bbox"],
+                    "detector_score": round(f["score"], 4),
+                })
+                continue
+            scores = {name: float(np.dot(kemb, emb)) for name, kemb in known.items()}
+            best_name = max(scores, key=scores.get)
+            best_score = scores[best_name]
+            identified = best_score > threshold
+            results.append({
+                "face_detected": True,
+                "identified": identified,
+                "name": best_name if identified else None,
+                "confidence": round(best_score, 4),
+                "scores": {k: round(v, 4) for k, v in scores.items()},
+                "bbox": f["bbox"],
+                "detector_score": round(f["score"], 4),
+            })
+
+        n_known = sum(1 for r in results if r["identified"])
+        log.info("Face ID identify_all (%.2fs): %d face(s), %d known, %d unknown%s",
+                 latency, len(results), n_known, len(results) - n_known,
+                 "" if known else " [no known faces enrolled]")
+
+        return {
+            "available": True, "face_count": len(results), "faces": results,
+            "mode": mode, "latency_s": latency,
+            "error": None if known or not results else "no known faces enrolled",
         }
 
     def close(self):
