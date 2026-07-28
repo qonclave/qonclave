@@ -226,12 +226,17 @@ function Test-AnyPython($exe) {
 
 function Get-Python {
     # Resolve python.exe by ABSOLUTE PATH, not PATH env var (which is stale right
-    # after a fresh install). Scans known install roots + py launcher + PATH, and
-    # ignores the Microsoft Store stub. On ARM64 only the exact ARM64 3.13.3 is
+    # after a fresh install). Probes each source in turn and RETURNS ON THE FIRST
+    # acceptable interpreter, so a hit from the fast `py` launcher never triggers
+    # the slower filesystem scans below. On ARM64 only the exact ARM64 3.13.3 is
     # accepted (GenieX needs it); on other hosts any usable Python 3.10+ is fine.
-    $candidates = @()
+    function _accepts($exe) {
+        if (-not $exe -or ($exe -match '\\WindowsApps\\')) { return $false }
+        if ($IsArm) { return (Test-ArmPython $exe) } else { return (Test-AnyPython $exe) }
+    }
 
-    # 1. py launcher (if present) - ask it where the interpreter lives.
+    # 1. py launcher (if present) - ask it where the interpreter lives. This is
+    #    the fast path and usually the only one that runs.
     #    Use `-3` (any Python 3); version filtering happens in the acceptor.
     #    Do NOT ask for the exact version (e.g. "-3.13") here: when that exact
     #    version isn't installed, some py.exe builds print "No suitable Python
@@ -240,10 +245,13 @@ function Get-Python {
     #    noise even though it's harmless and already handled via $LASTEXITCODE.
     if (Get-Command py -ErrorAction SilentlyContinue) {
         $p = (& py -3 -c "import sys; print(sys.executable)" 2>$null)
-        if ($LASTEXITCODE -eq 0 -and $p) { $candidates += $p.Trim() }
+        if ($LASTEXITCODE -eq 0 -and $p -and (_accepts $p.Trim())) { return $p.Trim() }
     }
 
-    # 2. Well-known per-user / all-users install roots (glob for python.exe)
+    # 2. Well-known per-user / all-users install roots. A CPython install puts
+    #    python.exe directly in its version folder (e.g. ...\Python313\python.exe),
+    #    so -Depth 1 finds it WITHOUT recursing into Lib\site-packages (which can
+    #    hold tens of thousands of files and is what makes a full -Recurse hang).
     $roots = @(
         "$env:LOCALAPPDATA\Programs\Python",
         "$env:ProgramFiles\Python*",
@@ -252,20 +260,18 @@ function Get-Python {
     )
     foreach ($root in $roots) {
         if ($root -and (Test-Path $root)) {
-            $candidates += (Get-ChildItem -Path $root -Filter python.exe -Recurse -ErrorAction SilentlyContinue |
-                            Select-Object -ExpandProperty FullName)
+            foreach ($f in (Get-ChildItem -Path $root -Filter python.exe -Depth 1 -ErrorAction SilentlyContinue |
+                            Select-Object -ExpandProperty FullName)) {
+                if (_accepts $f) { return $f }
+            }
         }
     }
 
-    # 3. Whatever is on PATH, last resort (excluding the Store stub below)
+    # 3. Whatever is on PATH, last resort (excluding the Store stub).
     foreach ($c in (Get-Command python.exe -All -ErrorAction SilentlyContinue)) {
-        if ($c.Source) { $candidates += $c.Source }
+        if ($c.Source -and (_accepts $c.Source)) { return $c.Source }
     }
 
-    foreach ($exe in ($candidates | Where-Object { $_ -and $_ -notmatch '\\WindowsApps\\' } | Select-Object -Unique)) {
-        $accepted = if ($IsArm) { Test-ArmPython $exe } else { Test-AnyPython $exe }
-        if ($accepted) { return $exe }
-    }
     return $null
 }
 
