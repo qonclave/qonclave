@@ -1,9 +1,18 @@
 <#
-    setup_hub.ps1  -  Snapdragon X (Windows ARM64) bootstrap for GenieX + hub
+    setup_hub.ps1  -  Windows bootstrap for the Qonclave hub (GenieX on Snapdragon X)
 
-    Run this at the start of every fresh cloud session, from inside an already
+    Run this at the start of every fresh session, from inside an already
     git-synced Qonclave checkout (this script lives at Qonclave/hub/). It
     is idempotent: already-installed steps are skipped, so re-runs are quick.
+
+    ARM64 (Snapdragon X) vs. other hosts:
+      * On Windows ARM64 it installs the exact ARM64 Python 3.13.3 and GenieX,
+        enabling on-device VLM reasoning.
+      * On a regular x86-64 (AMD64) laptop it REUSES the Python already on the
+        machine (any 3.10+), skips the ARM64 Python download and skips GenieX
+        (which ships ARM64-only wheels). The hub still runs end-to-end - the
+        VLM just reports "unavailable" and reasoning is disabled; face-ID uses
+        its CPU path, and everything else (Flask, MQTT, SMS, enrollment) works.
 
     This script does NOT clone or pull the repo - sync git yourself first
     (git clone / git pull), then run this script from inside that checkout.
@@ -11,14 +20,14 @@
     What it does:
       1. Installs Git CLI (via winget) if missing.
          Installs Node.js + Claude CLI (via npm) if missing.
-      2. Ensures ARM64 Python 3.13.3 exists (per https://geniex.aihub.qualcomm.com/en/run/python/install).
-         Version-agnostic to whatever is already on the box: an older Python
-         (e.g. 3.9), a newer one, or an x64 build is ignored (never reused,
-         never removed) and 3.13.3 is installed fresh, side-by-side.
-      3. Confirms the interpreter is ARM64 (not AMD64/x86_64 - GenieX has no x64 wheel).
-      4. Creates the geniex-env virtual environment FROM that exact Python
-         version and installs `geniex` from PyPI into it.
-      5. Verifies the install by importing geniex and printing its version.
+      2. Ensures a usable Python: ARM64 3.13.3 on Snapdragon X (per
+         https://geniex.aihub.qualcomm.com/en/run/python/install), or reuses
+         any existing Python 3.10+ on a non-ARM host (installing the amd64
+         3.13.3 build only if none is found).
+      3. Confirms the interpreter arch (ARM64 required only on Snapdragon X).
+      4. Creates the geniex-env virtual environment FROM that Python and, on
+         ARM64 only, installs `geniex` from PyPI into it.
+      5. On ARM64, verifies the install by importing geniex and printing its version.
       6. Installs hub/requirements.txt (from this checkout) into the venv.
       7. Installs face ID (hub/framework/face_id/setup/setup.ps1) into that same venv, since
          hub/server.py imports framework.face_id.identity in-process. Skipped when
@@ -96,9 +105,12 @@ Write-Step "Checking machine architecture"
 # and the face-ID model probe in step 6b, which only requires the exported
 # .onnx files on ARM64. hub\framework\face_id\setup\setup.ps1 reads the same registry value.
 $osArch = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment').PROCESSOR_ARCHITECTURE
+$IsArm  = ($osArch -match 'ARM64')
 Write-Host "    PROCESSOR_ARCHITECTURE (OS) = $osArch"
-if ($osArch -notmatch 'ARM64') {
-    Write-Warn "This does not look like an ARM64 host. GenieX only ships ARM64 wheels; continuing anyway."
+if (-not $IsArm) {
+    Write-Warn "Not an ARM64 host. GenieX (VLM reasoning) ships ARM64-only wheels, so it will be"
+    Write-Warn "skipped; the hub still runs and face-ID uses its CPU path. This script will reuse"
+    Write-Warn "the Python already installed on this machine instead of fetching an ARM64 build."
 }
 
 Write-Step "Checking for a synced Qonclave checkout"
@@ -178,7 +190,7 @@ if (Get-Command claude -ErrorAction SilentlyContinue) {
 }
 
 
-Write-Step "Ensuring ARM64 Python $PythonVersion is installed"
+Write-Step "Ensuring Python $PythonVersion is installed"
 
 function Test-ArmPython($exe) {
     # Returns $true only if $exe is a REAL ARM64 python matching the EXACT
@@ -199,16 +211,28 @@ function Test-ArmPython($exe) {
     return ($mj -eq $RequiredMajor -and $mn -eq $RequiredMinor)
 }
 
-function Get-ArmPython {
+function Test-AnyPython($exe) {
+    # Non-ARM hosts: accept whatever usable Python 3 is already installed
+    # (>= 3.10, any 64-bit arch). We're not installing GenieX here, so we don't
+    # need the exact ARM64 3.13.3 - just a Python that can run Flask + the CPU
+    # face-ID stack. The Store stub and unreadable paths are still rejected.
+    if (-not $exe -or -not (Test-Path $exe)) { return $false }
+    if ($exe -match '\\WindowsApps\\') { return $false }
+    $ver = (& $exe -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>$null)
+    if ($LASTEXITCODE -ne 0 -or -not $ver) { return $false }
+    $mj,$mn = $ver.Split('.') | ForEach-Object { [int]$_ }
+    return ($mj -eq 3 -and $mn -ge 10)
+}
+
+function Get-Python {
     # Resolve python.exe by ABSOLUTE PATH, not PATH env var (which is stale right
     # after a fresh install). Scans known install roots + py launcher + PATH, and
-    # ignores the Microsoft Store stub. Only returns a match for the exact
-    # required version (see Test-ArmPython) - any other installed Python,
-    # older or newer, is treated as absent and triggers a fresh install below.
+    # ignores the Microsoft Store stub. On ARM64 only the exact ARM64 3.13.3 is
+    # accepted (GenieX needs it); on other hosts any usable Python 3.10+ is fine.
     $candidates = @()
 
     # 1. py launcher (if present) - ask it where the interpreter lives.
-    #    Use `-3` (any Python 3); version filtering happens in Test-ArmPython.
+    #    Use `-3` (any Python 3); version filtering happens in the acceptor.
     #    Do NOT ask for the exact version (e.g. "-3.13") here: when that exact
     #    version isn't installed, some py.exe builds print "No suitable Python
     #    runtime found" via a direct console write that bypasses PowerShell's
@@ -239,14 +263,35 @@ function Get-ArmPython {
     }
 
     foreach ($exe in ($candidates | Where-Object { $_ -and $_ -notmatch '\\WindowsApps\\' } | Select-Object -Unique)) {
-        if (Test-ArmPython $exe) { return $exe }
+        $accepted = if ($IsArm) { Test-ArmPython $exe } else { Test-AnyPython $exe }
+        if ($accepted) { return $exe }
     }
     return $null
 }
 
-$pythonExe = Get-ArmPython
+$pythonExe = Get-Python
 if ($pythonExe) {
-    Write-Ok "ARM64 Python $PythonVersion found: $pythonExe"
+    if ($IsArm) { Write-Ok "ARM64 Python $PythonVersion found: $pythonExe" }
+    else        { Write-Ok "Reusing existing Python: $pythonExe" }
+} elseif (-not $IsArm) {
+    # Non-ARM and nothing usable found: install the stock x86-64 build of the
+    # same version, side-by-side. (The ARM64 installer URL would be wrong here.)
+    $x64Url = "https://www.python.org/ftp/python/$PythonVersion/python-$PythonVersion-amd64.exe"
+    Write-Host "    No usable Python 3.10+ found - installing $PythonVersion (amd64) fresh, side-by-side." -ForegroundColor Yellow
+    Write-Host "    Downloading Python installer: $x64Url"
+    $installer = Join-Path $env:TEMP "python-$PythonVersion-amd64.exe"
+    Invoke-WebRequest -Uri $x64Url -OutFile $installer
+    Write-Host "    Running silent install (per-user, adds to PATH)..."
+    $installArgs = @('/quiet', 'InstallAllUsers=0', 'PrependPath=1', 'Include_launcher=1', 'Include_pip=1')
+    Start-Process -FilePath $installer -ArgumentList $installArgs -Wait
+    $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
+                [System.Environment]::GetEnvironmentVariable('Path','User')
+    $pythonExe = Get-Python
+    if (-not $pythonExe) {
+        throw ("Python $PythonVersion still not detected after install. Expected under " +
+               "$env:LOCALAPPDATA\Programs\Python. Open a NEW PowerShell window and re-run this script.")
+    }
+    Write-Ok "Python $PythonVersion installed: $pythonExe"
 } else {
     Write-Host "    No ARM64 Python $RequiredMajor.$RequiredMinor found (an older/newer/x64 Python may be" -ForegroundColor Yellow
     Write-Host "    present but is ignored) - installing $PythonVersion fresh, side-by-side." -ForegroundColor Yellow
@@ -260,7 +305,7 @@ if ($pythonExe) {
     $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
                 [System.Environment]::GetEnvironmentVariable('Path','User')
     # Re-scan install folders directly - PATH is often stale immediately post-install.
-    $pythonExe = Get-ArmPython
+    $pythonExe = Get-Python
     if (-not $pythonExe) {
         throw ("ARM64 Python $PythonVersion still not detected after install. Expected under " +
                "$env:LOCALAPPDATA\Programs\Python. Open a NEW PowerShell window and re-run this script.")
@@ -268,14 +313,15 @@ if ($pythonExe) {
     Write-Ok "ARM64 Python $PythonVersion installed: $pythonExe"
 }
 
-# --- 3. Confirm architecture (the check you asked for) ---------------------
+# --- 3. Confirm architecture -----------------------------------------------
 Write-Step 'Confirming interpreter architecture'
 $machine = (& $pythonExe -c "import platform; print(platform.machine())").Trim()
 Write-Host "    python -c ""import platform; print(platform.machine())""  ->  $machine"
-if ($machine -notmatch 'ARM64') {
+if ($IsArm -and $machine -notmatch 'ARM64') {
     throw "Python reports '$machine', not ARM64. GenieX will not install. Remove the x64 Python and re-run."
 }
-Write-Ok "Interpreter is ARM64"
+if ($IsArm) { Write-Ok "Interpreter is ARM64" }
+else        { Write-Ok "Interpreter is $machine (non-ARM host; GenieX/VLM will be skipped)" }
 
 # --- 4. Virtual environment + geniex --------------------------------------
 Write-Step "Creating virtual environment at $VenvDir"
@@ -290,8 +336,11 @@ function Test-VenvComplete {
     (Test-Path $VenvPython) -and (Test-Path $VenvCfg)
 }
 
-if ((Test-VenvComplete) -and (Test-ArmPython $VenvPython)) {
-    Write-Ok "venv already exists and matches Python $PythonVersion, reusing it"
+# On ARM64 the venv must be the exact ARM64 3.13.3 (GenieX); on other hosts any
+# usable Python 3.10+ venv is fine.
+$venvAcceptable = if ($IsArm) { Test-ArmPython $VenvPython } else { Test-AnyPython $VenvPython }
+if ((Test-VenvComplete) -and $venvAcceptable) {
+    Write-Ok "venv already exists and matches the required Python, reusing it"
 } else {
     if (Test-Path $VenvDir) {
         Write-Warn "Existing venv at $VenvDir is missing/incomplete or built from a different Python version; rebuilding it."
@@ -308,15 +357,20 @@ if ((Test-VenvComplete) -and (Test-ArmPython $VenvPython)) {
     Write-Ok "venv created from $pythonExe"
 }
 
-Write-Step "Installing geniex into the venv (using its python directly, no PATH)"
+Write-Step "Installing Python packages into the venv (using its python directly, no PATH)"
 # Drive everything through the venv's own python.exe by ABSOLUTE PATH so this
 # works even though the venv is not 'activated' on PATH in this session.
 & $VenvPython -m pip install --upgrade pip
-& $VenvPython -m pip install -U geniex
 
-# --- 5. Verify geniex --------------------------------------------------------
-Write-Step "Verifying geniex install"
-& $VenvPython -c "import platform, geniex; print('machine:', platform.machine()); print('geniex version:', geniex.version())"
+if ($IsArm) {
+    & $VenvPython -m pip install -U geniex
+
+    # --- 5. Verify geniex ----------------------------------------------------
+    Write-Step "Verifying geniex install"
+    & $VenvPython -c "import platform, geniex; print('machine:', platform.machine()); print('geniex version:', geniex.version())"
+} else {
+    Write-Ok "Non-ARM host - skipping GenieX (VLM). The hub runs and reports the VLM as unavailable; reasoning is disabled, everything else works."
+}
 
 # --- 6. Install hub requirements --------------------------------------------
 Write-Step "Installing hub requirements into the venv"
@@ -403,7 +457,11 @@ if ($SkipFaceId) {
 }
 
 Write-Host "`n===================================================================" -ForegroundColor Green
-Write-Host " GenieX environment ready." -ForegroundColor Green
+if ($IsArm) {
+    Write-Host " GenieX environment ready." -ForegroundColor Green
+} else {
+    Write-Host " Hub environment ready (non-ARM host: VLM/GenieX disabled)." -ForegroundColor Green
+}
 Write-Host " Run scripts either by activating the venv:" -ForegroundColor Green
 Write-Host "     .\hub\geniex-env\Scripts\Activate.ps1" -ForegroundColor Green
 Write-Host "     python hub\server.py" -ForegroundColor Green
