@@ -47,5 +47,8 @@ hub/framework/face_id/known_faces/.embeddings_*.npy
 # Hub runtime uploads (camera frames received from edge devices)
 hub/uploads/
 
+# Edge escalation frames saved locally on threshold-triggered detections
+edge/**/escalations/
+
 # Arduino App Lab build output
 .cache/
