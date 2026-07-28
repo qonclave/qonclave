@@ -24,12 +24,13 @@ person as `known` / `unknown`.
 ```
 edge/     # UNO Q: capture, local detection, event sender
 hub/      # Snapdragon X laptop: HTTP server, verification, reasoning, alert
-  framework/   # reusable: transport, event store, VLM, HTTP routes, Policy contract,
-               #           MQTT push channel, SMS notifications
-  apps/        # use cases built on the framework (today: apps/security/)
+  setup_hub.ps1  # environment bootstrap (GenieX + hub deps + face ID)
+  framework/     # reusable: transport, event store, VLM, face ID, SMS, HTTP routes, Policy contract
+    face_id/     # face identification (MediaPipe + CavaFace)
+  apps/          # use cases built on the framework (today: apps/security/)
+  tests/         # GenieX / VLM smoke tests
 shared/   # event schema, sample events
 demo/     # runbook, fallback assets
-scripts/  # environment setup (e.g. GenieX bootstrap)
 ```
 
 See `hub/README.md` for the framework/app split and how to add a new use case.
@@ -41,15 +42,16 @@ or `git pull` in an existing checkout). Then, from inside that checkout, **one
 command** bootstraps everything else on a fresh Snapdragon X box:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\setup_geniex.ps1
+powershell -ExecutionPolicy Bypass -File .\hub\setup_hub.ps1
 
 # if the .ps1 is blocked by execution policy:
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ```
 
 This installs Git + ARM64 Python, creates the `geniex-env` venv, installs the
-GenieX SDK and `hub/requirements.txt`, then runs `hub/server.py`. It does
-**not** clone or pull the repo — that's on you, first.
+GenieX SDK and `hub/requirements.txt`, installs face ID into that same venv,
+then runs `hub/server.py`. It does **not** clone or pull the repo — that's on
+you, first.
 
 > **Windows Long Path requirement** — `hub/requirements.txt` includes packages
 > (e.g. `twilio`) with deeply nested install paths that exceed Windows' default
@@ -61,11 +63,29 @@ GenieX SDK and `hub/requirements.txt`, then runs `hub/server.py`. It does
 > ```
 > No reboot needed. This is a one-time machine setting.
 
-- Stop after installing, without starting the server: `.\scripts\setup_geniex.ps1 -NoRun`
-- By default, the heavy VLM model is pre-loaded into memory immediately upon startup. To launch the server faster and load the model lazily on the first request instead, use: `.\scripts\setup_geniex.ps1 -NoWarmup`
-- Pass server flags through: `.\scripts\setup_geniex.ps1 -- --verbose --port 8080`
+- Stop after installing, without starting the server: `.\hub\setup_hub.ps1 -NoRun`
+- By default, the heavy VLM model is pre-loaded into memory immediately upon startup. To launch the server faster and load the model lazily on the first request instead, use: `.\hub\setup_hub.ps1 -NoWarmup`
+- Pass server flags through: `.\hub\setup_hub.ps1 -- --verbose --port 8080`
 - Re-running is idempotent: existing Python/venv/deps are detected and reused
   or upgraded as needed.
+
+Face ID (`hub/framework/face_id/`) is set up as part of that same run, into the same venv
+— `hub/server.py` imports it in-process, so it has to live there. On ARM64 the
+NPU model export needs a Qualcomm AI Hub token; pass it up front to keep the
+run unattended, otherwise you'll be prompted:
+
+```powershell
+.\hub\setup_hub.ps1 -AiHubToken YOUR_TOKEN
+```
+
+- Skip face ID entirely: `.\hub\setup_hub.ps1 -SkipFaceId` (the hub still
+  runs; face-ID reports `not_enabled`)
+- Reuse already-compiled AI Hub jobs instead of recompiling:
+  `-MediaPipeFaceJobId jXXXXXXXX -CavaFaceJobId jXXXXXXXX` — see `hub/framework/face_id/README.md`.
+  Passing both also skips the `qai-hub-models`/torch install, since NPU
+  inference needs neither (at the cost of the CPU embedder fallback).
+- Already-installed face ID is detected and skipped, and a face-ID failure warns
+  rather than aborting the bootstrap.
 
 ## Configuration
 

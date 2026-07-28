@@ -122,7 +122,14 @@ async function refresh() {
         : '<span class="pill err">false</span>';
       $("edgeConf").textContent = fmtConf(latest.edge_confidence);
       $("hubConf").textContent = fmtConf(latest.hub_confidence);
-      $("identity").textContent = latest.identity_status || "—";
+      const idStatus = latest.identity_status;
+      if (latest.identity_name) {
+        $("identity").innerHTML = `<span class="pill ok">${idStatus}</span>`;
+      } else if (idStatus === "unknown") {
+        $("identity").innerHTML = `<span class="pill warn">unknown</span>`;
+      } else {
+        $("identity").textContent = idStatus || "—";
+      }
       $("device").textContent = latest.device_id || "—";
       $("eventId").textContent = latest.event_id || "—";
       $("latency").textContent = latest.latency_s != null ? latest.latency_s + "s" : "—";

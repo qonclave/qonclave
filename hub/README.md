@@ -90,9 +90,14 @@ reasoning, and only if the host is ARM64. Everything else in the diagram
 - **`apps/security/`** declares everything specific to stationary
   person-detection: the verification prompt (`VERIFY_PROMPT`), the JSON
   schema it expects back from the VLM, how that maps to an alert string, and
-  the `identity_status` stretch-goal stub. A new use case (fall detection,
-  hazard detection, ...) means writing a new `Policy` subclass in a new
-  `apps/<name>/` package — no framework code changes.
+  `identity_status` — once the VLM confirms a person, `SecurityPolicy`
+  additionally runs `face_id.identity.FaceIdentityBackend.identify()` (see
+  `hub/framework/face_id/`) against `hub/framework/face_id/known_faces/` and reports the match
+  (`"mahesh_babu (92%)"`, `"unknown"`, `"no_face_detected"`, or
+  `"not_enabled"` if the face-ID backend/dependencies aren't set up on this
+  hub). A new use case (fall detection, hazard detection, ...) means writing
+  a new `Policy` subclass in a new `apps/<name>/` package — no framework code
+  changes.
 - **`hub/server.py`** is the entrypoint: it picks one app (today,
   `SecurityPolicy`) and wires it into `framework.server.create_app()`. To
   demo a different app, swap what this file constructs.
@@ -168,7 +173,7 @@ static test pages vary per use case.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/health` | Liveness + VLM availability + MQTT status + active app name |
+| GET | `/health` | Liveness + VLM availability + MQTT status + face-ID status + active app name |
 | GET | `/` | Redirects to `/user/dashboard` |
 | GET | `/test/edge` | Edge-device simulator page (standalone; not linked from `/user/*`) |
 | GET | `/test/hub` | Hub-side MQTT console: publish/observe any topic (links only to `/test/edge`) |
@@ -188,16 +193,20 @@ hub/
   server.py                # entrypoint: picks an app, runs framework.server.create_app()
   requirements.txt
   framework/                # reusable, use-case agnostic
-    server.py               # create_app(policy, vlm, mqtt, sms, static_dir) -> Flask
+    server.py               # create_app(policy, vlm, mqtt, sms, face_id, static_dir) -> Flask
     transport.py            # upload handling + edge-event parsing
     events.py               # event ring buffer for the dashboard
     vlm.py                  # VLMBackend: reason() + structured_query()
     mqtt_bus.py             # MQTTBus: publish_command() hub->edge push channel
     sms_bus.py              # SMSBus: send() SMS notifications via Twilio
     policy.py               # Policy ABC + Verdict + Notification dataclasses
+    face_id/                # face detection + identification (see face_id/README.md)
+      identity.py           # FaceIdentityBackend: conditional wrapper used by SecurityPolicy
+      face_pipeline.py      # MediaPipe detection + CavaFace embedding, CPU or NPU
+      known_faces/          # one reference photo per enrolled person
   apps/
     security/                # this use case: stationary person detection
-      policy.py              # SecurityPolicy(Policy)
+      policy.py              # SecurityPolicy(Policy) — VLM verify + face-ID lookup
       static/                # dashboard.html, test_edge.html, test_hub.html
       samples/                # bundled test images + helpers
 ```
@@ -236,9 +245,16 @@ groups with **no hyperlinks between the groups**:
   ```json
   {"schema_version":"0.1","event_id":"…","received":true,
    "hub_verified":true,"hub_confidence":0.91,
-   "identity_status":"not_enabled","command":null,
+   "identity_status":"mahesh_babu (92%)","identity_name":"mahesh_babu",
+   "identity_confidence":0.92,"command":null,
    "alert":"Person verified near camera"}
   ```
+  `identity_status` is `"not_enabled"` when no person was confirmed or the
+  face-ID backend/dependencies aren't set up on this hub (see
+  `hub/framework/face_id/README.md`), `"no_face_detected"` when a person was confirmed
+  but no face could be cropped from the frame, or `"unknown"` for a detected
+  face that doesn't match anyone in `known_faces/`.
+
   `command` is populated by `Policy.command_for()` when an app wants to send
   something back to the edge device (e.g. `{"type":"navigate_to", ...}`);
   it's `null` for apps with no edge actuator to command, like `security`.
@@ -340,9 +356,9 @@ subscribed (not mid-request) still receives it.
   `hub/server.py`'s lifecycle. Start it once; restart the hub as often as you
   like without losing the broker or its subscribers.
   ```powershell
-  powershell -ExecutionPolicy Bypass -File .\scripts\setup_mqtt.ps1
+  powershell -ExecutionPolicy Bypass -File .\hub\setup_mqtt.ps1
   # or, if already installed:
-  mosquitto -c scripts\mosquitto.conf -v
+  mosquitto -c hub\mosquitto.conf -v
   ```
 - **Topics**:
   - `qonclave/<device_id>/command` — hub → edge (JSON, from `command_for()`)

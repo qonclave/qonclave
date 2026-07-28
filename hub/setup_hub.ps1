@@ -1,8 +1,8 @@
 <#
-    setup_geniex.ps1  -  Snapdragon X (Windows ARM64) bootstrap for GenieX + hub
+    setup_hub.ps1  -  Snapdragon X (Windows ARM64) bootstrap for GenieX + hub
 
     Run this at the start of every fresh cloud session, from inside an already
-    git-synced Qonclave checkout (this script lives at Qonclave/scripts/). It
+    git-synced Qonclave checkout (this script lives at Qonclave/hub/). It
     is idempotent: already-installed steps are skipped, so re-runs are quick.
 
     This script does NOT clone or pull the repo - sync git yourself first
@@ -10,6 +10,7 @@
 
     What it does:
       1. Installs Git CLI (via winget) if missing.
+         Installs Node.js + Claude CLI (via npm) if missing.
       2. Ensures ARM64 Python 3.13.3 exists (per https://geniex.aihub.qualcomm.com/en/run/python/install).
          Version-agnostic to whatever is already on the box: an older Python
          (e.g. 3.9), a newer one, or an x64 build is ignored (never reused,
@@ -19,20 +20,40 @@
          version and installs `geniex` from PyPI into it.
       5. Verifies the install by importing geniex and printing its version.
       6. Installs hub/requirements.txt (from this checkout) into the venv.
-      7. Runs hub/server.py.
+      7. Installs face ID (hub/framework/face_id/setup/setup.ps1) into that same venv, since
+         hub/server.py imports framework.face_id.identity in-process. Skipped when
+         already installed, so re-runs stay quick.
+      8. Runs hub/server.py.
 
     Usage (from an elevated or normal PowerShell prompt, inside the checkout):
-        powershell -ExecutionPolicy Bypass -File .\scripts\setup_geniex.ps1
+        powershell -ExecutionPolicy Bypass -File .\hub\setup_hub.ps1
 
       -NoRun            stop after installing requirements; don't start the server
-      -NoWarmup         do not load the VLM model immediately upon server start
+      -Warmup           pre-load the VLM model at server start (default: off, loads lazily on first request)
+      -SkipFaceId       don't install face ID at all (hub still runs; face-ID
+                        reports "not_enabled")
+      -AiHubToken       Qualcomm AI Hub token for the ARM64 NPU model export.
+                        Omitted on ARM64, framework/face_id/setup/setup_npu.ps1 prompts for it
+                        interactively. Free at https://workbench.aihub.qualcomm.com
+                        (Account -> Settings -> API Token).
+      -MediaPipeFaceJobId / -CavaFaceJobId
+                        reuse already-completed AI Hub compile jobs instead of
+                        recompiling - see hub/framework/face_id/README.md.
+                        Passing BOTH also skips installing qai-hub-models and
+                        torch: they are the exporter and the CPU embedder, and
+                        NPU inference needs neither. Trade-off: no CPU embedder
+                        to fall back on if CavaFace.onnx later goes missing.
       -- a b c          extra args forwarded to hub/server.py, e.g.:
-        .\scripts\setup_geniex.ps1 -- --verbose --port 8080
+        .\hub\setup_hub.ps1 -- --verbose --port 8080
 #>
 
 param(
     [switch]$NoRun,
-    [switch]$NoWarmup,
+    [switch]$Warmup,
+    [switch]$SkipFaceId,
+    [string]$AiHubToken = '',
+    [string]$MediaPipeFaceJobId = '',
+    [string]$CavaFaceJobId = '',
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$ServerArgs
 )
@@ -58,7 +79,7 @@ $VenvDir         = Join-Path $PSScriptRoot 'geniex-env'
 # this script always ensures exactly this minor version is installed and uses
 # it to build the venv, so behavior is agnostic to whatever's already there.
 $RequiredMajor, $RequiredMinor = $PythonVersion.Split('.')[0..1] | ForEach-Object { [int]$_ }
-# This script lives at <repo>/scripts/setup_geniex.ps1; the repo root is its parent.
+# This script lives at <repo>/hub/setup_hub.ps1; the repo root is its parent.
 $RepoDir = Split-Path $PSScriptRoot -Parent
 # ---------------------------------------------------------------------------
 
@@ -68,8 +89,14 @@ function Write-Warn($msg) { Write-Host "    [!]  $msg" -ForegroundColor Yellow }
 
 # --- 0. Sanity: this must be an ARM64 machine, running from inside a checkout
 Write-Step "Checking machine architecture"
-$osArch = $env:PROCESSOR_ARCHITECTURE
-Write-Host "    PROCESSOR_ARCHITECTURE = $osArch"
+# Read this from the registry, not $env:PROCESSOR_ARCHITECTURE - the env var
+# reflects the CALLING PROCESS's architecture, so a powershell.exe running
+# under x64 emulation on a Snapdragon X box reports AMD64 and this script
+# would mistake an ARM64 host for x86. That matters twice: the warning below,
+# and the face-ID model probe in step 6b, which only requires the exported
+# .onnx files on ARM64. hub\framework\face_id\setup\setup.ps1 reads the same registry value.
+$osArch = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment').PROCESSOR_ARCHITECTURE
+Write-Host "    PROCESSOR_ARCHITECTURE (OS) = $osArch"
 if ($osArch -notmatch 'ARM64') {
     Write-Warn "This does not look like an ARM64 host. GenieX only ships ARM64 wheels; continuing anyway."
 }
@@ -78,7 +105,7 @@ Write-Step "Checking for a synced Qonclave checkout"
 $ServerPy = Join-Path $RepoDir 'hub\server.py'
 if (-not (Test-Path $ServerPy)) {
     throw ("hub\server.py not found under $RepoDir. This script assumes the repo is " +
-           "already git-synced and that this script is at <repo>\scripts\setup_geniex.ps1. " +
+           "already git-synced and that this script is at <repo>\hub\setup_hub.ps1. " +
            "Run 'git clone https://github.com/jogendar/Qonclave.git' (or 'git pull' in an " +
            "existing checkout) first, then re-run this script from inside it.")
 }
@@ -119,7 +146,38 @@ if (Get-Command git -ErrorAction SilentlyContinue) {
     else { throw "git install did not surface on PATH. Open a new shell and re-run." }
 }
 
-# --- 2. ARM64 Python (exact required version) ------------------------------
+# --- 1b. Claude CLI -----------------------------------------------------------
+Write-Step "Ensuring Claude CLI is installed"
+if (Get-Command claude -ErrorAction SilentlyContinue) {
+    Write-Ok "claude already present: $(claude --version 2>&1)"
+} else {
+    Write-Host "    Installing Claude CLI via npm..."
+    # Ensure Node.js is available (required for npm)
+    if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+        Write-Host "    Node.js not found - installing via winget..."
+        try {
+            winget install --id OpenJS.NodeJS.LTS -e --source winget --accept-package-agreements --accept-source-agreements
+            $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
+                        [System.Environment]::GetEnvironmentVariable('Path','User')
+        } catch {
+            throw "Failed to install Node.js. Install it manually from https://nodejs.org and re-run."
+        }
+    }
+    if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+        throw "npm not found after Node.js install. Open a new PowerShell window and re-run."
+    }
+    npm install -g @anthropic-ai/claude-code
+    if ($LASTEXITCODE -ne 0) { throw "Claude CLI install failed." }
+    $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
+                [System.Environment]::GetEnvironmentVariable('Path','User')
+    if (Get-Command claude -ErrorAction SilentlyContinue) {
+        Write-Ok "Claude CLI installed: $(claude --version 2>&1)"
+    } else {
+        Write-Warn "Claude CLI installed but not yet on PATH. Open a new shell to use it."
+    }
+}
+
+
 Write-Step "Ensuring ARM64 Python $PythonVersion is installed"
 
 function Test-ArmPython($exe) {
@@ -265,22 +323,101 @@ Write-Step "Installing hub requirements into the venv"
 & $VenvPython -m pip install -r (Join-Path $RepoDir 'hub\requirements.txt')
 Write-Ok "requirements installed"
 
+# --- 6b. Install face ID into the SAME venv ----------------------------------
+# hub/server.py imports framework.face_id.identity in-process, so face-ID's dependencies
+# must live in this venv - not system Python - or the hub reports face-ID as
+# "not_enabled" even after a successful standalone face_id setup.
+Write-Step "Installing face ID into the venv"
+if ($SkipFaceId) {
+    Write-Ok "-SkipFaceId set - skipping (hub will report face-ID as not_enabled)"
+} else {
+    $FaceIdSetup = Join-Path $RepoDir 'hub\framework\face_id\setup\setup.ps1'
+    $FaceIdModels = Join-Path $RepoDir 'hub\framework\face_id\models'
+
+    # Idempotency probe, so re-running this bootstrap every session stays quick:
+    # face-ID is already usable if the stack its CHOSEN MODE needs is present in
+    # THIS venv and - on ARM64, where the NPU export is mandatory - both exported
+    # models exist.
+    #
+    # Probe per mode, not a fixed list: ARM64 runs both models through
+    # onnxruntime-qnn and touches neither mediapipe nor qai_hub_models, and with
+    # both -*JobId flags face_id/setup/setup.ps1 deliberately never installs
+    # them. Probing for qai_hub_models there would report "not installed" every
+    # single run and redo face-ID setup each session. x86 has no NPU path, so it
+    # genuinely needs both.
+    #
+    # find_spec (not `import`) so this doesn't actually load the torch-backed
+    # stack just to answer a yes/no question, and everything is wrapped so the
+    # probe writes NOTHING to stderr: in Windows PowerShell 5.1, redirecting a
+    # native command's stderr (`2>$null`) wraps each line as a NativeCommandError
+    # ErrorRecord, which $ErrorActionPreference='Stop' turns into a TERMINATING
+    # error - aborting this whole bootstrap just because a module was missing,
+    # which is the normal first-run case. Emitting no stderr avoids that entirely.
+    $probeModules = if ($osArch -match 'ARM64') {
+        '"onnxruntime", "onnxruntime_qnn"'
+    } else {
+        '"mediapipe", "qai_hub_models"'
+    }
+    $probe = 'import sys' + "`n" +
+             'try:' + "`n" +
+             '    from importlib.util import find_spec' + "`n" +
+             "    ok = all(find_spec(m) is not None for m in ($probeModules))" + "`n" +
+             'except Exception:' + "`n" +
+             '    ok = False' + "`n" +
+             'sys.exit(0 if ok else 1)'
+    & $VenvPython -c $probe
+    $depsOk = ($LASTEXITCODE -eq 0)
+    $modelsOk = (-not ($osArch -match 'ARM64')) -or (
+        (Test-Path (Join-Path $FaceIdModels 'CavaFace.onnx')) -and
+        (Test-Path (Join-Path $FaceIdModels 'MediaPipeFace.onnx'))
+    )
+
+    if ($depsOk -and $modelsOk) {
+        Write-Ok "face ID already installed in this venv, skipping"
+        Write-Host "        (re-run hub\framework\face_id\setup\setup.ps1 -PythonPath `"$VenvPython`" to force)"
+    } else {
+        $faceArgs = @{ PythonPath = $VenvPython }
+        if ($AiHubToken)         { $faceArgs.Token              = $AiHubToken }
+        if ($MediaPipeFaceJobId) { $faceArgs.MediaPipeFaceJobId = $MediaPipeFaceJobId }
+        if ($CavaFaceJobId)      { $faceArgs.CavaFaceJobId      = $CavaFaceJobId }
+
+        # Non-fatal: the hub server runs fine without face ID (it degrades to
+        # "not_enabled"), and on ARM64 this step can need an AI Hub token /
+        # network round-trip. Don't strand the whole bootstrap over it.
+        Push-Location (Split-Path $FaceIdSetup -Parent)
+        try {
+            & $FaceIdSetup @faceArgs
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warn "face ID setup exited $LASTEXITCODE - hub will report face-ID as not_enabled."
+                Write-Warn "Re-run it directly: hub\framework\face_id\setup\setup.ps1 -PythonPath `"$VenvPython`""
+            } else {
+                Write-Ok "face ID installed"
+            }
+        } catch {
+            Write-Warn "face ID setup failed ($($_.Exception.Message)) - hub will report face-ID as not_enabled."
+            Write-Warn "Re-run it directly: hub\framework\face_id\setup\setup.ps1 -PythonPath `"$VenvPython`""
+        } finally {
+            Pop-Location
+        }
+    }
+}
+
 Write-Host "`n===================================================================" -ForegroundColor Green
 Write-Host " GenieX environment ready." -ForegroundColor Green
 Write-Host " Run scripts either by activating the venv:" -ForegroundColor Green
-Write-Host "     .\scripts\geniex-env\Scripts\Activate.ps1" -ForegroundColor Green
+Write-Host "     .\hub\geniex-env\Scripts\Activate.ps1" -ForegroundColor Green
 Write-Host "     python hub\server.py" -ForegroundColor Green
 Write-Host " ...or without activating, via the venv python directly:" -ForegroundColor Green
-Write-Host "     .\scripts\geniex-env\Scripts\python.exe hub\server.py" -ForegroundColor Green
+Write-Host "     .\hub\geniex-env\Scripts\python.exe hub\server.py" -ForegroundColor Green
 Write-Host "===================================================================" -ForegroundColor Green
 
-# --- 7. Run the hub server ---------------------------------------------------
+# --- 8. Run the hub server ---------------------------------------------------
 if ($NoRun) {
     Write-Step "NoRun set - skipping server start"
 } else {
     Write-Step "Starting hub server"
     Write-Host "    (Ctrl+C to stop; pass server flags after -- e.g. --verbose --port 8080)"
-    if (-not $NoWarmup) {
+    if ($Warmup) {
         $env:QONCLAVE_WARMUP = "1"
     }
     Set-Location $RepoDir
