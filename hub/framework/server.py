@@ -20,6 +20,8 @@ Endpoints:
                                /test/* pages)
     POST /edge/event          edge event JSON + frame -> policy-driven
                                verification response
+    POST /sms                 Twilio inbound-reply webhook: runs policy
+                               on_sms_reply(), optionally publishes MQTT command
 
     GET  /user/dashboard      live dashboard page (app-provided static/);
                                also the default landing page (/, /user/)
@@ -238,6 +240,32 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
             "updated_at": entry.get("updated_at"),
             "permanent": entry.get("permanent", False)
         })
+
+    # --- /sms: Twilio inbound-reply webhook ---------------------------------
+    @app.post("/sms")
+    def sms_reply():
+        """
+        Twilio webhook: called when the recipient replies to an outbound SMS.
+        Twilio POSTs form fields; we read From + Body, hand them to the
+        Policy, and publish any returned MQTT command to the last known device.
+        Signature validation is skipped in trial mode.
+        """
+        sender = request.form.get("From", "").strip()
+        body = request.form.get("Body", "").strip()
+        log.info("SMS reply from %s: %r", sender, body)
+
+        command = policy.on_sms_reply(sender, body)
+        if command is not None:
+            device_id = events.latest_device_id()
+            if device_id:
+                mqtt.publish_command(device_id, command)
+                log.info("SMS reply MQTT command %s -> device %s", command, device_id)
+            else:
+                log.warning("SMS reply returned command %s but no device_id known yet", command)
+
+        # Twilio expects a 200; returning empty TwiML is cleanest but plain
+        # "OK" also works for webhook-only flows where we don't SMS back.
+        return ("", 200)
 
     # --- /user/* dashboard data + frames ------------------------------------
     @app.get("/user/events")

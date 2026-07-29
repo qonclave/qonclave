@@ -63,7 +63,7 @@ vlm = VLMBackend()
 mqtt = MQTTBus(host=MQTT_HOST, port=MQTT_PORT, enabled=MQTT_ENABLED)
 face_id = FaceIdentityBackend()
 sms = SMSBus()
-policy = SecurityPolicy(vlm, face_id)
+policy = SecurityPolicy(vlm, face_id, sms)
 app = create_app(policy=policy, vlm=vlm, mqtt=mqtt, sms=sms, face_id=face_id, static_dir=STATIC_DIR)
 
 
@@ -99,6 +99,7 @@ def main():
         log.info("VLM status after warmup: %s", vlm.status())
         log.info("Face ID status after warmup: %s", face_id.status())
     log.info("Edge  : POST /edge/event")
+    log.info("SMS   : POST /sms  (Twilio inbound-reply webhook)")
     log.info("User  : GET /user/dashboard | GET /user/events | GET /user/latest.jpg")
     log.info("        GET /user/frames/<name> | POST /user/reason | GET /user/")
     log.info("Other : GET /health | GET / (-> /user/)")

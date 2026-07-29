@@ -14,6 +14,7 @@ import logging
 
 from framework.policy import Policy, Verdict, Notification
 from framework.vlm import VLMBackend
+from framework.sms_bus import SMSBus
 from framework.face_id.identity import FaceIdentityBackend
 
 log = logging.getLogger("qonclave.hub")
@@ -36,9 +37,11 @@ class SecurityPolicy(Policy):
 
     name = "security"
 
-    def __init__(self, vlm: VLMBackend, face_id: FaceIdentityBackend | None = None):
+    def __init__(self, vlm: VLMBackend, face_id: FaceIdentityBackend | None = None,
+                 sms: SMSBus | None = None):
         self.vlm = vlm
         self.face_id = face_id
+        self.sms = sms
 
     def evaluate(self, image_path: str, event: dict) -> Verdict:
         # Run face-ID up front — it does its own independent face detection,
@@ -203,4 +206,20 @@ class SecurityPolicy(Policy):
                 message=verdict.alert,
                 recipient=event.get("device_id", "unknown"),
             )
+        return None
+
+    def on_sms_reply(self, sender: str, body: str) -> dict | None:
+        keyword = body.strip().upper()
+
+        if keyword == "STOP":
+            if self.sms is not None:
+                self.sms.suppress()
+            log.info("SMS reply STOP from %s — outbound SMS suppressed for this session", sender)
+            return None
+
+        if keyword == "DISPATCH":
+            log.info("SMS reply DISPATCH from %s — publishing dummy dispatch command", sender)
+            return {"type": "dispatch", "source": "sms_reply", "requested_by": sender}
+
+        log.info("SMS reply unrecognized keyword %r from %s — ignoring", body, sender)
         return None

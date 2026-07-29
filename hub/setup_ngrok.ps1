@@ -220,15 +220,16 @@ if ($existing) {
     Write-Ok "reusing existing tunnel"
     $publicUrl = $existing.public_url
 } else {
-    $logPath = Join-Path $env:TEMP 'ngrok.log'
+    $logOut = Join-Path $env:TEMP 'ngrok_stdout.log'
+    $logErr = Join-Path $env:TEMP 'ngrok_stderr.log'
     Start-Process -FilePath $ngrokExe -ArgumentList @('http', "$Port", '--log=stdout') `
-        -WindowStyle Hidden -RedirectStandardOutput $logPath -RedirectStandardError $logPath
+        -WindowStyle Hidden -RedirectStandardOutput $logOut -RedirectStandardError $logErr
 
     $publicUrl = $null
     $deadline = (Get-Date).AddSeconds(20)
     while (-not $publicUrl) {
         if ((Get-Date) -gt $deadline) {
-            throw "ngrok did not report a public URL within 20s. Check $logPath and https://dashboard.ngrok.com."
+            throw "ngrok did not report a public URL within 20s. Check $logOut / $logErr and https://dashboard.ngrok.com."
         }
         Start-Sleep -Milliseconds 500
         try {

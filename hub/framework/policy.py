@@ -69,3 +69,15 @@ class Policy(ABC):
         and will be used in a future release.
         """
         return None
+
+    def on_sms_reply(self, sender: str, body: str) -> dict | None:
+        """
+        Called when Twilio delivers an inbound SMS reply to POST /sms.
+        Return an MQTT command dict to publish to the last known device, or
+        None to take no action. The framework handles the MQTT publish;
+        the Policy decides what the reply means.
+
+        sender  the phone number that replied (e.g. "+15551234567")
+        body    the reply text as received (leading/trailing whitespace stripped)
+        """
+        return None

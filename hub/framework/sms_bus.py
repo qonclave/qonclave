@@ -48,6 +48,7 @@ class SMSBus:
         self._client = None
         self._load_error: str | None = None
         self._load_attempted = False
+        self._suppressed = False
         self._lock = threading.Lock()
 
     # --- capability probe ---------------------------------------------------
@@ -65,6 +66,7 @@ class SMSBus:
         return {
             "available": self._client is not None,
             "enabled": self.enabled,
+            "suppressed": self._suppressed,
             "load_attempted": self._load_attempted,
             "load_error": self._load_error,
         }
@@ -109,6 +111,16 @@ class SMSBus:
                 self._client = None
                 return False
 
+    # --- suppress (STOP reply) -----------------------------------------------
+
+    def suppress(self) -> None:
+        """
+        Mute all further outbound SMS for this server session. Called by a
+        Policy when the recipient replies STOP. Resets on server restart.
+        """
+        self._suppressed = True
+        log.info("SMS suppressed for this session (STOP received)")
+
     # --- send ---------------------------------------------------------------
 
     def send(self, notification: Notification) -> bool:
@@ -120,6 +132,13 @@ class SMSBus:
         Returns True if the message was accepted by Twilio; False on any
         failure (logged). Never raises for the caller.
         """
+        if self._suppressed:
+            log.warning(
+                "SMS suppressed (STOP was received). Skipping message: %r to %s",
+                notification.message, notification.recipient,
+            )
+            return False
+
         if not self.is_available():
             log.warning(
                 "Skipping SMS (unavailable: %s). Intended message: %r to %s",
