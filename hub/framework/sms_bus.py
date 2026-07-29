@@ -24,6 +24,8 @@ Environment:
 
 from __future__ import annotations
 
+import collections
+import datetime as _dt
 import logging
 import os
 import threading
@@ -50,6 +52,7 @@ class SMSBus:
         self._load_attempted = False
         self._suppressed = False
         self._lock = threading.Lock()
+        self._activity: collections.deque = collections.deque(maxlen=50)
 
     # --- capability probe ---------------------------------------------------
 
@@ -121,6 +124,31 @@ class SMSBus:
         self._suppressed = True
         log.info("SMS suppressed for this session (STOP received)")
 
+    # --- activity tracking ---------------------------------------------------
+
+    def record_sent(self, content: str, ok: bool) -> None:
+        """Record an outbound SMS attempt (called internally by send())."""
+        self._activity.appendleft({
+            "direction": "out",
+            "content": content,
+            "status": "sent" if ok else "failed",
+            "time": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        })
+
+    def record_reply(self, sender: str, body: str, action: str) -> None:
+        """Record an inbound SMS reply (called by the /sms webhook handler)."""
+        self._activity.appendleft({
+            "direction": "in",
+            "content": body,
+            "status": action,
+            "from": sender,
+            "time": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        })
+
+    def recent_activity(self, limit: int = 50) -> list:
+        """Recent SMS activity (outbound + inbound), newest first."""
+        return list(self._activity)[:limit]
+
     # --- send ---------------------------------------------------------------
 
     def send(self, notification: Notification) -> bool:
@@ -158,10 +186,12 @@ class SMSBus:
                 msg.sid, _TO_NUMBER,
                 notification.message, notification.recipient,
             )
+            self.record_sent(_TEMPLATE_BODY, ok=True)
             return True
         except Exception as e:
             log.warning(
                 "SMS send failed: %s. Intended message: %r to %s",
                 e, notification.message, notification.recipient,
             )
+            self.record_sent(_TEMPLATE_BODY, ok=False)
             return False

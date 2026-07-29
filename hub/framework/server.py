@@ -260,11 +260,16 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
             if device_id:
                 mqtt.publish_command(device_id, command)
                 log.info("SMS reply MQTT command %s -> device %s", command, device_id)
+                action = "mqtt_published"
             else:
                 log.warning("SMS reply returned command %s but no device_id known yet", command)
+                action = "ignored"
+        elif body.strip().upper() == "STOP":
+            action = "suppressed"
+        else:
+            action = "ignored"
 
-        # Twilio expects a 200; returning empty TwiML is cleanest but plain
-        # "OK" also works for webhook-only flows where we don't SMS back.
+        sms.record_reply(sender, body, action)
         return ("", 200)
 
     # --- /user/* dashboard data + frames ------------------------------------
@@ -290,6 +295,16 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
         if not name:
             return jsonify({"error": "no frame received yet"}), 404
         return send_from_directory(transport.UPLOAD_DIR, name)
+
+    @app.get("/user/sms_activity")
+    def user_sms_activity():
+        """Recent SMS activity (outbound + inbound), newest first."""
+        limit = request.args.get("limit", type=int) or 50
+        return jsonify({
+            "count": len(sms.recent_activity(limit)),
+            "suppressed": sms._suppressed,
+            "activity": sms.recent_activity(limit),
+        })
 
     # --- /user/reason: raw VLM tester ---------------------------------------
     @app.post("/user/reason")

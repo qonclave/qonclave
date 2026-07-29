@@ -122,6 +122,19 @@
       <tbody id="rows"><tr><td colspan="7" style="color:var(--muted)">No events yet.</td></tr></tbody>
     </table>
   </div>
+
+  <div class="card" style="margin-top:18px;">
+    <label>SMS activity</label>
+    <table id="smsTable">
+      <thead>
+        <tr><th>Time</th><th>Dir</th><th>Content</th><th>Status</th></tr>
+      </thead>
+      <tbody id="smsRows"><tr><td colspan="4" style="color:var(--muted)">No SMS activity yet.</td></tr></tbody>
+    </table>
+    <div id="smsSuppressed" style="display:none;margin-top:10px;">
+      <span class="pill warn">SMS suppressed — STOP was received. Restarts server to resume.</span>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -240,8 +253,43 @@ async function enroll(ev) {
 $("enrollForm").addEventListener("submit", enroll);
 loadKnownFaces();
 
+async function refreshSMS() {
+  try {
+    const r = await fetch("/user/sms_activity");
+    const j = await r.json();
+
+    // suppressed banner
+    $("smsSuppressed").style.display = j.suppressed ? "block" : "none";
+
+    const tbody = $("smsRows");
+    if (!j.activity || !j.activity.length) {
+      tbody.innerHTML = '<tr><td colspan="4" style="color:var(--muted)">No SMS activity yet.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = j.activity.map(a => {
+      const dirHtml = a.direction === "out"
+        ? '<span class="pill" style="color:var(--accent);border-color:var(--accent)">&#8594; out</span>'
+        : '<span class="pill warn">&#8592; in</span>';
+      let statusHtml;
+      if (a.status === "sent")           statusHtml = '<span class="pill ok">sent ✓</span>';
+      else if (a.status === "failed")    statusHtml = '<span class="pill err">failed ✗</span>';
+      else if (a.status === "mqtt_published") statusHtml = '<span class="pill" style="color:var(--accent);border-color:var(--accent)">mqtt ✓</span>';
+      else if (a.status === "suppressed") statusHtml = '<span class="pill warn">suppressed</span>';
+      else                               statusHtml = `<span class="pill" style="color:var(--muted)">${a.status}</span>`;
+      return `<tr>
+        <td>${shortTime(a.time)}</td>
+        <td>${dirHtml}</td>
+        <td>${a.content || "—"}</td>
+        <td>${statusHtml}</td>
+      </tr>`;
+    }).join("");
+  } catch (e) { /* leave prior state */ }
+}
+
 refresh();
 setInterval(refresh, 2000);
+refreshSMS();
+setInterval(refreshSMS, 2000);
 </script>
 </body>
 </html>
