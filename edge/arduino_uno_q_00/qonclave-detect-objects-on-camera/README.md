@@ -103,6 +103,44 @@ App Lab):
 | `HUB_EVENT_HYSTERESIS_SEC` | `10` | Minimum seconds between two hub events |
 | `HUB_EVENT_TIMEOUT_SEC` | `5` | HTTP request timeout when posting to the hub |
 
+## Person Tracking
+
+Each detection frame from `video_objectdetection` is independent — it has no notion of
+"this is the same person as last frame." To support future features like rotating the
+camera to follow a person, `python/person_tracker.py` assigns persistent track IDs to
+detected people across frames using a lightweight greedy nearest-centroid tracker (no
+extra dependencies), and estimates a coarse 8-way movement direction (`left`, `right`,
+`up`, `down`, and diagonals, or `stationary`) from recent centroid history.
+
+Each frame's person tracks are logged (`qonclave.edge` logger, debug level) and drive
+the LED Matrix position display described below — direction itself doesn't yet drive
+camera rotation, that's the next step.
+
+Configurable via environment variables:
+
+| Var | Default | Meaning |
+|-----|---------|---------|
+| `PERSON_TRACK_MAX_DISAPPEARED` | `10` | Frames a person can go unmatched before their track is dropped |
+| `PERSON_TRACK_MAX_DISTANCE_PX` | `150` | Max centroid movement (px) between frames to still count as the same person |
+| `PERSON_TRACK_DIRECTION_HISTORY` | `5` | Frames of centroid history used to smooth the direction estimate |
+| `PERSON_TRACK_MIN_MOVEMENT_PX` | `10` | Minimum net movement (px) over the smoothing window before direction is reported as `stationary` |
+
+## LED Matrix Person Position Display
+
+While a person is being tracked, the onboard **12x8 LED Matrix** shows roughly where
+they are in the camera frame instead of the usual object-class icon: `python/led_display.py`
+scales the tracked person's centroid (in the camera frame's pixel space, via
+`camera.resolution`) down to a 12x8 grid and lights a small 2x2 block at that position, so
+it's easy to spot as it moves. Of the currently tracked people, the most-established track
+(the one tracked over the most frames) is shown, so a briefly-flickering new detection
+doesn't steal the display from an existing one. There's no separate arrow or icon for
+direction — the dot's position shifting across the grid frame-to-frame is the direction
+signal. As soon as no person is tracked, the display reverts to the normal object icon (or
+clear) behavior.
+
+This reuses the existing `set_custom_led_array` Bridge call — no `sketch/sketch.ino` change
+was needed.
+
 ## Hardware and Software Requirements
 
 ### Hardware
@@ -165,8 +203,11 @@ Here is a brief explanation of the full-stack application:
   - Flattens the 12x8 grid into a 96-character bitstring and transmits it to the microcontroller firmware via `Bridge.call("set_custom_led_array", bitstring)`.
   - Pushes dynamic bitmap data and an `ai_generated` boolean flag to the frontend via `ui.send_message("led_status", ...)`.
 
+- **Person Position on LED Matrix (`led_display.py`)**:
+  - While `person_tracker.py` has an active person track, `led_display.person_position_bitmap()` scales that track's centroid (via `camera.resolution`) into a lit 2x2 block on the 12x8 grid instead of the usual object icon, and reverts to icon rendering once no person is tracked.
+
 - Wires detection events to actions using callbacks:
-  - `on_detect_all(send_detections_to_ui)`: sends `{ content, confidence, timestamp }` via `ui.send_message("detection", ...)` and triggers icon rendering.
+  - `on_detect_all(send_detections_to_ui)`: sends `{ content, confidence, timestamp }` via `ui.send_message("detection", ...)` and triggers icon rendering (or the person-position display, when applicable).
 
 ---
 

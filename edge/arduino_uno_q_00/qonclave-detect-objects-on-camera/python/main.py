@@ -20,7 +20,9 @@ from arduino.app_peripherals.camera import IPCamera, V4LCamera
 
 import json
 from file_camera import FileCamera
+from led_display import person_position_bitmap
 from mqtt_client import EdgeMQTTClient
+from person_tracker import PersonTracker
 
 load_dotenv()
 
@@ -251,6 +253,16 @@ HUB_EVENT_TIMEOUT_SEC = float(os.environ.get("HUB_EVENT_TIMEOUT_SEC", "5"))
 ESCALATION_DIR = os.environ.get("ESCALATION_DIR", "/app/escalations")
 ESCALATION_MAX_FILES = int(os.environ.get("ESCALATION_MAX_FILES", "100"))
 
+# --- Person tracking: assign a persistent ID + coarse direction to each
+# detected person across frames, using only the bounding boxes VideoObjectDetection
+# already emits. See python/person_tracker.py for the matching approach.
+person_tracker = PersonTracker(
+  max_disappeared=int(os.environ.get("PERSON_TRACK_MAX_DISAPPEARED", "10")),
+  max_distance=float(os.environ.get("PERSON_TRACK_MAX_DISTANCE_PX", "150")),
+  direction_history=int(os.environ.get("PERSON_TRACK_DIRECTION_HISTORY", "5")),
+  min_movement_px=float(os.environ.get("PERSON_TRACK_MIN_MOVEMENT_PX", "10")),
+)
+
 _hub_event_lock = threading.Lock()
 _last_hub_event_at = 0.0
 
@@ -336,7 +348,19 @@ def maybe_notify_hub(detections: dict, frame: bytes | None):
 
 # Register a callback for when all objects are detected
 def send_detections_to_ui(detections: dict, frame: bytes | None = None):
-  if detections:
+  person_tracks = person_tracker.update(detections.get("person", []))
+
+  if person_tracks:
+    log.debug(f"Person tracks: {[{'id': t['track_id'], 'direction': t['direction']} for t in person_tracks]}")
+    # A person is actively tracked: show its position on the LED matrix
+    # instead of the usual object icon. Pick the most-established track so a
+    # briefly-flickering new detection doesn't steal the display.
+    tracked = max(person_tracks, key=lambda t: t["frames_tracked"])
+    bitmap = person_position_bitmap(tracked["centroid"], *camera.resolution)
+    bitstring = "".join("1" if val else "0" for r in bitmap for val in r[:12])
+    Bridge.call("set_custom_led_array", bitstring)
+    ui.send_message("led_status", message={"state": "active", "trigger": "person", "bitmap": bitmap, "ai_generated": False})
+  elif detections:
     first_obj = list(detections.keys())[0]
     bitmap, is_generating = get_or_trigger_icon(first_obj)
     bitstring = "".join("1" if val else "0" for r in bitmap for val in r[:12]) if bitmap else "0" * 96

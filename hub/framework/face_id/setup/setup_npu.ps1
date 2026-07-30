@@ -28,15 +28,20 @@
 # target the same environment (e.g. hub/geniex-env). Only pass it
 # yourself when running setup_npu.ps1 directly against a non-default python:
 #   .\setup_npu.ps1 -Token YOUR_TOKEN -PythonPath C:\path\to\python.exe
+#
+# Pass -Internal to route pip through Qualcomm's internal devpi mirror
+# instead of pypi.org, on networks where files.pythonhosted.org is unreachable:
+#   .\setup_npu.ps1 -Token YOUR_TOKEN -Internal
 
 param(
     [string]$Token  = "",
     [string]$Device = "Snapdragon X Elite CRD",
     [string]$MediaPipeFaceJobId = "",   # reuse existing compile job for MediaPipeFace.onnx
     [string]$CavaFaceJobId      = "",   # reuse existing compile job for CavaFace.onnx
-    [string]$PythonPath         = ""    # use this python.exe instead of resolving from PATH
+    [string]$PythonPath         = "",   # use this python.exe instead of resolving from PATH
                                          # (set by setup.ps1 to keep both scripts targeting
                                          # the same environment, e.g. hub/geniex-env)
+    [switch]$Internal                   # route pip through Qualcomm's internal devpi mirror
 )
 
 $ErrorActionPreference = "Stop"
@@ -47,6 +52,13 @@ $PkgDir      = Split-Path -Parent $ScriptDir
 $ModelsDir   = Join-Path $PkgDir "models"
 $DownloadDir = Join-Path $env:TEMP "qonclave_npu_export"
 $python      = if ($PythonPath) { $PythonPath } else { (Get-Command python).Source }
+# -Internal routes every pip install below through Qualcomm's internal devpi
+# mirror instead of pypi.org/files.pythonhosted.org.
+$PipIndexArgs = if ($Internal) {
+    @('--trusted-host', 'devpi.qualcomm.com', '-i', 'https://devpi.qualcomm.com/root/pypi/+simple/')
+} else {
+    @()
+}
 # A system install has python.exe at <root>\python.exe with entry-point
 # scripts in a sibling <root>\Scripts\; a venv has python.exe ALREADY inside
 # its own Scripts\ folder, with entry-point scripts as siblings of python.exe
@@ -202,7 +214,7 @@ if ($reuseBoth) {
     # client (plus onnx, to fix up external-data references after download) is
     # needed, not the full qai-hub-models dependency stack (torch, etc).
     Info "Both job IDs provided - installing only qai_hub + onnx (skipping qai-hub-models)..."
-    & $python -m pip install "qai_hub>=0.51.0" "onnx<=1.18.0,>=1.17" -c "$ScriptDir\constraints.txt"
+    & $python -m pip install "qai_hub>=0.51.0" "onnx<=1.18.0,>=1.17" -c "$ScriptDir\constraints.txt" @PipIndexArgs
     if ($LASTEXITCODE -ne 0) { Fail "pip install failed." }
 } else {
     Info "Installing qai-hub-models..."
@@ -220,9 +232,9 @@ if ($reuseBoth) {
         yacs gitpython pillow schema requests_toolbelt "httpx<=0.28.1,>=0.27" `
         gdown boto3 "boto3-stubs[s3]" numpydoc pandas `
         tabulate ipython scipy coverage `
-        --extra-index-url https://download.pytorch.org/whl/cpu -c "$ScriptDir\constraints.txt"
+        --extra-index-url https://download.pytorch.org/whl/cpu -c "$ScriptDir\constraints.txt" @PipIndexArgs
     if ($LASTEXITCODE -ne 0) { Fail "pip install failed." }
-    & $python -m pip install "qai-hub-models[mediapipe_face,cavaface]==0.58.0" --no-deps
+    & $python -m pip install "qai-hub-models[mediapipe_face,cavaface]==0.58.0" --no-deps @PipIndexArgs
     if ($LASTEXITCODE -ne 0) { Fail "pip install failed." }
 }
 Ok "Packages ready"
