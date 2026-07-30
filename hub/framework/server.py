@@ -26,6 +26,7 @@ Endpoints:
     GET  /user/dashboard      live dashboard page (app-provided static/);
                                also the default landing page (/, /user/)
     GET  /user/events         recent events + results (JSON)
+    POST /user/robot-command  validate and publish a robot command over MQTT
     GET  /user/latest.jpg     most recent frame
     GET  /user/frames/<name>  a specific stored frame
     POST /user/reason         raw VLM tester (free-form reasoning; no browser
@@ -284,6 +285,43 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
             "vlm_available": vlm.status().get("available"),
             "events": items,
         })
+
+    @app.post("/user/robot-command")
+    def user_robot_command():
+        """Publish a validated dashboard robot command to one edge device."""
+        body = request.get_json(silent=True) or {}
+        device_id = str(body.get("device_id") or events.latest_device_id() or "").strip()
+        direction = str(body.get("direction") or "").strip().upper()
+
+        if not device_id:
+            return jsonify({"ok": False, "error": "no edge device selected"}), 400
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]+", device_id):
+            return jsonify({"ok": False, "error": "invalid device_id"}), 400
+        if direction not in {"LEFT", "RIGHT", "FORWARD", "BACKWARD", "STOP"}:
+            return jsonify({"ok": False, "error": "invalid direction"}), 400
+
+        try:
+            magnitude = int(body.get("magnitude", 1))
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "magnitude must be an integer"}), 400
+        if not 1 <= magnitude <= 360:
+            return jsonify({"ok": False, "error": "magnitude must be between 1 and 360"}), 400
+
+        command = {
+            "type": "robot_move",
+            "direction": direction,
+            "magnitude": magnitude,
+        }
+        ok = mqtt.publish_command(device_id, command)
+        if not ok:
+            return jsonify({
+                "ok": False,
+                "error": "MQTT broker unavailable or publish failed",
+                "device_id": device_id,
+            }), 503
+
+        log.info("Dashboard robot command %s -> device %s", command, device_id)
+        return jsonify({"ok": True, "device_id": device_id, "command": command})
 
     @app.get("/user/frames/<path:name>")
     def user_frame(name):
