@@ -52,6 +52,7 @@ import uuid
 from flask import Flask, jsonify, redirect, request, send_from_directory
 
 from . import discovery, events, icons, transport
+from .llm import LLMBackend
 from .mqtt_bus import MQTTBus
 from .policy import Policy
 from .sms_bus import SMSBus
@@ -63,7 +64,7 @@ MAX_UPLOAD_MB = int(os.environ.get("QONCLAVE_MAX_UPLOAD_MB", "16"))
 
 
 def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
-               static_dir: str, face_id=None) -> Flask:
+               static_dir: str, face_id=None, llm: LLMBackend | None = None) -> Flask:
     """
     Build the Qonclave hub Flask app for one Policy.
 
@@ -76,6 +77,8 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
                 actual identification happens inside the Policy, not here
     sms         shared SMSBus; sends an SMS when notify_for() returns a
                 Notification (trial mode: fixed template + fixed number)
+    llm         optional LLMBackend (text-only Qwen3-4B); used by the Policy
+                for on_sms_reply() reasoning; exposed via /health
     static_dir  directory holding the app's dashboard.html, test_*.html
     """
     app = Flask(__name__, static_folder=None)
@@ -97,6 +100,7 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
             "app": policy.name,
             "time": transport.now_iso(),
             "vlm": vlm.status(),
+            "llm": llm.status() if llm else {"available": False},
             "mqtt": mqtt.status(),
             "face_id": face_id.status() if face_id else {"available": False},
             "sms": sms.status(),
@@ -269,6 +273,12 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
         else:
             action = "ignored"
 
+        reply_text = policy.reply_for_sms(sender, body)
+        if reply_text:
+            from .policy import Notification
+            sent = sms.send(Notification(message=reply_text, recipient=sender))
+            log.info("SMS reply_for_sms -> sent=%s: %r", sent, reply_text[:80])
+
         sms.record_reply(sender, body, action)
         return ("", 200)
 
@@ -304,6 +314,15 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
             "count": len(sms.recent_activity(limit)),
             "suppressed": sms._suppressed,
             "activity": sms.recent_activity(limit),
+        })
+
+    @app.get("/user/llm_response")
+    def user_llm_response():
+        """Latest LLM analysis of an inbound SMS reply, for the dashboard."""
+        analysis = policy.last_sms_analysis()
+        return jsonify({
+            "available": (llm.status().get("available") if llm else False),
+            "analysis": analysis,
         })
 
     # --- /user/reason: raw VLM tester ---------------------------------------
