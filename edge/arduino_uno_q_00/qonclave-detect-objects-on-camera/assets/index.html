@@ -77,7 +77,7 @@ SPDX-License-Identifier: MPL-2.0
             </div>
           </div>
 
-          <div class="container container-right">
+          <div class="container container-right feedback-panel">
             <div id="feedback-section" class="feedback-section">
               <div style="display: flex; align-items: center; gap: 8px; position: relative">
                 <h2 class="recent-scans-title" style="margin: 0">Feedback</h2>
@@ -89,6 +89,29 @@ SPDX-License-Identifier: MPL-2.0
                 <p class="feedback-text">System response will appear here</p>
               </div>
             </div>
+          </div>
+
+          <div class="container container-right">
+            <section class="robot-console" aria-labelledby="robot-console-title">
+              <div class="robot-console-header">
+                <h2 id="robot-console-title" class="recent-scans-title">Robot control</h2>
+                <label for="robotMagnitude">
+                  Duration
+                  <input id="robotMagnitude" type="number" min="1" max="360" step="1" value="1" />
+                  sec
+                </label>
+              </div>
+              <div class="robot-dpad" aria-label="Robot direction controls">
+                <button type="button" class="robot-move forward" data-direction="FORWARD" aria-label="Move forward">▲</button>
+                <button type="button" class="robot-move left" data-direction="LEFT" aria-label="Turn left">◀</button>
+                <button type="button" id="robotStop" class="robot-stop" aria-label="Stop robot">STOP</button>
+                <button type="button" class="robot-move right" data-direction="RIGHT" aria-label="Turn right">▶</button>
+                <button type="button" class="robot-move backward" data-direction="BACKWARD" aria-label="Move backward">▼</button>
+              </div>
+              <p id="robotStatus" class="robot-status" role="status" aria-live="polite">Ready</p>
+            </section>
+          </div>
+
           <div class="container container-right">
             <div class="feedback-section">
               <div style="display: flex; align-items: center; justify-content: space-between;">

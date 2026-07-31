@@ -652,6 +652,32 @@ body {
   margin-bottom: 8px;
 }
 
+.feedback-panel {
+  height: 190px;
+  min-height: 190px;
+  overflow: hidden;
+}
+
+#feedback-section {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+
+#feedback-content {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+#feedback-content > img,
+#feedback-content .feedback-detection img {
+  max-width: 56px;
+  max-height: 56px;
+  object-fit: contain;
+}
+
 .confidence-input {
   border: none;
   background: transparent;
@@ -699,6 +725,97 @@ body {
   color: #5d6a6b;
   text-align: center;
 }
+
+.robot-console {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.robot-console-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.robot-console-header label {
+  color: #5d6a6b;
+  font-size: 12px;
+}
+
+#robotMagnitude {
+  width: 54px;
+  margin-left: 6px;
+  padding: 5px 6px;
+  border: 1px solid #c9d2d2;
+  border-radius: 6px;
+  font: inherit;
+}
+
+.robot-dpad {
+  display: grid;
+  grid-template-columns: repeat(3, 58px);
+  grid-template-areas:
+    ". forward ."
+    "left stop right"
+    ". backward .";
+  gap: 8px;
+  justify-content: center;
+}
+
+.robot-move,
+.robot-stop {
+  height: 48px;
+  border: 0;
+  border-radius: 9px;
+  color: white;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 0.1s ease, background-color 0.15s ease;
+}
+
+.robot-move {
+  background: #008184;
+  font-size: 20px;
+}
+
+.robot-move:hover {
+  background: #006d70;
+}
+
+.robot-move:active,
+.robot-stop:active {
+  transform: scale(0.95);
+}
+
+.robot-move.forward { grid-area: forward; }
+.robot-move.left { grid-area: left; }
+.robot-move.right { grid-area: right; }
+.robot-move.backward { grid-area: backward; }
+
+.robot-stop {
+  grid-area: stop;
+  background: #c2413b;
+  font-size: 11px;
+}
+
+.robot-stop:hover {
+  background: #a8322d;
+}
+
+.robot-status {
+  min-height: 18px;
+  margin: 0;
+  color: #5d6a6b;
+  text-align: center;
+  font-size: 12px;
+}
+
+.robot-status.active { color: #008184; }
+.robot-status.stopped { color: #c2413b; }
+.robot-status.error { color: #be123c; }
+
 #recentDetections {
   list-style-type: none;
   padding: 0;
