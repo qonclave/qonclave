@@ -15,6 +15,19 @@ through an AI model using the `video_objectdetection` Brick, and displaying the
 bounding boxes around detections. The App is managed from an interactive web
 interface.
 
+## Web UI Login
+
+The Web UI (`<board-name>.local:7000`) is protected with HTTP Basic Auth. Set both
+`WEB_UI_USERNAME` and `WEB_UI_PASSWORD` (as env vars / Brick Configuration in App
+Lab) before running the app — the browser will prompt for these credentials on
+first visit. If either var is left unset, the app starts with a warning logged and
+the Web UI is reachable by anyone on the network without a login.
+
+| Var | Default | Meaning |
+|-----|---------|---------|
+| `WEB_UI_USERNAME` | _(none)_ | Login username for the Web UI |
+| `WEB_UI_PASSWORD` | _(none)_ | Login password for the Web UI |
+
 ## Camera Source
 
 Controlled by `CAMERA_SOURCE` — switching between USB, IP camera, and video file is

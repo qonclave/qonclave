@@ -19,6 +19,7 @@ from arduino.app_bricks.video_objectdetection import VideoObjectDetection
 from arduino.app_peripherals.camera import IPCamera, V4LCamera
 
 import json
+from basic_auth import BasicAuthMiddleware
 from file_camera import FileCamera
 from led_display import person_display_bitmap
 from mqtt_client import EdgeMQTTClient
@@ -203,9 +204,17 @@ else:
   # camera; USB_CAMERA_DEVICE lets that be overridden explicitly.
   USB_CAMERA_DEVICE = os.environ.get("USB_CAMERA_DEVICE") or os.environ.get("VIDEO_DEVICE", 0)
   camera = V4LCamera(device=USB_CAMERA_DEVICE)
-  CAMERA_DUAL_LENS_STACKED = 1
 
 ui = WebUI()
+
+WEB_UI_USERNAME = os.environ.get("WEB_UI_USERNAME", "").strip()
+WEB_UI_PASSWORD = os.environ.get("WEB_UI_PASSWORD", "").strip()
+if WEB_UI_USERNAME and WEB_UI_PASSWORD:
+  ui.app.add_middleware(BasicAuthMiddleware, username=WEB_UI_USERNAME, password=WEB_UI_PASSWORD)
+  log.info("Web UI protected with HTTP Basic Auth.")
+else:
+  log.warning("WEB_UI_USERNAME/WEB_UI_PASSWORD not set: Web UI is running WITHOUT authentication.")
+
 def _send_current_hub_status():
   try:
     ui.send_message("hub_status", message={
