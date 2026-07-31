@@ -28,6 +28,7 @@ unconditionally.
 | Var | Default | Meaning |
 |-----|---------|---------|
 | `CAMERA_SOURCE` | `file` | `usb` for a physically-connected USB camera, `ip` for an Android IP-camera stream, or `file` to loop a local video file instead of a live feed |
+| `CAMERA_DUAL_LENS_STACKED` | `false` | Set to `true` when the camera is a 360° dual-lens rig that stacks the rear-camera image on top and the front-camera image on the bottom of a single frame. Flips the LED Matrix position display's row mapping to match (see LED Matrix Person Position Display below); leave `false` for a normal single-lens camera. |
 
 ### USB (default)
 
@@ -129,14 +130,38 @@ Configurable via environment variables:
 
 While a person is being tracked, the onboard **12x8 LED Matrix** shows roughly where
 they are in the camera frame instead of the usual object-class icon: `python/led_display.py`
-scales the tracked person's centroid (in the camera frame's pixel space, via
-`camera.resolution`) down to a 12x8 grid and lights a small 2x2 block at that position, so
-it's easy to spot as it moves. Of the currently tracked people, the most-established track
-(the one tracked over the most frames) is shown, so a briefly-flickering new detection
-doesn't steal the display from an existing one. There's no separate arrow or icon for
-direction — the dot's position shifting across the grid frame-to-frame is the direction
-signal. As soon as no person is tracked, the display reverts to the normal object icon (or
+projects the tracked person's centroid (in the camera frame's pixel space, via
+`camera.resolution`) outward from the frame's center onto the grid's **outer ring**
+(row 0, row 7, and the left/right columns of the rows in between) — a ray-cast
+projection, so the lit position sweeps smoothly all the way around the ring as the
+person moves anywhere in frame, and never encroaches on the interior. Of the currently
+tracked people, the most-established track (the one tracked over the most frames) is
+shown, so a briefly-flickering new detection doesn't steal the display from an existing
+one. There's no separate arrow or icon for direction — the dot's position shifting
+around the ring frame-to-frame is the direction signal.
+
+Constraining the position indicator to the ring frees up the interior **6x10 region**
+for a **person emotion** indicator, shown at the same time: `emotion_bitmap()` in
+`led_display.py` currently renders a hardcoded smiley placeholder, but is structured so
+an LLM-generated emotion bitmap (mirroring the existing per-object icon pipeline that
+queries the Qonclave Hub's `/edge/icon` endpoint) can be dropped in later without
+changing the call site.
+
+As soon as no person is tracked, the display reverts to the normal object icon (or
 clear) behavior.
+
+### 360° dual-lens cameras
+
+Some 360° cameras deliver a single frame with the **rear-camera image stacked on top**
+and the **front-camera image on the bottom**. For that layout, the raw top/bottom pixel
+position is the opposite of the LED matrix's natural top/bottom rows: a person seen by
+the front camera (bottom half of the frame) should light up the **top** rows, and a
+person seen by the rear camera (top half of the frame) should light up the **bottom**
+rows. Setting `CAMERA_DUAL_LENS_STACKED=true` (see Camera Source above) makes
+`main.py` vertically flip the centroid's Y coordinate before mapping it to the grid, so
+the displayed position matches which physical camera actually saw the person. Leave it
+`false` for a normal single-lens camera, where the frame's top/bottom already matches
+the matrix's top/bottom rows.
 
 This reuses the existing `set_custom_led_array` Bridge call — no `sketch/sketch.ino` change
 was needed.
@@ -203,8 +228,8 @@ Here is a brief explanation of the full-stack application:
   - Flattens the 12x8 grid into a 96-character bitstring and transmits it to the microcontroller firmware via `Bridge.call("set_custom_led_array", bitstring)`.
   - Pushes dynamic bitmap data and an `ai_generated` boolean flag to the frontend via `ui.send_message("led_status", ...)`.
 
-- **Person Position on LED Matrix (`led_display.py`)**:
-  - While `person_tracker.py` has an active person track, `led_display.person_position_bitmap()` scales that track's centroid (via `camera.resolution`) into a lit 2x2 block on the 12x8 grid instead of the usual object icon, and reverts to icon rendering once no person is tracked.
+- **Person Position + Emotion on LED Matrix (`led_display.py`)**:
+  - While `person_tracker.py` has an active person track, `led_display.person_display_bitmap()` projects that track's centroid (via `camera.resolution`, flipped first when `CAMERA_DUAL_LENS_STACKED=true`) onto the grid's outer ring and composes it with a center smiley placeholder, instead of the usual object icon, and reverts to icon rendering once no person is tracked.
 
 - Wires detection events to actions using callbacks:
   - `on_detect_all(send_detections_to_ui)`: sends `{ content, confidence, timestamp }` via `ui.send_message("detection", ...)` and triggers icon rendering (or the person-position display, when applicable).

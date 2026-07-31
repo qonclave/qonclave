@@ -20,7 +20,7 @@ from arduino.app_peripherals.camera import IPCamera, V4LCamera
 
 import json
 from file_camera import FileCamera
-from led_display import person_position_bitmap
+from led_display import person_display_bitmap
 from mqtt_client import EdgeMQTTClient
 from person_tracker import PersonTracker
 
@@ -177,6 +177,12 @@ def get_or_trigger_icon(label: str):
 # access; the USB device itself is opened here, in the main container, which
 # always has /dev access).
 CAMERA_SOURCE = os.environ.get("CAMERA_SOURCE", "usb").strip().lower()
+
+# A 360-degree dual-lens rig stacks rear-camera on top, front-camera on the
+# bottom of a single frame; the LED matrix's row mapping needs to be
+# vertically flipped to match (front/bottom-half -> top rows, rear/top-half
+# -> bottom rows). Plain USB/IP cameras must NOT set this.
+CAMERA_DUAL_LENS_STACKED = os.environ.get("CAMERA_DUAL_LENS_STACKED", "false").strip().lower() in ("1", "true", "yes")
 
 if CAMERA_SOURCE == "ip":
   IP_CAMERA_URL = os.environ.get("IP_CAMERA_URL", "http://192.168.18.65:8080/video")
@@ -356,7 +362,11 @@ def send_detections_to_ui(detections: dict, frame: bytes | None = None):
     # instead of the usual object icon. Pick the most-established track so a
     # briefly-flickering new detection doesn't steal the display.
     tracked = max(person_tracks, key=lambda t: t["frames_tracked"])
-    bitmap = person_position_bitmap(tracked["centroid"], *camera.resolution)
+    cx, cy = tracked["centroid"]
+    frame_w, frame_h = camera.resolution
+    if CAMERA_DUAL_LENS_STACKED:
+      cy = frame_h - cy  # rear (top half) -> bottom rows, front (bottom half) -> top rows
+    bitmap = person_display_bitmap((cx, cy), frame_w, frame_h)
     bitstring = "".join("1" if val else "0" for r in bitmap for val in r[:12])
     Bridge.call("set_custom_led_array", bitstring)
     ui.send_message("led_status", message={"state": "active", "trigger": "person", "bitmap": bitmap, "ai_generated": False})

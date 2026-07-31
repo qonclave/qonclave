@@ -112,3 +112,57 @@ Same plain-`assert` style as `test_person_tracker.py`/`test_edge_mqtt_e2e.py`:
 - Run `python test_person_tracker.py` — still passes (untouched).
 - `python -m py_compile python/main.py python/led_display.py` — syntax check.
 - Manual smoke test: run the app with `CAMERA_SOURCE=file` (bundled `media/sample.mp4`, no hardware) and confirm via added debug logging (or just code reading) that `person_position_bitmap` is invoked with sane in-bounds coordinates while a person is in frame; on actual Uno Q hardware, confirm the lit dot visibly moves on the physical matrix as a person walks across the camera's view, and confirm it reverts to the normal object icon within one frame of the person leaving view.
+
+---
+
+# LED matrix: outer-ring position + center emotion, with front/rear row inversion
+
+## Context
+
+The Uno Q edge app (`edge/arduino_uno_q_00/qonclave-detect-objects-on-camera/`) previously showed a tracked person's position anywhere on the 12x8 LED matrix as a freely-placed 2x2 dot (`python/led_display.py`'s `person_position_bitmap`, wired into `python/main.py`'s `send_detections_to_ui`). Two changes were needed:
+
+1. The position indicator should be constrained to the matrix's **outer ring** only (row 0, row 7, and columns 0/11 of rows 1-6). The freed-up **inner 6x10 region** is reserved for a **person emotion** indicator — eventually LLM-generated (mirroring the existing `CloudLLM`/hub `/edge/icon` pattern already used for object icons), but for now a hardcoded **smiley** placeholder.
+2. The camera in use is a 360° dual-lens rig that stacks **rear camera on top, front camera on bottom** into one frame. The previous linear y→row mapping was backwards for this rig: a person in the frame's bottom half (front camera) should light up the **top** rows of the matrix, and a person in the top half (rear camera) should light up the **bottom** rows — i.e. the vertical mapping needed to be invertible, gated to only this camera setup.
+
+The ring position uses a **continuous ray-cast** projection (direction from frame-center projected outward onto the ring, so movement around the whole ring stays smooth); the center smiley shows **only while a person is actively tracked** (same replace-the-icon behavior as before); and the front/rear inversion is applied as an **explicit step in `main.py`**, keeping `led_display.py` camera-agnostic.
+
+No `sketch.ino` change was needed — still just a 96-char bitstring through the existing `set_custom_led_array` Bridge call.
+
+## Approach
+
+### 1. `python/led_display.py` — ring-constrained position + center smiley
+
+- `person_position_bitmap(centroid, frame_width, frame_height)` reworked to project onto the ring instead of scaling freely:
+  - Computes `nx, ny` = centroid position relative to frame center, normalized to `[-1, 1]` on each axis, clamped so out-of-frame centroids don't break the projection.
+  - Dead-center (`nx == ny == 0`) defaults to a fixed direction (straight up) rather than dividing by zero.
+  - Ray-casts onto the unit square's border (`scale = 1 / max(abs(nx), abs(ny))`), which pins at least one axis to exactly ±1 — once mapped to grid coordinates, this lands exactly on the ring by construction, no separate clamping/snapping needed.
+  - Lights a 2-cell segment along the ring edge the point landed on (same row for top/bottom edges, same column for left/right edges) so it stays visible without spilling into the interior.
+- New `SMILEY_BITMAP` — hardcoded 6x10 constant, embedded at offset `(1, 1)` in the 8x12 grid so it never touches the ring.
+- New `emotion_bitmap(name: str = "smiley")` — returns a full 8x12 bitmap with `SMILEY_BITMAP` placed at the interior offset. Takes a `name` param even though only `"smiley"` exists today, so swapping in an LLM-generated bitmap later is a drop-in replacement for the function body, not a call-site change.
+- New `person_display_bitmap(centroid, frame_width, frame_height, emotion="smiley")` — the composed entry point `main.py` calls: `person_position_bitmap(...)` OR'd cell-by-cell with `emotion_bitmap(emotion)`. Safe to OR unconditionally since the two never overlap by construction (ring vs. strict interior).
+
+### 2. `python/main.py` — front/rear inversion + swap to the composed bitmap
+
+- New env var `CAMERA_DUAL_LENS_STACKED` (default `false`) — only this specific 360° rig needs the row inversion; a plain USB/IP camera must not get it.
+- In `send_detections_to_ui`'s `if person_tracks:` branch: if `CAMERA_DUAL_LENS_STACKED`, flip `cy = frame_h - cy` (rear/top-half → bottom rows, front/bottom-half → top rows) before calling `person_display_bitmap((cx, cy), frame_w, frame_h)`. Rest of the branch (bitstring flatten, `Bridge.call`, `ui.send_message("led_status", ...)`) unchanged.
+- Import `person_display_bitmap` instead of `person_position_bitmap` from `led_display`.
+
+### 3. Tests: `test_led_display.py` rewritten
+
+Replaced the old free-placement corner/center assertions with ring-focused ones:
+- `person_position_bitmap` never lights a strictly-interior cell for any input centroid, including out-of-frame ones.
+- A centroid straight above/below/left/right of center lands on the corresponding ring edge (row 0, row `GRID_ROWS-1`, col 0, col `GRID_COLS-1`).
+- Dead-center centroid doesn't raise and still lands on the ring.
+- `person_display_bitmap` includes both a lit ring cell and the smiley's cells simultaneously (composition didn't drop either).
+- Output shape stays 8x12 of 0/1 ints in all cases.
+
+### 4. `README.md`
+
+Updated the "LED Matrix Person Position Display" section: outer-ring-only positioning, center smiley placeholder (noting the eventual LLM-driven emotion path), and documented `CAMERA_DUAL_LENS_STACKED` in the Camera Source table.
+
+## Verification
+
+- `python test_led_display.py` — all 9 assertions pass.
+- `python test_person_tracker.py` — still passes (untouched, 7 tests).
+- `python -m py_compile python/main.py python/led_display.py` — syntax check, clean.
+- Manual smoke test with `CAMERA_SOURCE=file`: confirm the position dot only ever appears on the matrix border while a person is tracked, the smiley is visible in the center at the same time, and toggling `CAMERA_DUAL_LENS_STACKED` flips whether a person in the frame's top vs. bottom half lights the top vs. bottom LED rows.
