@@ -123,6 +123,22 @@
     </table>
   </div>
 
+  <div class="card" style="margin-top:18px;" id="llmCard">
+    <label>LLM response <span id="llmPill" class="pill" style="margin-left:8px;font-size:11px;"></span></label>
+    <div id="llmEmpty" style="color:var(--muted);font-size:13px;">No LLM analysis yet — send an SMS reply that isn't a keyword.</div>
+    <div id="llmContent" style="display:none;">
+      <div class="kv"><span>From</span><span id="llmFrom">—</span></div>
+      <div class="kv"><span>Message</span><span id="llmMessage" style="max-width:60%;text-align:right;word-break:break-word;">—</span></div>
+      <div class="kv"><span>Intent</span><span id="llmIntent">—</span></div>
+      <div class="kv"><span>MQTT command</span><span id="llmCommand">—</span></div>
+      <div class="kv"><span>Latency</span><span id="llmLatency">—</span></div>
+      <div style="margin-top:12px;">
+        <label>Reply sent to operator</label>
+        <div class="reason" id="llmReply">—</div>
+      </div>
+    </div>
+  </div>
+
   <div class="card" style="margin-top:18px;">
     <label>SMS activity</label>
     <table id="smsTable">
@@ -286,10 +302,53 @@ async function refreshSMS() {
   } catch (e) { /* leave prior state */ }
 }
 
+async function refreshLLM() {
+  try {
+    const r = await fetch("/user/llm_response");
+    const j = await r.json();
+
+    const pill = $("llmPill");
+    if (!j.available) {
+      pill.textContent = "unavailable";
+      pill.className = "pill warn";
+    } else {
+      pill.textContent = "Qwen3-4B";
+      pill.className = "pill ok";
+    }
+
+    const a = j.analysis;
+    if (!a) {
+      $("llmEmpty").style.display = "";
+      $("llmContent").style.display = "none";
+      return;
+    }
+    $("llmEmpty").style.display = "none";
+    $("llmContent").style.display = "";
+
+    $("llmFrom").textContent = a.from || "—";
+    $("llmMessage").textContent = a.message || "—";
+
+    const intentColors = { dispatch:"ok", acknowledge:"ok", query:"warn", unknown:"" };
+    const ic = intentColors[a.intent] || "";
+    $("llmIntent").innerHTML = a.intent
+      ? `<span class="pill ${ic}">${a.intent}</span>`
+      : "—";
+
+    $("llmCommand").textContent = a.mqtt_command
+      ? JSON.stringify(a.mqtt_command)
+      : "—";
+
+    $("llmLatency").textContent = a.latency_s != null ? a.latency_s + "s" : "—";
+    $("llmReply").textContent = a.reply || "(no reply generated)";
+  } catch (e) { /* leave prior state */ }
+}
+
 refresh();
 setInterval(refresh, 2000);
 refreshSMS();
 setInterval(refreshSMS, 2000);
+refreshLLM();
+setInterval(refreshLLM, 2000);
 </script>
 </body>
 </html>
