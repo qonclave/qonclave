@@ -203,6 +203,7 @@ else:
   # camera; USB_CAMERA_DEVICE lets that be overridden explicitly.
   USB_CAMERA_DEVICE = os.environ.get("USB_CAMERA_DEVICE") or os.environ.get("VIDEO_DEVICE", 0)
   camera = V4LCamera(device=USB_CAMERA_DEVICE)
+  CAMERA_DUAL_LENS_STACKED = 1
 
 ui = WebUI()
 def _send_current_hub_status():
