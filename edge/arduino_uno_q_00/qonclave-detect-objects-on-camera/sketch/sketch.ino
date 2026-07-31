@@ -82,9 +82,9 @@ void move_robot(String direction, int magnitude) {
   } else if (direction == "BACKWARD") {
     set_motor_pins(false, true, false, true);
   } else if (direction == "RIGHT") {
-    set_motor_pins(true, false, false, true);
-  } else if (direction == "LEFT") {
     set_motor_pins(false, true, true, false);
+  } else if (direction == "LEFT") {
+    set_motor_pins(true, false, false, true);
   } else {
     return;
   }
