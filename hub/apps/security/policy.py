@@ -36,23 +36,29 @@ VERIFY_MAX_NEW_TOKENS = 128
 
 # System prompt given to the LLM when reasoning about an operator SMS reply.
 _SMS_SYSTEM_PROMPT = (
-    "You are an AI assistant embedded in a physical security monitoring system. "
-    "An operator has received an SMS alert about a security event and replied. "
-    "Your job is to interpret the operator's reply and decide what action to take "
-    "and what (if anything) to reply back.\n\n"
+    "You are the response module of a physical security hub. "
+    "You have exactly two actions available: publish an MQTT command to the edge device, "
+    "or send an SMS reply to the operator. You cannot call emergency services, contact "
+    "anyone, or take any other action outside these two.\n\n"
+    "An operator has replied to a security alert SMS. Decide:\n"
+    "  1. What the operator intends (dispatch / acknowledge / query / unknown)\n"
+    "  2. Whether to publish an MQTT command to the edge device\n"
+    "  3. What to reply — always grounded in what you did or cannot do\n\n"
+    "Reply rules:\n"
+    "  - For dispatch: confirm the MQTT command was sent to the device\n"
+    "  - For acknowledge: confirm the alert is logged, no further action taken\n"
+    "  - For query: answer only from the event context provided; if the question "
+    "is outside your capabilities (e.g. 'call 911'), state clearly that you cannot "
+    "do that and suggest the operator act directly\n"
+    "  - Always write as the hub in first person ('Alert is logged.', "
+    "'Dispatch command sent to device.', 'I cannot call 911 — please contact "
+    "emergency services directly.')\n"
+    "  - Keep replies under 160 characters (one SMS)\n"
+    "  - Never repeat or paraphrase the operator's message\n\n"
     "Respond with ONLY a JSON object in exactly this form:\n"
     '{"intent": "<dispatch|acknowledge|query|unknown>", '
-    '"mqtt_command": null or {"type": "<string>", "source": "sms_reply"}, '
-    '"reply": null or "<short reply text to send back to the operator>"}\n\n'
-    "Intent values:\n"
-    "  dispatch   — operator wants to dispatch someone or trigger an action\n"
-    "  acknowledge — operator confirms they have seen the alert\n"
-    "  query      — operator is asking a question about the event\n"
-    "  unknown    — the reply doesn't fit any of the above\n\n"
-    "For dispatch intent, set mqtt_command to "
-    '{"type": "dispatch", "source": "sms_reply"}.\n'
-    "For all other intents, mqtt_command should be null.\n"
-    "reply should be a short, helpful acknowledgement or answer; null if no reply is useful."
+    '"mqtt_command": null or {"type": "dispatch", "source": "sms_reply"}, '
+    '"reply": "<hub response under 160 chars>"}'
 )
 
 
@@ -236,8 +242,10 @@ class SecurityPolicy(Policy):
     def notify_for(self, verdict: Verdict, event: dict) -> Notification | None:
         if verdict.verified:
             self._last_verdict = verdict
+            reasoning = verdict.reasoning_text or ""
+            message = f"{verdict.alert}. {reasoning}".strip() if reasoning else verdict.alert
             return Notification(
-                message=verdict.alert,
+                message=message,
                 recipient=event.get("device_id", "unknown"),
             )
         return None
@@ -283,14 +291,19 @@ class SecurityPolicy(Policy):
         prompt = (
             f"Security event context: {event_context}\n\n"
             f"Operator reply (from {sender}): {body!r}\n\n"
-            "Interpret this reply and respond in the JSON format described."
+            "Interpret this reply and respond in the JSON format described. /no_think"
         )
 
-        result = self.llm.generate(prompt, system=_SMS_SYSTEM_PROMPT, max_new_tokens=200)
+        result = self.llm.generate(prompt, system=_SMS_SYSTEM_PROMPT, max_new_tokens=300)
         parsed = fallback.copy()
         if result.get("available") and result.get("text"):
             try:
                 text = result["text"].strip()
+                # Qwen3 wraps reasoning in <think>...</think> before the answer.
+                # Strip that block so the JSON search doesn't land inside it.
+                think_end = text.rfind("</think>")
+                if think_end != -1:
+                    text = text[think_end + len("</think>"):].strip()
                 start = text.find("{")
                 end = text.rfind("}")
                 if start != -1 and end != -1 and end > start:
@@ -305,6 +318,7 @@ class SecurityPolicy(Policy):
                  result.get("latency_s") or 0.0,
                  parsed["intent"], parsed["mqtt_command"],
                  (parsed["reply"] or "")[:60])
+        log.debug("LLM SMS raw output: %r", (result.get("text") or "")[:300])
 
         with self._llm_cache_lock:
             self._llm_cache = (sender, body, parsed)

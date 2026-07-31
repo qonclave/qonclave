@@ -34,8 +34,7 @@ from .policy import Notification
 
 log = logging.getLogger("qonclave.sms")
 
-# Trial-mode fixed values — not configurable by the caller yet.
-_FROM_NUMBER = "+17372324091"
+_FROM_NUMBER = "REDACTED"
 _TO_NUMBER = "REDACTED"
 _TEMPLATE_BODY = "sms_appointment_reminders"
 
@@ -181,17 +180,15 @@ class SMSBus:
                 to=_TO_NUMBER,
             )
             log.info(
-                "SMS sent (SID=%s). Trial mode — template sent to %s "
-                "(intended: %r to %s)",
-                msg.sid, _TO_NUMBER,
-                notification.message, notification.recipient,
+                "SMS sent (SID=%s): %r to %s",
+                msg.sid, notification.message, notification.recipient,
             )
-            self.record_sent(_TEMPLATE_BODY, ok=True)
+            self.record_sent(notification.message, ok=True)
             return True
         except Exception as e:
             log.warning(
                 "SMS send failed: %s. Intended message: %r to %s",
                 e, notification.message, notification.recipient,
             )
-            self.record_sent(_TEMPLATE_BODY, ok=False)
+            self.record_sent(notification.message, ok=False)
             return False
