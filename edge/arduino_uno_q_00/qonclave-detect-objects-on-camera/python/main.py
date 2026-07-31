@@ -27,8 +27,9 @@ load_dotenv()
 log = Logger("qonclave.edge")
 
 DEVICE_ID = os.environ.get("DEVICE_ID", "unoq-01")
+HUB_DISCOVERY_ENABLED = os.environ.get("HUB_DISCOVERY_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
 HUB_MDNS_NAME = os.environ.get("HUB_MDNS_NAME", "qonclave-hub.local").strip()
-HUB_IP = os.environ.get("HUB_IP", "192.168.50.207").strip()
+HUB_IP = os.environ.get("HUB_IP", "192.168.18.62").strip()
 HUB_PORT = int(os.environ.get("HUB_PORT", "8000"))
 
 # --- Hub->edge command channel (MQTT) -------------------------------------
@@ -42,11 +43,16 @@ TTL_SECONDS = 1800.0  # 30 minutes
 TTL_SECONDS = 1800.0  # 30 minutes
 
 _resolved_hub_host = None
-_discovery_method = "Searching..."
+_discovery_method = "Searching..." if HUB_DISCOVERY_ENABLED else "Static IP (Discovery Disabled)"
 _hub_online = False
 
 def get_hub_base_url() -> str:
   global _resolved_hub_host, _discovery_method
+  if not HUB_DISCOVERY_ENABLED:
+    _resolved_hub_host = HUB_IP
+    _discovery_method = "Static IP (Discovery Disabled)"
+    return f"http://{_resolved_hub_host}:{HUB_PORT}"
+
   if _resolved_hub_host:
     return f"http://{_resolved_hub_host}:{HUB_PORT}"
   if HUB_MDNS_NAME:
@@ -220,7 +226,7 @@ def _monitor_hub_health():
     except Exception:
       _hub_online = False
       _resolved_hub_host = None
-      _discovery_method = "Searching..."
+      _discovery_method = "Searching..." if HUB_DISCOVERY_ENABLED else "Static IP (Discovery Disabled)"
     _send_current_hub_status()
     time.sleep(5.0)
 
