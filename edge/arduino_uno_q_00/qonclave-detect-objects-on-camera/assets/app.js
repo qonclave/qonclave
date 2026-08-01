@@ -115,10 +115,26 @@ ui.on_message('hub_status', async status => {
     }
   }
 });
+ui.on_message('robot_move_status', async status => {
+  const statusElement = document.getElementById('robotStatus');
+  if (!statusElement || !status) return;
+
+  if (!status.ok) {
+    statusElement.textContent = status.error || 'Command failed';
+    statusElement.className = 'robot-status error';
+  } else if (status.direction === 'STOP') {
+    statusElement.textContent = 'Stopped';
+    statusElement.className = 'robot-status stopped';
+  } else {
+    statusElement.textContent = `${status.direction} for ${status.magnitude} second${status.magnitude === 1 ? '' : 's'}`;
+    statusElement.className = 'robot-status active';
+  }
+});
 
 // Start the application
 initVirtualMatrix();
 initializeConfidenceSlider();
+initializeRobotConsole();
 updateFeedback(null);
 renderDetections();
 ui.send_message('request_icons', {});
@@ -317,4 +333,27 @@ function resetConfidence() {
   confidenceSlider.value = '0.5';
   confidenceInput.value = '0.50';
   updateConfidenceDisplay();
+}
+
+function initializeRobotConsole() {
+  const magnitudeInput = document.getElementById('robotMagnitude');
+  const stopButton = document.getElementById('robotStop');
+
+  document.querySelectorAll('.robot-move').forEach(button => {
+    button.addEventListener('click', () => {
+      let magnitude = Number.parseInt(magnitudeInput.value, 10);
+      if (!Number.isFinite(magnitude)) magnitude = 1;
+      magnitude = Math.min(360, Math.max(1, magnitude));
+      magnitudeInput.value = magnitude;
+
+      ui.send_message('robot_move', {
+        direction: button.dataset.direction,
+        magnitude,
+      });
+    });
+  });
+
+  stopButton.addEventListener('click', () => {
+    ui.send_message('robot_move', { direction: 'STOP', magnitude: 1 });
+  });
 }

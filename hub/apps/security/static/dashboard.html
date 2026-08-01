@@ -57,6 +57,32 @@
   .enroll-msg.err { color:var(--err); }
   .known-list { margin-top:12px; display:flex; gap:8px; flex-wrap:wrap; }
   .known-list .pill { color:var(--muted); }
+  .robot-head { display:flex; align-items:end; justify-content:space-between;
+                gap:16px; flex-wrap:wrap; }
+  .robot-fields { display:flex; align-items:end; gap:10px; flex-wrap:wrap; }
+  .robot-fields label { margin:0; }
+  .robot-fields input { display:block; margin-top:5px; padding:7px 9px;
+        background:#0f1218; color:var(--fg); border:1px solid var(--border);
+        border-radius:8px; font-size:14px; }
+  #robotDevice { width:150px; }
+  #robotMagnitude { width:80px; }
+  .robot-dpad { display:grid; grid-template-columns:repeat(3,58px);
+        grid-template-areas:". forward ." "left stop right" ". backward .";
+        gap:8px; justify-content:center; margin:16px auto 10px; }
+  .robot-dpad button { height:48px; border:0; border-radius:9px; color:#fff;
+        font-weight:700; cursor:pointer; transition:transform .1s, opacity .15s; }
+  .robot-dpad button:active { transform:scale(.95); }
+  .robot-dpad button:disabled { opacity:.45; cursor:default; }
+  .robot-move { background:var(--accent); font-size:20px; }
+  .robot-stop { background:var(--err); font-size:11px; grid-area:stop; }
+  .robot-forward { grid-area:forward; }
+  .robot-left { grid-area:left; }
+  .robot-right { grid-area:right; }
+  .robot-backward { grid-area:backward; }
+  .robot-status { min-height:18px; color:var(--muted); font-size:13px;
+                  text-align:center; }
+  .robot-status.ok { color:var(--ok); }
+  .robot-status.err { color:var(--err); }
 </style>
 </head>
 <body>
@@ -112,6 +138,31 @@
     <div id="knownList" class="known-list"></div>
   </div>
 
+  <div class="card" style="margin-bottom:18px;">
+    <div class="robot-head">
+      <div>
+        <label>Robot control</label>
+        <div class="sub" style="margin:0;">Commands are sent to the edge over MQTT.</div>
+      </div>
+      <div class="robot-fields">
+        <label>Device ID
+          <input id="robotDevice" type="text" value="unoq-01" autocomplete="off" />
+        </label>
+        <label>Duration (sec)
+          <input id="robotMagnitude" type="number" min="1" max="360" step="1" value="1" />
+        </label>
+      </div>
+    </div>
+    <div class="robot-dpad" aria-label="Robot direction controls">
+      <button type="button" class="robot-move robot-forward" data-direction="FORWARD" aria-label="Move forward">▲</button>
+      <button type="button" class="robot-move robot-left" data-direction="LEFT" aria-label="Turn left">◀</button>
+      <button type="button" class="robot-stop" data-direction="STOP" aria-label="Stop robot">STOP</button>
+      <button type="button" class="robot-move robot-right" data-direction="RIGHT" aria-label="Turn right">▶</button>
+      <button type="button" class="robot-move robot-backward" data-direction="BACKWARD" aria-label="Move backward">▼</button>
+    </div>
+    <div id="robotStatus" class="robot-status" role="status" aria-live="polite">Ready</div>
+  </div>
+
   <div class="card">
     <label>Recent events</label>
     <table>
@@ -122,12 +173,42 @@
       <tbody id="rows"><tr><td colspan="7" style="color:var(--muted)">No events yet.</td></tr></tbody>
     </table>
   </div>
+
+  <div class="card" style="margin-top:18px;" id="llmCard">
+    <label>LLM response <span id="llmPill" class="pill" style="margin-left:8px;font-size:11px;"></span></label>
+    <div id="llmEmpty" style="color:var(--muted);font-size:13px;">No LLM analysis yet — send an SMS reply that isn't a keyword.</div>
+    <div id="llmContent" style="display:none;">
+      <div class="kv"><span>From</span><span id="llmFrom">—</span></div>
+      <div class="kv"><span>Message</span><span id="llmMessage" style="max-width:60%;text-align:right;word-break:break-word;">—</span></div>
+      <div class="kv"><span>Intent</span><span id="llmIntent">—</span></div>
+      <div class="kv"><span>MQTT command</span><span id="llmCommand">—</span></div>
+      <div class="kv"><span>Latency</span><span id="llmLatency">—</span></div>
+      <div style="margin-top:12px;">
+        <label>Reply sent to operator</label>
+        <div class="reason" id="llmReply">—</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:18px;">
+    <label>SMS activity</label>
+    <table id="smsTable">
+      <thead>
+        <tr><th>Time</th><th>Dir</th><th>Content</th><th>Status</th></tr>
+      </thead>
+      <tbody id="smsRows"><tr><td colspan="4" style="color:var(--muted)">No SMS activity yet.</td></tr></tbody>
+    </table>
+    <div id="smsSuppressed" style="display:none;margin-top:10px;">
+      <span class="pill warn">SMS suppressed — STOP was received. Restarts server to resume.</span>
+    </div>
+  </div>
 </div>
 
 <script>
 const $ = (id) => document.getElementById(id);
 const fmtConf = (c) => (c == null ? "—" : (typeof c === "number" ? c.toFixed(2) : c));
 const shortTime = (iso) => { try { return new Date(iso).toLocaleTimeString(); } catch { return iso || "—"; } };
+let latestDeviceId = null;
 
 async function refresh() {
   try {
@@ -146,6 +227,10 @@ async function refresh() {
 
     const latest = (j.events && j.events[0]) || null;
     if (latest) {
+      latestDeviceId = latest.device_id || latestDeviceId;
+      if (latestDeviceId && document.activeElement !== $("robotDevice")) {
+        $("robotDevice").value = latestDeviceId;
+      }
       $("alertBig").textContent = latest.alert || "—";
       const v = latest.hub_verified;
       $("hubVerified").innerHTML = v
@@ -237,11 +322,121 @@ async function enroll(ev) {
   }
 }
 
+async function sendRobotCommand(direction) {
+  const status = $("robotStatus");
+  const deviceId = $("robotDevice").value.trim();
+  let magnitude = Number.parseInt($("robotMagnitude").value, 10);
+  if (!Number.isFinite(magnitude)) magnitude = 1;
+  magnitude = Math.min(360, Math.max(1, magnitude));
+  $("robotMagnitude").value = magnitude;
+
+  status.className = "robot-status";
+  status.textContent = `Sending ${direction}…`;
+  try {
+    const r = await fetch("/user/robot-command", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({device_id: deviceId, direction, magnitude}),
+    });
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.error || "Command failed");
+    status.className = "robot-status ok";
+    status.textContent = direction === "STOP"
+      ? `Stop sent to ${j.device_id}`
+      : `${direction} for ${magnitude} second${magnitude === 1 ? "" : "s"} sent to ${j.device_id}`;
+  } catch (e) {
+    status.className = "robot-status err";
+    status.textContent = e.message || "Command failed";
+  }
+}
+
+document.querySelectorAll(".robot-dpad button").forEach(button => {
+  button.addEventListener("click", () => sendRobotCommand(button.dataset.direction));
+});
+
 $("enrollForm").addEventListener("submit", enroll);
 loadKnownFaces();
 
+async function refreshSMS() {
+  try {
+    const r = await fetch("/user/sms_activity");
+    const j = await r.json();
+
+    // suppressed banner
+    $("smsSuppressed").style.display = j.suppressed ? "block" : "none";
+
+    const tbody = $("smsRows");
+    if (!j.activity || !j.activity.length) {
+      tbody.innerHTML = '<tr><td colspan="4" style="color:var(--muted)">No SMS activity yet.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = j.activity.map(a => {
+      const dirHtml = a.direction === "out"
+        ? '<span class="pill" style="color:var(--accent);border-color:var(--accent)">&#8594; out</span>'
+        : '<span class="pill warn">&#8592; in</span>';
+      let statusHtml;
+      if (a.status === "sent")           statusHtml = '<span class="pill ok">sent ✓</span>';
+      else if (a.status === "failed")    statusHtml = '<span class="pill err">failed ✗</span>';
+      else if (a.status === "mqtt_published") statusHtml = '<span class="pill" style="color:var(--accent);border-color:var(--accent)">mqtt ✓</span>';
+      else if (a.status === "suppressed") statusHtml = '<span class="pill warn">suppressed</span>';
+      else                               statusHtml = `<span class="pill" style="color:var(--muted)">${a.status}</span>`;
+      return `<tr>
+        <td>${shortTime(a.time)}</td>
+        <td>${dirHtml}</td>
+        <td>${a.content || "—"}</td>
+        <td>${statusHtml}</td>
+      </tr>`;
+    }).join("");
+  } catch (e) { /* leave prior state */ }
+}
+
+async function refreshLLM() {
+  try {
+    const r = await fetch("/user/llm_response");
+    const j = await r.json();
+
+    const pill = $("llmPill");
+    if (!j.available) {
+      pill.textContent = "unavailable";
+      pill.className = "pill warn";
+    } else {
+      pill.textContent = "Qwen3-4B";
+      pill.className = "pill ok";
+    }
+
+    const a = j.analysis;
+    if (!a) {
+      $("llmEmpty").style.display = "";
+      $("llmContent").style.display = "none";
+      return;
+    }
+    $("llmEmpty").style.display = "none";
+    $("llmContent").style.display = "";
+
+    $("llmFrom").textContent = a.from || "—";
+    $("llmMessage").textContent = a.message || "—";
+
+    const intentColors = { dispatch:"ok", acknowledge:"ok", query:"warn", unknown:"" };
+    const ic = intentColors[a.intent] || "";
+    $("llmIntent").innerHTML = a.intent
+      ? `<span class="pill ${ic}">${a.intent}</span>`
+      : "—";
+
+    $("llmCommand").textContent = a.mqtt_command
+      ? JSON.stringify(a.mqtt_command)
+      : "—";
+
+    $("llmLatency").textContent = a.latency_s != null ? a.latency_s + "s" : "—";
+    $("llmReply").textContent = a.reply || "(no reply generated)";
+  } catch (e) { /* leave prior state */ }
+}
+
 refresh();
 setInterval(refresh, 2000);
+refreshSMS();
+setInterval(refreshSMS, 2000);
+refreshLLM();
+setInterval(refreshLLM, 2000);
 </script>
 </body>
 </html>

@@ -10,10 +10,14 @@ HTTP routes) is generic framework code.
 
 from __future__ import annotations
 
+import json
 import logging
+import threading
 
 from framework.policy import Policy, Verdict, Notification
 from framework.vlm import VLMBackend
+from framework.llm import LLMBackend
+from framework.sms_bus import SMSBus
 from framework.face_id.identity import FaceIdentityBackend
 
 log = logging.getLogger("qonclave.hub")
@@ -30,15 +34,53 @@ VERIFY_PROMPT = (
 )
 VERIFY_MAX_NEW_TOKENS = 128
 
+# System prompt given to the LLM when reasoning about an operator SMS reply.
+_SMS_SYSTEM_PROMPT = (
+    "You are the response module of a physical security hub. "
+    "You have exactly two actions available: publish an MQTT command to the edge device, "
+    "or send an SMS reply to the operator. You cannot call emergency services, contact "
+    "anyone, or take any other action outside these two.\n\n"
+    "An operator has replied to a security alert SMS. Decide:\n"
+    "  1. What the operator intends (dispatch / acknowledge / query / unknown)\n"
+    "  2. Whether to publish an MQTT command to the edge device\n"
+    "  3. What to reply — always grounded in what you did or cannot do\n\n"
+    "Reply rules:\n"
+    "  - For dispatch: confirm the MQTT command was sent to the device\n"
+    "  - For acknowledge: confirm the alert is logged, no further action taken\n"
+    "  - For query: answer only from the event context provided; if the question "
+    "is outside your capabilities (e.g. 'call 911'), state clearly that you cannot "
+    "do that and suggest the operator act directly\n"
+    "  - Always write as the hub in first person ('Alert is logged.', "
+    "'Dispatch command sent to device.', 'I cannot call 911 — please contact "
+    "emergency services directly.')\n"
+    "  - Keep replies under 160 characters (one SMS)\n"
+    "  - Never repeat or paraphrase the operator's message\n\n"
+    "Respond with ONLY a JSON object in exactly this form:\n"
+    '{"intent": "<dispatch|acknowledge|query|unknown>", '
+    '"mqtt_command": null or {"type": "dispatch", "source": "sms_reply"}, '
+    '"reply": "<hub response under 160 chars>"}'
+)
+
 
 class SecurityPolicy(Policy):
     """Stationary person detection with hub-side VLM verification."""
 
     name = "security"
 
-    def __init__(self, vlm: VLMBackend, face_id: FaceIdentityBackend | None = None):
+    def __init__(self, vlm: VLMBackend, face_id: FaceIdentityBackend | None = None,
+                 sms: SMSBus | None = None, llm: LLMBackend | None = None):
         self.vlm = vlm
         self.face_id = face_id
+        self.sms = sms
+        self.llm = llm
+        # Last verified verdict stored so it can be injected into LLM context
+        # for richer SMS reply reasoning.
+        self._last_verdict: Verdict | None = None
+        # One LLM call per inbound message, shared between on_sms_reply() and
+        # reply_for_sms() which the framework calls back-to-back. Keyed by
+        # (sender, body); holds the most recent result only.
+        self._llm_cache: tuple[str, str, dict] | None = None  # (sender, body, result)
+        self._llm_cache_lock = threading.Lock()
 
     def evaluate(self, image_path: str, event: dict) -> Verdict:
         # Run face-ID up front — it does its own independent face detection,
@@ -199,8 +241,133 @@ class SecurityPolicy(Policy):
 
     def notify_for(self, verdict: Verdict, event: dict) -> Notification | None:
         if verdict.verified:
+            self._last_verdict = verdict
+            reasoning = verdict.reasoning_text or ""
+            message = f"{verdict.alert}. {reasoning}".strip() if reasoning else verdict.alert
             return Notification(
-                message=verdict.alert,
+                message=message,
                 recipient=event.get("device_id", "unknown"),
             )
         return None
+
+    # --- SMS reply handling -------------------------------------------------
+
+    def _llm_interpret_reply(self, sender: str, body: str) -> dict:
+        """
+        Run (or return cached) LLM interpretation of an inbound SMS reply.
+        Called from both on_sms_reply() and reply_for_sms() so the model runs
+        exactly once per inbound message regardless of call order.
+
+        Returns a parsed dict with keys: intent, mqtt_command, reply.
+        Falls back to {"intent": "unknown", "mqtt_command": None, "reply": None}
+        if the LLM is unavailable or returns unparseable output.
+        """
+        with self._llm_cache_lock:
+            if (self._llm_cache is not None
+                    and self._llm_cache[0] == sender
+                    and self._llm_cache[1] == body):
+                return self._llm_cache[2]
+
+        fallback = {"intent": "unknown", "mqtt_command": None, "reply": None}
+
+        if self.llm is None or not self.llm.is_available():
+            log.info("LLM unavailable for SMS reply interpretation — returning fallback")
+            with self._llm_cache_lock:
+                self._llm_cache = (sender, body, fallback)
+            return fallback
+
+        # Build a context-rich prompt using last known event state.
+        verdict = self._last_verdict
+        if verdict is not None:
+            event_context = (
+                f"Last security event: {verdict.alert}. "
+                f"Verified: {verdict.verified}. "
+                f"Confidence: {verdict.confidence}. "
+                f"Details: {verdict.reasoning_text or 'none'}."
+            )
+        else:
+            event_context = "No security event has been verified in this session yet."
+
+        prompt = (
+            f"Security event context: {event_context}\n\n"
+            f"Operator reply (from {sender}): {body!r}\n\n"
+            "Interpret this reply and respond in the JSON format described. /no_think"
+        )
+
+        result = self.llm.generate(prompt, system=_SMS_SYSTEM_PROMPT, max_new_tokens=300)
+        parsed = fallback.copy()
+        if result.get("available") and result.get("text"):
+            try:
+                text = result["text"].strip()
+                # Qwen3 wraps reasoning in <think>...</think> before the answer.
+                # Strip that block so the JSON search doesn't land inside it.
+                think_end = text.rfind("</think>")
+                if think_end != -1:
+                    text = text[think_end + len("</think>"):].strip()
+                start = text.find("{")
+                end = text.rfind("}")
+                if start != -1 and end != -1 and end > start:
+                    obj = json.loads(text[start:end + 1])
+                    parsed["intent"] = obj.get("intent", "unknown")
+                    parsed["mqtt_command"] = obj.get("mqtt_command")
+                    parsed["reply"] = obj.get("reply")
+            except (ValueError, TypeError) as e:
+                log.warning("LLM SMS reply parse failed: %s — raw: %r", e, result.get("text"))
+
+        log.info("LLM SMS interpretation (%.2fs): intent=%s command=%s reply=%r",
+                 result.get("latency_s") or 0.0,
+                 parsed["intent"], parsed["mqtt_command"],
+                 (parsed["reply"] or "")[:60])
+        log.debug("LLM SMS raw output: %r", (result.get("text") or "")[:300])
+
+        with self._llm_cache_lock:
+            self._llm_cache = (sender, body, parsed)
+        return parsed
+
+    def on_sms_reply(self, sender: str, body: str) -> dict | None:
+        keyword = body.strip().upper()
+
+        if keyword == "STOP":
+            if self.sms is not None:
+                self.sms.suppress()
+            log.info("SMS reply STOP from %s — outbound SMS suppressed for this session", sender)
+            return None
+
+        if keyword == "DISPATCH":
+            log.info("SMS reply DISPATCH from %s — publishing dispatch command", sender)
+            return {"type": "dispatch", "source": "sms_reply", "requested_by": sender}
+
+        # Unrecognised keyword — ask the LLM.
+        parsed = self._llm_interpret_reply(sender, body)
+        command = parsed.get("mqtt_command")
+        if command:
+            log.info("LLM SMS intent=%s -> MQTT command %s", parsed.get("intent"), command)
+            return command
+
+        log.info("LLM SMS intent=%s, no command for reply %r from %s",
+                 parsed.get("intent"), body, sender)
+        return None
+
+    def reply_for_sms(self, sender: str, body: str) -> str | None:
+        keyword = body.strip().upper()
+        # Keywords are handled entirely in on_sms_reply; no LLM reply needed.
+        if keyword in ("STOP", "DISPATCH"):
+            return None
+
+        parsed = self._llm_interpret_reply(sender, body)
+        reply = parsed.get("reply")
+        return reply if reply else None
+
+    def last_sms_analysis(self) -> dict | None:
+        with self._llm_cache_lock:
+            if self._llm_cache is None:
+                return None
+            sender, body, result = self._llm_cache
+        return {
+            "from": sender,
+            "message": body,
+            "intent": result.get("intent"),
+            "reply": result.get("reply"),
+            "mqtt_command": result.get("mqtt_command"),
+            "latency_s": result.get("latency_s"),
+        }

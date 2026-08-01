@@ -79,7 +79,7 @@ def main():
     pub.loop_start()
     time.sleep(0.3)
     topic = command_topic(DEVICE_ID)
-    payload = {"command": "forward", "speed": 200}
+    payload = {"type": "robot_move", "direction": "FORWARD", "magnitude": 1}
     info = pub.publish(topic, json.dumps(payload), qos=1)
     info.wait_for_publish(timeout=3)
     print(f"[test] hub published to {topic}: {payload}")

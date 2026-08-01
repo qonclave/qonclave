@@ -24,6 +24,8 @@ Environment:
 
 from __future__ import annotations
 
+import collections
+import datetime as _dt
 import logging
 import os
 import threading
@@ -32,8 +34,7 @@ from .policy import Notification
 
 log = logging.getLogger("qonclave.sms")
 
-# Trial-mode fixed values — not configurable by the caller yet.
-_FROM_NUMBER = "+17372324091"
+_FROM_NUMBER = "REDACTED"
 _TO_NUMBER = "REDACTED"
 _TEMPLATE_BODY = "sms_appointment_reminders"
 
@@ -48,7 +49,9 @@ class SMSBus:
         self._client = None
         self._load_error: str | None = None
         self._load_attempted = False
+        self._suppressed = False
         self._lock = threading.Lock()
+        self._activity: collections.deque = collections.deque(maxlen=50)
 
     # --- capability probe ---------------------------------------------------
 
@@ -65,6 +68,7 @@ class SMSBus:
         return {
             "available": self._client is not None,
             "enabled": self.enabled,
+            "suppressed": self._suppressed,
             "load_attempted": self._load_attempted,
             "load_error": self._load_error,
         }
@@ -109,6 +113,41 @@ class SMSBus:
                 self._client = None
                 return False
 
+    # --- suppress (STOP reply) -----------------------------------------------
+
+    def suppress(self) -> None:
+        """
+        Mute all further outbound SMS for this server session. Called by a
+        Policy when the recipient replies STOP. Resets on server restart.
+        """
+        self._suppressed = True
+        log.info("SMS suppressed for this session (STOP received)")
+
+    # --- activity tracking ---------------------------------------------------
+
+    def record_sent(self, content: str, ok: bool) -> None:
+        """Record an outbound SMS attempt (called internally by send())."""
+        self._activity.appendleft({
+            "direction": "out",
+            "content": content,
+            "status": "sent" if ok else "failed",
+            "time": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        })
+
+    def record_reply(self, sender: str, body: str, action: str) -> None:
+        """Record an inbound SMS reply (called by the /sms webhook handler)."""
+        self._activity.appendleft({
+            "direction": "in",
+            "content": body,
+            "status": action,
+            "from": sender,
+            "time": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        })
+
+    def recent_activity(self, limit: int = 50) -> list:
+        """Recent SMS activity (outbound + inbound), newest first."""
+        return list(self._activity)[:limit]
+
     # --- send ---------------------------------------------------------------
 
     def send(self, notification: Notification) -> bool:
@@ -120,6 +159,13 @@ class SMSBus:
         Returns True if the message was accepted by Twilio; False on any
         failure (logged). Never raises for the caller.
         """
+        if self._suppressed:
+            log.warning(
+                "SMS suppressed (STOP was received). Skipping message: %r to %s",
+                notification.message, notification.recipient,
+            )
+            return False
+
         if not self.is_available():
             log.warning(
                 "Skipping SMS (unavailable: %s). Intended message: %r to %s",
@@ -134,15 +180,15 @@ class SMSBus:
                 to=_TO_NUMBER,
             )
             log.info(
-                "SMS sent (SID=%s). Trial mode — template sent to %s "
-                "(intended: %r to %s)",
-                msg.sid, _TO_NUMBER,
-                notification.message, notification.recipient,
+                "SMS sent (SID=%s): %r to %s",
+                msg.sid, notification.message, notification.recipient,
             )
+            self.record_sent(notification.message, ok=True)
             return True
         except Exception as e:
             log.warning(
                 "SMS send failed: %s. Intended message: %r to %s",
                 e, notification.message, notification.recipient,
             )
+            self.record_sent(notification.message, ok=False)
             return False

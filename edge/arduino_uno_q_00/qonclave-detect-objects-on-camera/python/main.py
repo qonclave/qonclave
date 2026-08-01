@@ -30,8 +30,9 @@ load_dotenv()
 log = Logger("qonclave.edge")
 
 DEVICE_ID = os.environ.get("DEVICE_ID", "unoq-01")
+HUB_DISCOVERY_ENABLED = os.environ.get("HUB_DISCOVERY_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
 HUB_MDNS_NAME = os.environ.get("HUB_MDNS_NAME", "qonclave-hub.local").strip()
-HUB_IP = os.environ.get("HUB_IP", "192.168.50.207").strip()
+HUB_IP = os.environ.get("HUB_IP", "192.168.18.62").strip()
 HUB_PORT = int(os.environ.get("HUB_PORT", "8000"))
 
 # --- Hub->edge command channel (MQTT) -------------------------------------
@@ -45,11 +46,16 @@ TTL_SECONDS = 1800.0  # 30 minutes
 TTL_SECONDS = 1800.0  # 30 minutes
 
 _resolved_hub_host = None
-_discovery_method = "Searching..."
+_discovery_method = "Searching..." if HUB_DISCOVERY_ENABLED else "Static IP (Discovery Disabled)"
 _hub_online = False
 
 def get_hub_base_url() -> str:
   global _resolved_hub_host, _discovery_method
+  if not HUB_DISCOVERY_ENABLED:
+    _resolved_hub_host = HUB_IP
+    _discovery_method = "Static IP (Discovery Disabled)"
+    return f"http://{_resolved_hub_host}:{HUB_PORT}"
+
   if _resolved_hub_host:
     return f"http://{_resolved_hub_host}:{HUB_PORT}"
   if HUB_MDNS_NAME:
@@ -238,7 +244,7 @@ def _monitor_hub_health():
     except Exception:
       _hub_online = False
       _resolved_hub_host = None
-      _discovery_method = "Searching..."
+      _discovery_method = "Searching..." if HUB_DISCOVERY_ENABLED else "Static IP (Discovery Disabled)"
     _send_current_hub_status()
     time.sleep(5.0)
 
@@ -246,6 +252,44 @@ threading.Thread(target=_monitor_hub_health, name="HubHealthMonitor", daemon=Tru
 detection_stream = VideoObjectDetection(camera, confidence=0.5, debounce_sec=0.0, camera_preview=True)
 
 ui.on_message("override_th", lambda sid, threshold: detection_stream.override_threshold(threshold))
+
+ROBOT_DIRECTIONS = {"LEFT", "RIGHT", "FORWARD", "BACKWARD"}
+
+def _execute_robot_command(message):
+  if not isinstance(message, dict):
+    raise ValueError("Robot command must be an object")
+
+  direction = str(message.get("direction", "")).strip().upper()
+  if direction == "STOP":
+    Bridge.call("stop_robot")
+    return {"ok": True, "direction": "STOP"}
+
+  if direction not in ROBOT_DIRECTIONS:
+    raise ValueError(f"Unsupported direction: {direction or '(empty)'}")
+
+  magnitude = int(message.get("magnitude", 1))
+  if not 1 <= magnitude <= 360:
+    raise ValueError("Magnitude must be between 1 and 360")
+
+  Bridge.call("move_robot", direction, magnitude)
+  return {
+    "ok": True,
+    "direction": direction,
+    "magnitude": magnitude,
+  }
+
+def handle_robot_move(sid, message):
+  try:
+    status = _execute_robot_command(message)
+    ui.send_message("robot_move_status", message=status)
+  except (TypeError, ValueError) as e:
+    log.warning(f"Rejected robot command from UI client {sid}: {e}")
+    ui.send_message("robot_move_status", message={"ok": False, "error": str(e)})
+  except Exception as e:
+    log.error(f"Robot command failed: {e}")
+    ui.send_message("robot_move_status", message={"ok": False, "error": "MCU command failed"})
+
+ui.on_message("robot_move", handle_robot_move)
 
 # 1. Listen for Potentiometer Knob adjustments from MCU (sketch.ino)
 def handle_knob_change(percentage_str):
@@ -406,11 +450,21 @@ def send_detections_to_ui(detections: dict, frame: bytes | None = None):
 detection_stream.on_detect_all(send_detections_to_ui)
 
 # --- Hub->edge command channel: connect to the MQTT broker and listen for
-# commands the hub pushes to this device. For now we just log received
-# commands; acting on them (motor control, capture-now, ...) is layered on
-# later.
+# commands the hub pushes to this device.
 def _handle_hub_command(command: dict):
   log.info(f"Received hub command: {command}")
+  if not isinstance(command, dict) or command.get("type") != "robot_move":
+    log.warning(f"Ignoring unsupported hub command: {command}")
+    return
+
+  try:
+    status = _execute_robot_command(command)
+    log.info(f"Executed hub robot command: {status}")
+    ui.send_message("robot_move_status", message=status)
+  except (TypeError, ValueError) as e:
+    log.warning(f"Rejected hub robot command: {e}")
+  except Exception as e:
+    log.error(f"Hub robot command failed: {e}")
 
 mqtt_client = EdgeMQTTClient(
   device_id=DEVICE_ID,

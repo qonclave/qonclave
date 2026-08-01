@@ -20,10 +20,13 @@ Endpoints:
                                /test/* pages)
     POST /edge/event          edge event JSON + frame -> policy-driven
                                verification response
+    POST /sms                 Twilio inbound-reply webhook: runs policy
+                               on_sms_reply(), optionally publishes MQTT command
 
     GET  /user/dashboard      live dashboard page (app-provided static/);
                                also the default landing page (/, /user/)
     GET  /user/events         recent events + results (JSON)
+    POST /user/robot-command  validate and publish a robot command over MQTT
     GET  /user/latest.jpg     most recent frame
     GET  /user/frames/<name>  a specific stored frame
     POST /user/reason         raw VLM tester (free-form reasoning; no browser
@@ -50,6 +53,7 @@ import uuid
 from flask import Flask, jsonify, redirect, request, send_from_directory
 
 from . import discovery, events, icons, transport
+from .llm import LLMBackend
 from .mqtt_bus import MQTTBus
 from .policy import Policy
 from .sms_bus import SMSBus
@@ -61,7 +65,7 @@ MAX_UPLOAD_MB = int(os.environ.get("QONCLAVE_MAX_UPLOAD_MB", "16"))
 
 
 def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
-               static_dir: str, face_id=None) -> Flask:
+               static_dir: str, face_id=None, llm: LLMBackend | None = None) -> Flask:
     """
     Build the Qonclave hub Flask app for one Policy.
 
@@ -74,6 +78,8 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
                 actual identification happens inside the Policy, not here
     sms         shared SMSBus; sends an SMS when notify_for() returns a
                 Notification (trial mode: fixed template + fixed number)
+    llm         optional LLMBackend (text-only Qwen3-4B); used by the Policy
+                for on_sms_reply() reasoning; exposed via /health
     static_dir  directory holding the app's dashboard.html, test_*.html
     """
     app = Flask(__name__, static_folder=None)
@@ -95,6 +101,7 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
             "app": policy.name,
             "time": transport.now_iso(),
             "vlm": vlm.status(),
+            "llm": llm.status() if llm else {"available": False},
             "mqtt": mqtt.status(),
             "face_id": face_id.status() if face_id else {"available": False},
             "sms": sms.status(),
@@ -239,6 +246,43 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
             "permanent": entry.get("permanent", False)
         })
 
+    # --- /sms: Twilio inbound-reply webhook ---------------------------------
+    @app.post("/sms")
+    def sms_reply():
+        """
+        Twilio webhook: called when the recipient replies to an outbound SMS.
+        Twilio POSTs form fields; we read From + Body, hand them to the
+        Policy, and publish any returned MQTT command to the last known device.
+        Signature validation is skipped in trial mode.
+        """
+        sender = request.form.get("From", "").strip()
+        body = request.form.get("Body", "").strip()
+        log.info("SMS reply from %s: %r", sender, body)
+
+        command = policy.on_sms_reply(sender, body)
+        if command is not None:
+            device_id = events.latest_device_id()
+            if device_id:
+                mqtt.publish_command(device_id, command)
+                log.info("SMS reply MQTT command %s -> device %s", command, device_id)
+                action = "mqtt_published"
+            else:
+                log.warning("SMS reply returned command %s but no device_id known yet", command)
+                action = "ignored"
+        elif body.strip().upper() == "STOP":
+            action = "suppressed"
+        else:
+            action = "ignored"
+
+        reply_text = policy.reply_for_sms(sender, body)
+        if reply_text:
+            from .policy import Notification
+            sent = sms.send(Notification(message=reply_text, recipient=sender))
+            log.info("SMS reply_for_sms -> sent=%s: %r", sent, reply_text[:80])
+
+        sms.record_reply(sender, body, action)
+        return ("", 200)
+
     # --- /user/* dashboard data + frames ------------------------------------
     @app.get("/user/events")
     def user_events():
@@ -252,6 +296,43 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
             "events": items,
         })
 
+    @app.post("/user/robot-command")
+    def user_robot_command():
+        """Publish a validated dashboard robot command to one edge device."""
+        body = request.get_json(silent=True) or {}
+        device_id = str(body.get("device_id") or events.latest_device_id() or "").strip()
+        direction = str(body.get("direction") or "").strip().upper()
+
+        if not device_id:
+            return jsonify({"ok": False, "error": "no edge device selected"}), 400
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]+", device_id):
+            return jsonify({"ok": False, "error": "invalid device_id"}), 400
+        if direction not in {"LEFT", "RIGHT", "FORWARD", "BACKWARD", "STOP"}:
+            return jsonify({"ok": False, "error": "invalid direction"}), 400
+
+        try:
+            magnitude = int(body.get("magnitude", 1))
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "magnitude must be an integer"}), 400
+        if not 1 <= magnitude <= 360:
+            return jsonify({"ok": False, "error": "magnitude must be between 1 and 360"}), 400
+
+        command = {
+            "type": "robot_move",
+            "direction": direction,
+            "magnitude": magnitude,
+        }
+        ok = mqtt.publish_command(device_id, command)
+        if not ok:
+            return jsonify({
+                "ok": False,
+                "error": "MQTT broker unavailable or publish failed",
+                "device_id": device_id,
+            }), 503
+
+        log.info("Dashboard robot command %s -> device %s", command, device_id)
+        return jsonify({"ok": True, "device_id": device_id, "command": command})
+
     @app.get("/user/frames/<path:name>")
     def user_frame(name):
         return send_from_directory(transport.UPLOAD_DIR, name)
@@ -262,6 +343,25 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
         if not name:
             return jsonify({"error": "no frame received yet"}), 404
         return send_from_directory(transport.UPLOAD_DIR, name)
+
+    @app.get("/user/sms_activity")
+    def user_sms_activity():
+        """Recent SMS activity (outbound + inbound), newest first."""
+        limit = request.args.get("limit", type=int) or 50
+        return jsonify({
+            "count": len(sms.recent_activity(limit)),
+            "suppressed": sms._suppressed,
+            "activity": sms.recent_activity(limit),
+        })
+
+    @app.get("/user/llm_response")
+    def user_llm_response():
+        """Latest LLM analysis of an inbound SMS reply, for the dashboard."""
+        analysis = policy.last_sms_analysis()
+        return jsonify({
+            "available": (llm.status().get("available") if llm else False),
+            "analysis": analysis,
+        })
 
     # --- /user/reason: raw VLM tester ---------------------------------------
     @app.post("/user/reason")

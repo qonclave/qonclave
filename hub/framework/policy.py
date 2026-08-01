@@ -69,3 +69,40 @@ class Policy(ABC):
         and will be used in a future release.
         """
         return None
+
+    def on_sms_reply(self, sender: str, body: str) -> dict | None:
+        """
+        Called when Twilio delivers an inbound SMS reply to POST /sms.
+        Return an MQTT command dict to publish to the last known device, or
+        None to take no action. The framework handles the MQTT publish;
+        the Policy decides what the reply means.
+
+        sender  the phone number that replied (e.g. "+15551234567")
+        body    the reply text as received (leading/trailing whitespace stripped)
+        """
+        return None
+
+    def reply_for_sms(self, sender: str, body: str) -> str | None:
+        """
+        Optional outbound reply to send back to the operator after processing
+        their inbound SMS. Called by the framework immediately after
+        on_sms_reply(); the framework sends the returned text as an SMS via
+        SMSBus.send(). Return None to send no reply.
+
+        sender  the phone number that replied (e.g. "+15551234567")
+        body    the reply text as received (same value passed to on_sms_reply)
+        """
+        return None
+
+    def last_sms_analysis(self) -> dict | None:
+        """
+        Optional: return the most recent LLM analysis of an inbound SMS reply,
+        for display on the operator dashboard. Apps that use an LLM to
+        interpret SMS replies should override this to expose the latest result.
+        The framework surfaces this at GET /user/llm_response.
+
+        Expected return shape (all fields optional):
+            {"intent": str, "reply": str|None, "mqtt_command": dict|None,
+             "latency_s": float|None, "from": str|None}
+        """
+        return None

@@ -180,6 +180,7 @@ static test pages vary per use case.
 | POST | `/test/mqtt/publish` | Generic MQTT publish proxy: `{"topic": "...", "payload": {...}}` |
 | GET | `/test/mqtt/messages` | Recently received MQTT messages, optionally filtered by `?topic=` |
 | POST | `/edge/event` | Edge event JSON + frame in, policy-driven verification response out |
+| POST | `/sms` | Twilio inbound-reply webhook: runs `policy.on_sms_reply()`, optionally publishes MQTT command |
 | GET | `/user/dashboard` | Live event / verification dashboard page (also the default `/user/` landing) |
 | GET | `/user/events` | Recent events + results (JSON) |
 | GET | `/user/latest.jpg` | Most recent frame |
@@ -386,6 +387,58 @@ subscribed (not mid-request) still receives it.
   socket directly). See "Operator app vs. test consoles" above.
 
 ## SMS notifications (hub->operator push channel)
+
+### Exposing the hub to Twilio with ngrok
+
+Twilio needs a **public HTTPS URL** to deliver inbound SMS replies to `POST
+/sms`. The repo ships `hub/setup_ngrok.ps1` which installs ngrok, starts the
+hub server, opens the tunnel, and prints the public URL — all in one command:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\hub\setup_ngrok.ps1
+# pass your authtoken the first time (prompted if omitted):
+powershell -ExecutionPolicy Bypass -File .\hub\setup_ngrok.ps1 -AuthToken <token>
+```
+
+At the end it prints something like:
+```
+===================================================================
+ Hub is reachable at:  https://a1b2-203-0-113-42.ngrok-free.app
+ Dashboard:            https://a1b2-203-0-113-42.ngrok-free.app/user/dashboard
+===================================================================
+```
+
+**After each new tunnel session**, copy the `https://...` URL and update the
+Twilio webhook:
+
+1. Open the Twilio console → **Phone Numbers → Manage → Active Numbers** →
+   click your Twilio number.
+2. Under **Messaging**, set **"A message comes in"** → **Webhook** to:
+   ```
+   https://a1b2-203-0-113-42.ngrok-free.app/sms
+   ```
+3. Method: **HTTP POST**. Save.
+
+> **Note:** The free ngrok tier generates a new URL every time the tunnel
+> restarts — update the Twilio webhook URL each session. The tunnel is also
+> reused automatically if you re-run the script while it is still running.
+> A paid ngrok plan lets you reserve a stable domain with `--domain`.
+
+Once configured, replies from the recipient's phone arrive at `POST /sms` and
+are processed by `SecurityPolicy.on_sms_reply()`.
+
+**Supported reply keywords** (case-insensitive):
+
+| Reply | Effect |
+|-------|--------|
+| `STOP` | Suppresses all further outbound SMS for this server session (resets on restart) |
+| `DISPATCH` | Publishes `{"type": "dispatch", "source": "sms_reply"}` to the last known device via MQTT |
+| anything else | Logged and ignored |
+
+`/health` shows whether SMS is currently suppressed:
+```json
+{"sms": {"available": true, "enabled": true, "suppressed": false, ...}}
+```
 
 `framework/sms_bus.py`'s `SMSBus` gives a Policy a way to push an SMS to an
 operator when a significant event is verified. The trigger and message content
