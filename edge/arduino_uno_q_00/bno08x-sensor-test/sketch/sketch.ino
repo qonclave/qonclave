@@ -9,6 +9,7 @@ constexpr uint8_t BNO08X_INT_PIN = 9;
 constexpr uint8_t BNO08X_RESET_PIN = 8;
 constexpr uint32_t BNO08X_SPI_SPEED_HZ = 1000000;
 constexpr uint32_t REPORT_INTERVAL_US = 100000;  // 10 Hz per report
+constexpr unsigned long CONSOLE_INTERVAL_MS = 1000;
 
 BNO08x bno08x;
 sh2_SensorValue_t sensorValue;
@@ -17,6 +18,7 @@ bool resetRecoveryPending = false;
 bool awaitingRecoveryData = false;
 unsigned long lastRetryAt = 0;
 unsigned long resetRecoveryAt = 0;
+unsigned long lastConsolePrintAt[256] = {};
 constexpr unsigned long RESET_SETTLE_MS = 1500;
 constexpr unsigned long RECOVERY_DATA_TIMEOUT_MS = 2000;
 
@@ -184,6 +186,12 @@ void loop() {
   if (!eventReady) {
     sensorValue = bno08x.sensorValue;
   }
+
+  const unsigned long now = millis();
+  if (now - lastConsolePrintAt[sensorValue.sensorId] < CONSOLE_INTERVAL_MS) {
+    return;
+  }
+  lastConsolePrintAt[sensorValue.sensorId] = now;
 
   switch (sensorValue.sensorId) {
     case SH2_ACCELEROMETER:
