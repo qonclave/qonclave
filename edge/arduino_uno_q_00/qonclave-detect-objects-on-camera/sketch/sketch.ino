@@ -8,21 +8,20 @@
 
 #include "Arduino_LED_Matrix.h"
 #include "Arduino_RouterBridge.h"
+#include "src/BNO08xOrientation.h"
+#include "src/MotorController.h"
 
 ArduinoLEDMatrix matrix;
+BNO08xOrientation::Config orientationConfig = {10, 9, 8, 1000000, 20000};
+BNO08xOrientation orientation(orientationConfig);
+MotorController::Config motorConfig = {D2, D3, D4, D5, 12};
+MotorController motors(motorConfig, orientation);
 const int KNOB_PIN = A0;
-
-// Dual H-bridge motor inputs.
-const uint8_t L1_PIN = D2;
-const uint8_t L2_PIN = D3;
-const uint8_t R1_PIN = D4;
-const uint8_t R2_PIN = D5;
 
 int smoothedKnob = 500;
 int lastSentPercentage = -1;
 String currentObject = "clear";
-bool movementActive = false;
-unsigned long movementStopAt = 0;
+unsigned long lastKnobReadAt = 0;
 
 // 12x8 Bitmap Icons (1 = LED ON, 0 = LED OFF; 13th column is hardware alignment padding)
 
@@ -56,54 +55,22 @@ void set_custom_led_array_handler(String bitstring) {
   matrix.renderBitmap(frame, 8, 13);
 }
 
-void set_motor_pins(bool l1, bool l2, bool r1, bool r2) {
-  digitalWrite(L1_PIN, l1 ? HIGH : LOW);
-  digitalWrite(L2_PIN, l2 ? HIGH : LOW);
-  digitalWrite(R1_PIN, r1 ? HIGH : LOW);
-  digitalWrite(R2_PIN, r2 ? HIGH : LOW);
-}
-
 void stop_robot() {
-  set_motor_pins(false, false, false, false);
-  movementActive = false;
+  motors.stop();
 }
 
-// Starts a movement without blocking Bridge processing. Magnitude is currently
-// interpreted as a duration in seconds and is constrained to 1..360.
-void move_robot(String direction, int magnitude) {
-  direction.trim();
-  direction.toUpperCase();
-  magnitude = constrain(magnitude, 1, 360);
-
-  stop_robot();
-
-  if (direction == "FORWARD") {
-    set_motor_pins(true, false, true, false);
-  } else if (direction == "BACKWARD") {
-    set_motor_pins(false, true, false, true);
-  } else if (direction == "RIGHT") {
-    set_motor_pins(false, true, true, false);
-  } else if (direction == "LEFT") {
-    set_motor_pins(true, false, false, true);
-  } else {
-    return;
-  }
-
-  movementStopAt = millis() + (static_cast<unsigned long>(magnitude) * 1000UL);
-  movementActive = true;
+bool move_robot(String direction, int magnitude) {
+  return motors.move(direction, magnitude);
 }
 
 void setup() {
-  pinMode(L1_PIN, OUTPUT);
-  pinMode(L2_PIN, OUTPUT);
-  pinMode(R1_PIN, OUTPUT);
-  pinMode(R2_PIN, OUTPUT);
-  stop_robot();
+  motors.begin();
 
   matrix.begin();
   matrix.renderBitmap(icon_clear, 8, 13);
 
   Bridge.begin();
+  orientation.begin();
   Bridge.provide("set_led_state", set_led_state_handler);
   Bridge.provide("set_custom_led_array", set_custom_led_array_handler);
   Bridge.provide("move_robot", move_robot);
@@ -114,21 +81,21 @@ void setup() {
 
 void loop() {
   Bridge.update();
+  motors.update();
 
-  if (movementActive && static_cast<long>(millis() - movementStopAt) >= 0) {
-    stop_robot();
+  if (millis() - lastKnobReadAt >= 15) {
+    lastKnobReadAt = millis();
+    int rawKnob = analogRead(KNOB_PIN);
+    smoothedKnob = (0.1 * rawKnob) + (0.9 * smoothedKnob);
+
+    int percentage = map(smoothedKnob, 0, 1023, 0, 100);
+    percentage = constrain(percentage, 0, 100);
+
+    if (abs(percentage - lastSentPercentage) >= 2) {
+      lastSentPercentage = percentage;
+      Bridge.call("on_knob_change", String(percentage));
+    }
   }
 
-  int rawKnob = analogRead(KNOB_PIN);
-  smoothedKnob = (0.1 * rawKnob) + (0.9 * smoothedKnob);
-  
-  int percentage = map(smoothedKnob, 0, 1023, 0, 100);
-  percentage = constrain(percentage, 0, 100);
-
-  if (abs(percentage - lastSentPercentage) >= 2) {
-    lastSentPercentage = percentage;
-    Bridge.call("on_knob_change", String(percentage));
-  }
-
-  delay(15);
+  delay(1);
 }

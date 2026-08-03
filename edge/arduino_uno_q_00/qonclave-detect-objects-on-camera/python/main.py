@@ -253,11 +253,14 @@ def _execute_robot_command(message):
   if not 1 <= magnitude <= 360:
     raise ValueError("Magnitude must be between 1 and 360")
 
-  Bridge.call("move_robot", direction, magnitude)
+  started = Bridge.call("move_robot", direction, magnitude)
+  if started is False:
+    raise RuntimeError("Orientation sensor is not ready")
   return {
     "ok": True,
     "direction": direction,
     "magnitude": magnitude,
+    "unit": "degrees" if direction in {"LEFT", "RIGHT"} else "seconds",
   }
 
 def handle_robot_move(sid, message):
