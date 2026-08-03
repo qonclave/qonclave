@@ -126,7 +126,10 @@ ui.on_message('robot_move_status', async status => {
     statusElement.textContent = 'Stopped';
     statusElement.className = 'robot-status stopped';
   } else {
-    statusElement.textContent = `${status.direction} for ${status.magnitude} second${status.magnitude === 1 ? '' : 's'}`;
+    const isTurn = status.unit === 'degrees' || status.direction === 'LEFT' || status.direction === 'RIGHT';
+    statusElement.textContent = isTurn
+      ? `${status.direction} ${status.magnitude}°`
+      : `${status.direction} for ${status.magnitude} second${status.magnitude === 1 ? '' : 's'}`;
     statusElement.className = 'robot-status active';
   }
 });

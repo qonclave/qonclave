@@ -1,0 +1,4 @@
+name: BNO08x Sensor Test
+icon: 🧭
+description: Prints BNO080/BNO085/BNO086 sensor reports over the MCU serial monitor.
+
