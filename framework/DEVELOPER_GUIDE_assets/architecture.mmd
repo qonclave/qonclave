@@ -1,0 +1,40 @@
+flowchart LR
+    %% Clients & Edge
+    CAM["Edge Camera\n(Arduino UNO Q)"]
+    BROWSER["Operator Browser\n(Dashboard)"]
+
+    %% Hub
+    subgraph HubProcess["Hub (Snapdragon / x86)"]
+        direction TB
+        
+        subgraph Framework["Qonclave Framework"]
+            FSERVER["HTTP Server & API"]
+            FVLM["VLM & Face-ID Engine"]
+            FEVENTS["Event & File Store"]
+            FMQTT["Messaging (MQTT/SMS)"]
+        end
+
+        subgraph App["App: Security"]
+            APOLICY["Policy Rules\n(Prompt, Schema)"]
+        end
+
+        FSERVER <--> APOLICY
+        FSERVER --> FVLM
+        FSERVER --> FEVENTS
+        FSERVER --> FMQTT
+    end
+
+    %% Externals
+    subgraph External["External / Hardware"]
+        GENIEX["Hexagon NPU\n(GenieX)"]
+        MOSQ["MQTT Broker"]
+        TWILIO["SMS Gateway"]
+    end
+
+    CAM -- "POST /edge/event" --> FSERVER
+    BROWSER -- "GET /user/dashboard" --> FSERVER
+    
+    FVLM -. "Hardware Acceleration" .-> GENIEX
+    FMQTT -. "Publishes commands" .-> MOSQ
+    FMQTT -. "Sends Alerts" .-> TWILIO
+    MOSQ -. "Subscribes" .-> CAM
