@@ -1,0 +1,37 @@
+sequenceDiagram
+    participant Edge as Edge device
+    participant Server as framework/server.py
+    participant Transport as framework/transport.py
+    participant Policy as apps/security/policy.py
+    participant VLM as framework/vlm.py
+    participant Model as GenieX / Qwen2.5-VL
+    participant MQTT as framework/mqtt_bus.py
+
+    Edge->>Server: POST /edge/event (frame + event JSON)
+    Server->>Transport: parse_edge_event()
+    Server->>Transport: save_incoming_image()
+    Transport-->>Server: saved frame path
+
+    Server->>Policy: evaluate(path, event)
+    Policy->>VLM: structured_query(path, VERIFY_PROMPT, json_mode=True)
+    alt VLM available (ARM64 + GenieX loaded)
+        VLM->>Model: reset(), then generate() with json_mode=True, temperature=0.1
+        Model-->>VLM: JSON text - person_present, confidence, description
+        VLM-->>Policy: parsed dict
+        Policy-->>Server: Verdict(verified, confidence, alert, ...)
+    else VLM unavailable (non-ARM64 or geniex missing)
+        VLM-->>Policy: available=false
+        Policy-->>Server: Verdict(verified=false, alert="unverified...")
+    end
+
+    Server->>Policy: command_for(verdict, event)
+    opt command is not None
+        Server->>MQTT: publish_command(device_id, command)
+        Note over MQTT: publishes to the device's command topic (best-effort, no-op if no broker)
+    end
+    Server->>Server: build response envelope (hub_verified, hub_confidence, command, ...)
+    Server->>Server: events.record_event() into ring buffer plus latest frame
+    Server-->>Edge: schema_version, event_id, received, hub_verified, hub_confidence, identity_status, command, alert
+
+    Note over Server,Edge: The dashboard (/user/events, /user/latest.jpg) polls the same event store just updated.
+    Note over MQTT,Edge: A subscribed edge device also receives the same command over MQTT, independent of this HTTP response - useful if it wasn't the one that opened this request.

@@ -2,11 +2,16 @@
 
 **An Open-Source Framework for Privacy-First, Autonomous Distributed Intelligence**
 
-Snapdragon Multiverse Hackathon | August 3–7, 2026
-
 Qonclave is an edge-AI framework for privacy-first autonomous systems: sense local
 context on-device, exchange compact events, verify important events with heavier
 models on a hub, and take a minimal, privacy-preserving action — without the cloud.
+
+## Core Features
+
+1. **Distributed AI:** Intelligence is pushed to the edge, creating a resilient mesh network that operates entirely without reliance on centralized cloud servers.
+2. **Private Data:** Enforces strict zero-trust air-gapping. Raw sensor data (like video or audio) never leaves the local subnet; only abstracted conclusions or verified events escalate through the network.
+3. **Hierarchical Intelligence:** Employs a multi-tier architecture where lightweight Edge nodes handle continuous sensing and triage, while powerful Hubs and Compute nodes execute heavy Vision-Language Models (VLMs) on demand.
+4. **Auto Discovery:** Network nodes self-organize dynamically using protocols like mDNS. New devices advertise their capabilities (e.g., "Camera: 1080p", "Compute: NPU") and instantly join the mesh without hardcoded IP configurations.
 
 ## MVP Demo
 
