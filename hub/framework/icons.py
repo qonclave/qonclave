@@ -54,13 +54,17 @@ def _wrap_10x6_to_12x8(grid_10x6: list[list[int]]) -> list[list[int]]:
 
 
 def _ensure_blank_image() -> str:
-    """Creates a temporary 1x1 image for VLM text-prompts when no camera frame is provided."""
+    """Creates a temporary blank image for VLM text-prompts when no camera frame is provided.
+
+    Must be large enough for the vision encoder's patch embedding — a 1x1
+    JPEG produces an empty result during prompt processing (GenieXError
+    -201201) instead of a usable (if content-free) image.
+    """
     tmp_path = os.path.join(os.path.dirname(__file__), "..", "scratch_blank.jpg")
     if not os.path.exists(tmp_path):
         try:
-            with open(tmp_path, "wb") as f:
-                # 1x1 JPEG minimal bytes
-                f.write(bytes.fromhex("ffd8ffe000104a46494600010101004800480000ffdb0043000302020302020303030304030304050805050404050a070706080c0a0c0c0b0a0b0b0d0e12100d0e110e0b0b1016101113141515150c0f171816141812141514ffd9"))
+            from PIL import Image
+            Image.new("RGB", (224, 224), color=(255, 255, 255)).save(tmp_path, "JPEG")
         except Exception:
             pass
     return tmp_path

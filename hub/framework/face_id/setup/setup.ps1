@@ -85,15 +85,22 @@ Write-Host ""
 
 Info "Installing opencv..."
 if ($arch -eq "ARM64") {
-    $wheel = Get-ChildItem "$PkgDir\wheels" -Filter "opencv_python_headless-*-win_arm64.whl" |
+    # Match the WHEEL'S OWN cp tag against $python's actual version - multiple
+    # wheels (e.g. cp312 and cp313, built for different interpreters over
+    # time) can coexist in wheels\, and a plain "newest by filename" sort would
+    # silently pick a wheel for the wrong Python (cp313 sorts after cp312
+    # regardless of which one $python actually is).
+    $pyTag = (& $python -c "import sys; print(f'cp{sys.version_info[0]}{sys.version_info[1]}')").Trim()
+    $wheel = Get-ChildItem "$PkgDir\wheels" -Filter "opencv_python_headless-*-$pyTag-$pyTag-win_arm64.whl" |
              Sort-Object Name -Descending | Select-Object -First 1
     if (-not $wheel) {
-        Write-Host "  No ARM64 opencv wheel found in wheels\." -ForegroundColor Yellow
+        Write-Host "  No ARM64 opencv wheel for $pyTag found in wheels\." -ForegroundColor Yellow
         Write-Host "  Build one with tools\build_opencv_arm64.ps1, copy the resulting .whl" -ForegroundColor Yellow
         Write-Host "  into wheels\, then re-run this script." -ForegroundColor Yellow
-        Fail "Missing ARM64 opencv wheel."
+        Fail "Missing ARM64 opencv wheel for $pyTag."
     }
     & $python -m pip install $wheel.FullName
+    if ($LASTEXITCODE -ne 0) { Fail "pip install failed for local opencv wheel: $($wheel.Name)" }
     Ok "opencv installed from local wheel: $($wheel.Name)"
 } else {
     & $python -m pip install opencv-python-headless
