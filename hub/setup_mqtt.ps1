@@ -1,10 +1,9 @@
 <#
-    setup_mqtt.ps1  -  install + run a local Mosquitto MQTT broker for the hub
+    setup_mqtt.ps1  -  install + run a local amqtt MQTT broker for the hub
 
-    Installs Eclipse Mosquitto (via winget) if it isn't already on this box,
-    then starts it with the repo's local-loopback config
-    (hub/mosquitto.conf). Idempotent: if mosquitto is already installed,
-    installation is skipped.
+    Installs the `amqtt` Python package (via pip) if it isn't already
+    present, then runs hub/run_mqtt_broker.py, which starts an anonymous
+    amqtt broker on 127.0.0.1:1883.
 
     This is a standalone process, independent of hub/server.py's lifecycle -
     start it once, then start/restart the hub freely without losing the
@@ -14,83 +13,68 @@
         powershell -ExecutionPolicy Bypass -File .\hub\setup_mqtt.ps1
 
       -NoRun            stop after installing; don't start the broker
+      -HostAddress      address for the broker to listen on (default: 0.0.0.0)
+      -Port             TCP port for the broker to listen on (default: 1883)
 #>
 
 param(
-    [switch]$NoRun
+    [switch]$NoRun,
+    [string]$HostAddress = '0.0.0.0',
+    [int]$Port = 1883
 )
 
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 
 $RepoDir = Split-Path $PSScriptRoot -Parent
-$ConfPath = Join-Path $PSScriptRoot 'mosquitto.conf'
+$BrokerScript = Join-Path $PSScriptRoot 'run_mqtt_broker.py'
 
 function Write-Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
 function Write-Ok($msg)   { Write-Host "    [ok] $msg" -ForegroundColor Green }
 function Write-Warn($msg) { Write-Host "    [!]  $msg" -ForegroundColor Yellow }
 
-function Get-MosquittoExe {
-    # Resolve mosquitto.exe by ABSOLUTE PATH, not the PATH env var. The
-    # Windows Mosquitto installer (including via winget) does not reliably
-    # add its install directory to PATH, so `Get-Command mosquitto` can fail
-    # even right after a successful install - check well-known install
-    # roots directly, same approach as Get-ArmPython in setup_hub.ps1.
-    $cmd = Get-Command mosquitto.exe -ErrorAction SilentlyContinue
-    if ($cmd) { return $cmd.Source }
-
-    $roots = @(
-        "$env:ProgramFiles\mosquitto",
-        "${env:ProgramFiles(x86)}\mosquitto",
-        "${env:ProgramFiles(Arm)}\mosquitto"
-    )
-    foreach ($root in $roots) {
-        $exe = Join-Path $root 'mosquitto.exe'
-        if (Test-Path $exe) { return $exe }
+function Get-Python {
+    # Resolve a usable Python 3 interpreter. This script is standalone (it
+    # doesn't create/use the hub's geniex-env venv), so just pick whatever
+    # Python 3 is already on the box.
+    if (Get-Command py -ErrorAction SilentlyContinue) {
+        $p = (& py -3 -c "import sys; print(sys.executable)" 2>$null)
+        if ($LASTEXITCODE -eq 0 -and $p) { return $p.Trim() }
+    }
+    foreach ($name in @('python', 'python3')) {
+        $cmd = Get-Command $name -ErrorAction SilentlyContinue
+        if ($cmd) { return $cmd.Source }
     }
     return $null
 }
 
-# --- 1. Mosquitto CLI --------------------------------------------------------
-Write-Step "Ensuring Mosquitto is installed"
-$MosquittoExe = Get-MosquittoExe
-if ($MosquittoExe) {
-    Write-Ok "mosquitto already present: $MosquittoExe"
-} else {
-    Write-Host "    Installing Mosquitto via winget..."
-    winget install --id EclipseFoundation.Mosquitto -e --source winget `
-        --accept-package-agreements --accept-source-agreements
-    # Refresh PATH for the current session (best-effort; we resolve by
-    # absolute path below regardless, since winget installs don't reliably
-    # update PATH even on success - e.g. "already installed, no upgrade").
-    $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
-                [System.Environment]::GetEnvironmentVariable('Path','User')
-    $MosquittoExe = Get-MosquittoExe
-    if ($MosquittoExe) {
-        Write-Ok "mosquitto installed: $MosquittoExe"
-    } else {
-        throw ("mosquitto.exe not found after install (checked PATH and " +
-               "Program Files\mosquitto). Open a new shell and re-run, " +
-               "or install manually from https://mosquitto.org/download/.")
-    }
+# --- 1. Python ---------------------------------------------------------------
+Write-Step "Locating Python"
+$PythonExe = Get-Python
+if (-not $PythonExe) {
+    throw "No Python 3 interpreter found on PATH. Install Python 3.10+ and re-run."
 }
+Write-Ok "using Python: $PythonExe"
 
-# --- 2. paho-mqtt (hub's client library) ------------------------------------
-Write-Step "Note: hub/requirements.txt includes paho-mqtt for the hub side"
-Write-Host "    Run hub\setup_hub.ps1 (or 'pip install -r hub\requirements.txt')" -ForegroundColor Yellow
-Write-Host "    to install it into the hub's venv, if you haven't already." -ForegroundColor Yellow
+# --- 2. amqtt (the broker library run_mqtt_broker.py depends on) ------------
+Write-Step "Ensuring amqtt is installed"
+& $PythonExe -m pip install amqtt
+if ($LASTEXITCODE -ne 0) {
+    throw "pip install amqtt failed (exit $LASTEXITCODE)."
+}
+Write-Ok "amqtt installed"
 
 Write-Host "`n===================================================================" -ForegroundColor Green
-Write-Host " Mosquitto ready. Config: $ConfPath" -ForegroundColor Green
+Write-Host " amqtt ready. Broker script: $BrokerScript" -ForegroundColor Green
 Write-Host " Hub connects to it at 127.0.0.1:1883 by default (QONCLAVE_MQTT_HOST/PORT)." -ForegroundColor Green
 Write-Host "===================================================================" -ForegroundColor Green
 
 # --- 3. Run the broker --------------------------------------------------------
 if ($NoRun) {
     Write-Step "NoRun set - skipping broker start"
-    Write-Host "    Start it later with:  & `"$MosquittoExe`" -c `"$ConfPath`" -v"
+    Write-Host "    Start it later with:  & `"$PythonExe`" `"$BrokerScript`" --host $HostAddress --port $Port"
 } else {
-    Write-Step "Starting Mosquitto (Ctrl+C to stop)"
+    Write-Step "Starting amqtt broker (Ctrl+C to stop)"
     Set-Location $RepoDir
-    & $MosquittoExe -c $ConfPath -v
+    & $PythonExe $BrokerScript --host $HostAddress --port $Port
 }
