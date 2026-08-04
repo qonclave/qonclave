@@ -12,6 +12,7 @@ from datetime import datetime, UTC
 import socket
 import requests
 from dotenv import load_dotenv
+from starlette.responses import HTMLResponse, StreamingResponse
 
 from arduino.app_utils import App, Logger, Bridge
 from arduino.app_bricks.web_ui import WebUI
@@ -21,10 +22,14 @@ from arduino.app_peripherals.camera import IPCamera, V4LCamera
 import json
 from basic_auth import BasicAuthMiddleware
 from file_camera import FileCamera
+from identity_map import IdentityMap
 from led_display import person_display_bitmap
 from mqtt_client import EdgeMQTTClient
 from person_centering import PersonCenteringController, horizontal_bearing_degrees
 from person_tracker import PersonTracker
+from recognition_client import RecognitionClient
+from track_crop import crop_person, remove_crop_locally, save_crop_locally
+from track_overlay import draw_track_overlay
 
 load_dotenv()
 
@@ -224,6 +229,38 @@ if WEB_UI_USERNAME and WEB_UI_PASSWORD:
 else:
   log.warning("WEB_UI_USERNAME/WEB_UI_PASSWORD not set: Web UI is running WITHOUT authentication.")
 
+# --- Live preview with track-ID overlay: send_detections_to_ui redraws each
+# tracked person's box + "Track N: <name/status>" label onto the current
+# frame (track_overlay.draw_track_overlay) and caches it here; /track-preview
+# streams that cache as MJPEG. /camera-preview is the page the frontend
+# iframe actually loads (an <img> pointed at /track-preview) -- kept as its
+# own indirection so what the preview shows can change without an index.html
+# edit.
+_latest_track_preview: bytes | None = None
+_track_preview_lock = threading.Lock()
+
+def _camera_preview_page(_request):
+  return HTMLResponse(
+    '<!doctype html><html><head><style>'
+    'html,body{margin:0;width:100%;height:100%;background:#111;overflow:hidden}'
+    'img{width:100%;height:100%;object-fit:contain}'
+    '</style></head><body><img src="/track-preview" alt="Camera preview"></body></html>'
+  )
+
+def _track_preview_mjpeg():
+  while True:
+    with _track_preview_lock:
+      frame = _latest_track_preview
+    if frame:
+      yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
+    time.sleep(0.1)
+
+def _track_preview_stream(_request):
+  return StreamingResponse(_track_preview_mjpeg(), media_type="multipart/x-mixed-replace; boundary=frame")
+
+ui.app.add_route("/camera-preview", _camera_preview_page, methods=["GET"])
+ui.app.add_route("/track-preview", _track_preview_stream, methods=["GET"])
+
 def _send_current_hub_status():
   try:
     ui.send_message("hub_status", message={
@@ -337,6 +374,74 @@ person_centering = PersonCenteringController(
   settle_seconds=float(os.environ.get("PERSON_CENTER_SETTLE_SEC", "0.35")),
 )
 
+# --- Per-track face recognition: sample each tracked person's crop to the
+# hub's POST /recognize endpoint (not the motor-following pipeline above --
+# this only resolves who each track_id is).
+TRACK_RECOGNITION_ENABLED = os.environ.get("TRACK_RECOGNITION_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
+TRACK_CROP_PADDING = float(os.environ.get("TRACK_CROP_PADDING", "0.25"))
+TRACK_CROP_PADDING_TOP = float(os.environ.get("TRACK_CROP_PADDING_TOP", "0.8"))
+TRACK_CROP_MIN_SIZE_PX = int(os.environ.get("TRACK_CROP_MIN_SIZE_PX", "40"))
+TRACK_CROP_MIN_VISIBLE_RATIO = float(os.environ.get("TRACK_CROP_MIN_VISIBLE_RATIO", "0.85"))
+TRACK_CROPS_DIR = os.environ.get("TRACK_CROPS_DIR", "/app/track_crops")
+RECOGNITION_SAMPLE_INTERVAL_SEC = float(os.environ.get("RECOGNITION_SAMPLE_INTERVAL_SEC", "1.0"))
+RECOGNITION_REQUEST_TIMEOUT_SEC = float(os.environ.get("RECOGNITION_REQUEST_TIMEOUT_SEC", "5"))
+
+identity_map = IdentityMap()
+recognition_client = RecognitionClient(
+  get_hub_base_url=get_hub_base_url,
+  timeout_sec=RECOGNITION_REQUEST_TIMEOUT_SEC,
+  sample_interval_sec=RECOGNITION_SAMPLE_INTERVAL_SEC,
+  logger=log,
+)
+
+# Track_ids from the *current* frame, so a /recognize response that arrives
+# after its track was dropped (hub was slow, person already left) is ignored
+# instead of resurrecting a stale identity.
+_live_track_ids: set = set()
+_live_track_ids_lock = threading.Lock()
+_last_logged_identity_snapshot: dict = {}
+
+
+def _on_recognition_result(track_id: int, result: dict, latency_s: float):
+  with _live_track_ids_lock:
+    is_live = track_id in _live_track_ids
+  if not is_live:
+    log.debug(f"Ignoring /recognize result for track {track_id}: no longer active ({latency_s * 1000:.0f}ms round trip)")
+    return
+  identity_map.merge(track_id, result)
+
+
+def _crop_and_recognize(track_id: int, frame: bytes, bounding_box_xyxy):
+  # Runs entirely off the detection-callback thread: the decode/crop/encode
+  # work here used to run inline in send_detections_to_ui, adding real CPU
+  # cost to the hot video-processing path on every unresolved track, every
+  # frame. recognition_client.claim() already reserved this track before
+  # this thread was started, so it's safe to take as long as it needs here.
+  crop = crop_person(
+    frame, bounding_box_xyxy,
+    padding=TRACK_CROP_PADDING,
+    padding_top=TRACK_CROP_PADDING_TOP,
+    min_size_px=TRACK_CROP_MIN_SIZE_PX,
+    min_visible_ratio=TRACK_CROP_MIN_VISIBLE_RATIO,
+  )
+  if crop is None:
+    log.debug(f"Rejected crop for track {track_id}: too small or badly clipped")
+    recognition_client.release(track_id)
+    return
+  save_crop_locally(track_id, crop, TRACK_CROPS_DIR)
+  recognition_client.send_claimed(track_id, crop, _on_recognition_result)
+
+
+def _log_identity_map_if_changed(snapshot: dict):
+  global _last_logged_identity_snapshot
+  if snapshot == _last_logged_identity_snapshot:
+    return
+  _last_logged_identity_snapshot = dict(snapshot)
+  for track_id, entry in sorted(snapshot.items()):
+    label = entry["name"] if entry["status"] == "known" else entry["status"].replace("_", " ").capitalize()
+    log.info(f"Track {track_id} — {label}")
+
+
 _hub_event_lock = threading.Lock()
 _last_hub_event_at = 0.0
 
@@ -423,6 +528,49 @@ def maybe_notify_hub(detections: dict, frame: bytes | None):
 # Register a callback for when all objects are detected
 def send_detections_to_ui(detections: dict, frame: bytes | None = None):
   person_tracks = person_tracker.update(detections.get("person", []))
+
+  active_track_ids = {t["track_id"] for t in person_tracks}
+  with _live_track_ids_lock:
+    _live_track_ids.clear()
+    _live_track_ids.update(active_track_ids)
+
+  for dropped_id in identity_map.prune(active_track_ids):
+    recognition_client.forget(dropped_id)
+    remove_crop_locally(dropped_id, TRACK_CROPS_DIR)
+
+  if TRACK_RECOGNITION_ENABLED and frame:
+    for track in person_tracks:
+      track_id = track["track_id"]
+      if not recognition_client.should_sample(track_id, identity_map.is_known(track_id)):
+        continue
+      # Claim synchronously (cheap) so a frame arriving before the crop/encode
+      # work below finishes can't also decide to sample this track; the actual
+      # decode/crop/encode/save/POST all happen off this detection-callback
+      # thread, on their own background thread.
+      recognition_client.claim(track_id)
+      threading.Thread(
+        target=_crop_and_recognize, args=(track_id, frame, track["bounding_box_xyxy"]),
+        name=f"Recognize-{track_id}", daemon=True,
+      ).start()
+
+  if person_tracks:
+    identity_snapshot = {tid: identity_map.get(tid) for tid in active_track_ids}
+    _log_identity_map_if_changed(identity_snapshot)
+    ui.send_message("identity_map", message=identity_snapshot)
+
+  if frame:
+    global _latest_track_preview
+    if person_tracks:
+      labels = {
+        tid: f"Track {tid}: {entry['name']}" if entry["status"] == "known"
+             else f"Track {tid}: {entry['status'].replace('_', ' ').capitalize()}"
+        for tid, entry in identity_snapshot.items()
+      }
+      preview_frame = draw_track_overlay(frame, person_tracks, labels)
+    else:
+      preview_frame = frame
+    with _track_preview_lock:
+      _latest_track_preview = preview_frame
 
   if person_tracks:
     # A person is actively tracked: show its position on the LED matrix

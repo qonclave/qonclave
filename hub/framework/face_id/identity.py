@@ -104,6 +104,13 @@ class FaceIdentityBackend:
 
             try:
                 t0 = time.time()
+                # Both detector and embedder run on the Hexagon NPU when
+                # available. The detector's NPU model is a from-scratch
+                # conversion of Google's actual full_range BlazeFace weights
+                # (compiled via Qualcomm AI Hub -- see setup/README): the
+                # original qai_hub_models catalog export used a different,
+                # less accurate "back model" checkpoint that measurably
+                # missed/under-scored turned or distant faces in testing.
                 self._detector = fp._build_detector(self._use_npu)
                 self._model = (
                     fp._build_cavaface_npu() if self._use_npu else fp._build_cavaface_cpu()

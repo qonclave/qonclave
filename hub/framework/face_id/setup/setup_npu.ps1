@@ -3,11 +3,25 @@
 # and copies them to hub/framework/face_id/models/ for full NPU inference.
 #
 # Both models run on Hexagon NPU (Snapdragon X Elite):
-#   MediaPipeFace  ~0.7ms  (face detection)
+#   MediaPipeFace  face detection
 #   CavaFace       ~4.3ms  (face embedding)
-#   Total pipeline ~5ms    (vs ~265ms CPU)
+#   Total pipeline ~5-10ms (vs ~265ms CPU)
 #
-#   AI Hub output structure:
+# MediaPipeFace.onnx is NOT a qai-hub-models catalog export. qai-hub-models'
+# bundled mediapipe_face checkpoint ("blazefaceback.pth") measurably misses
+# or under-scores turned/angled and distant faces versus Google's actual
+# full_range weights (confidence 0.05-0.2 vs 0.6-0.9 on the same real-world
+# test images) - so this script instead: downloads Google's official
+# blaze_face_full_range.tflite, converts it to ONNX (tflite2onnx - NOT
+# tf2onnx, which needs tensorflow, unavailable on ARM64 Windows), fixes a
+# spec violation the converter introduces, and compiles THAT for NPU via
+# qai_hub.submit_compile_job() directly (not the qai-hub-models CLI, since
+# this model isn't in that package's catalog). See Export-FullRangeDetector
+# below, and hub/framework/face_id/README.md's "Rebuilding the detector"
+# section for the full manual walkthrough if you need to reproduce this
+# outside this script.
+#
+#   AI Hub output structure (same for both models, catalog or custom):
 #   <name>.onnx.zip
 #     +-- job_<jobid>_optimized_onnx/
 #           +-- model.onnx   (graph)
@@ -22,7 +36,9 @@
 #   .\setup_npu.ps1 -Token YOUR_TOKEN -MediaPipeFaceJobId jXXXXXXXX -CavaFaceJobId jXXXXXXXX
 # Job IDs only work with the AI Hub account/token that created them, and AI
 # Hub may eventually garbage-collect old job artifacts. See README for the
-# job IDs from this repo's own export.
+# job IDs from this repo's own export (jg9dx40v5 = the full_range detector
+# above; omitting -MediaPipeFaceJobId re-runs the full conversion from
+# scratch rather than falling back to the old, less accurate catalog model).
 #
 # Normally called from setup.ps1, which passes -PythonPath so both scripts
 # target the same environment (e.g. hub/geniex-env). Only pass it
@@ -194,6 +210,85 @@ function Export-Model {
     Extract-And-Copy -ZipPath $zipFile.FullName -DestName $DestName
 }
 
+function Export-FullRangeDetector {
+    param([string]$DestName = "MediaPipeFace")
+
+    # See header comment for why this doesn't use qai-hub-models' mediapipe_face
+    # catalog model at all: Google's real full_range weights, converted and
+    # compiled from scratch, measurably detect more real-world faces.
+    Info "Building full_range face detector (custom TFLite conversion, not qai-hub-models catalog)..."
+    $workDir = "$DownloadDir\$DestName"
+    New-Item -ItemType Directory -Force -Path $workDir | Out-Null
+
+    $tflitePath    = "$workDir\blaze_face_full_range.tflite"
+    $onnxRawPath   = "$workDir\blaze_face_full_range.onnx"
+    $onnxFixedPath = "$workDir\blaze_face_full_range_fixed.onnx"
+
+    if (-not (Test-Path $tflitePath)) {
+        Info "Downloading Google's full_range BlazeFace TFLite model..."
+        Invoke-WebRequest -Uri "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_full_range/float16/1/blaze_face_full_range.tflite" -OutFile $tflitePath
+    }
+
+    Info "Converting TFLite -> ONNX (tflite2onnx)..."
+    & $python -c @"
+import tflite2onnx
+tflite2onnx.convert(r'$tflitePath', r'$onnxRawPath')
+"@
+    if ($LASTEXITCODE -ne 0) { Fail "TFLite->ONNX conversion failed for full_range detector." }
+
+    Info "Fixing ONNX value_info spec violation (tflite2onnx duplicates input/output names there)..."
+    & $python -c @"
+import onnx
+m = onnx.load(r'$onnxRawPath')
+io_names = {t.name for t in m.graph.input} | {t.name for t in m.graph.output}
+kept = [vi for vi in m.graph.value_info if vi.name not in io_names]
+del m.graph.value_info[:]
+m.graph.value_info.extend(kept)
+onnx.checker.check_model(m)
+onnx.save(m, r'$onnxFixedPath')
+"@
+    if ($LASTEXITCODE -ne 0) { Fail "ONNX value_info fix failed for full_range detector." }
+
+    Info "Submitting AI Hub compile job for '$Device'..."
+    $jobIdOut = & $python -c @"
+import qai_hub as hub
+device = hub.Device('$Device')
+job = hub.submit_compile_job(
+    model=r'$onnxFixedPath',
+    device=device,
+    name='blaze_face_full_range_qonclave',
+    options='--target_runtime onnx',
+)
+print(job.job_id)
+"@
+    if ($LASTEXITCODE -ne 0 -or -not $jobIdOut) { Fail "Failed to submit AI Hub compile job for full_range detector." }
+    $jobId = ($jobIdOut | Select-Object -Last 1).Trim()
+    Info "Compile job submitted: $jobId (https://workbench.aihub.qualcomm.com/jobs/$jobId/)"
+
+    Info "Waiting for compile job to finish (usually 1-3 minutes)..."
+    & $python -c @"
+import sys, time
+import qai_hub as hub
+job = hub.get_job('$jobId')
+status = job.get_status()
+for _ in range(90):
+    status = job.get_status()
+    if status.code not in ('CREATED', 'OPTIMIZING_MODEL', 'QUEUED', 'RUNNING'):
+        break
+    time.sleep(10)
+else:
+    print('ERROR: timed out waiting for compile job', file=sys.stderr)
+    sys.exit(1)
+if status.code != 'SUCCESS':
+    print(f'ERROR: compile job failed: {status.code} {status.message}', file=sys.stderr)
+    sys.exit(1)
+"@
+    if ($LASTEXITCODE -ne 0) { Fail "Compile job $jobId for full_range detector did not succeed. Check https://workbench.aihub.qualcomm.com/jobs/$jobId/" }
+    Ok "Compile job $jobId succeeded"
+
+    Download-From-Job -JobId $jobId -DestName $DestName
+}
+
 # Step 1: Get token
 
 if (-not $Token) {
@@ -216,6 +311,24 @@ if ($reuseBoth) {
     Info "Both job IDs provided - installing only qai_hub + onnx (skipping qai-hub-models)..."
     & $python -m pip install "qai_hub>=0.51.0" "onnx<=1.18.0,>=1.17" -c "$ScriptDir\constraints.txt" @PipIndexArgs
     if ($LASTEXITCODE -ne 0) { Fail "pip install failed." }
+} elseif ($MediaPipeFaceJobId) {
+    # MediaPipeFace reused from a job; CavaFace still needs a fresh export.
+    Info "Installing qai-hub-models (CavaFace fresh export)..."
+    & $python -m pip install `
+        "huggingface_hub<2.0,>=0.34.0" `
+        "numpy<=2.4.4" "onnx<=1.18.0,>=1.17" `
+        "torch<=2.11.0,>=2.4" "torchvision<=0.26.0,>=0.19" `
+        "typing-extensions<=4.15.0,>=4.12.2" "tqdm<=4.67.3,>=4.66" `
+        "qai_hub>=0.51.0" "filelock<=3.29.0,>=3.16.1" `
+        inputimeout "pydantic<=2.13.3,>=2" pydantic_yaml `
+        "packaging<=26.2.0,>24.2" platformdirs "qai_hub_models_cli==0.58.0" `
+        yacs gitpython pillow schema requests_toolbelt "httpx<=0.28.1,>=0.27" `
+        gdown boto3 "boto3-stubs[s3]" numpydoc pandas `
+        tabulate ipython scipy coverage `
+        --extra-index-url https://download.pytorch.org/whl/cpu -c "$ScriptDir\constraints.txt" @PipIndexArgs
+    if ($LASTEXITCODE -ne 0) { Fail "pip install failed." }
+    & $python -m pip install "qai-hub-models[cavaface]==0.58.0" --no-deps @PipIndexArgs
+    if ($LASTEXITCODE -ne 0) { Fail "pip install failed." }
 } else {
     Info "Installing qai-hub-models..."
     # See setup.ps1 for why this is split: win_arm64+cp313 has no onnxruntime
@@ -234,7 +347,18 @@ if ($reuseBoth) {
         tabulate ipython scipy coverage `
         --extra-index-url https://download.pytorch.org/whl/cpu -c "$ScriptDir\constraints.txt" @PipIndexArgs
     if ($LASTEXITCODE -ne 0) { Fail "pip install failed." }
-    & $python -m pip install "qai-hub-models[mediapipe_face,cavaface]==0.58.0" --no-deps @PipIndexArgs
+    # Only [cavaface] -- mediapipe_face's catalog checkpoint is deliberately
+    # not used (see header comment); the full_range detector conversion below
+    # needs tflite2onnx/tflite instead, installed next regardless of branch.
+    & $python -m pip install "qai-hub-models[cavaface]==0.58.0" --no-deps @PipIndexArgs
+    if ($LASTEXITCODE -ne 0) { Fail "pip install failed." }
+}
+
+if (-not $MediaPipeFaceJobId) {
+    # Needed only when actually (re)converting the full_range detector from
+    # TFLite; skipped when -MediaPipeFaceJobId reuses an already-compiled job.
+    Info "Installing tflite2onnx (full_range detector conversion)..."
+    & $python -m pip install tflite2onnx tflite @PipIndexArgs
     if ($LASTEXITCODE -ne 0) { Fail "pip install failed." }
 }
 Ok "Packages ready"
@@ -279,16 +403,11 @@ Write-Host ""
 if ($MediaPipeFaceJobId) {
     Download-From-Job -JobId $MediaPipeFaceJobId -DestName "MediaPipeFace"
 } else {
-    # --include-detector-postprocessing bakes anchor-decoding + sigmoid
-    # scoring into the graph itself (2 outputs: pixel-space boxes + scores)
-    # instead of leaving 4 raw anchor tensors for face_pipeline.py to decode.
-    # --components face_detector skips compiling the landmark sub-model,
-    # which face_pipeline.py never uses.
-    Export-Model -ModelName "mediapipe_face" -DestName "MediaPipeFace" -ExtraArgs @(
-        "--components", "face_detector",
-        "--include-detector-postprocessing",
-        "--compile-options", "--output_names boxes,scores"
-    )
+    # NOT qai-hub-models' mediapipe_face catalog export -- see header comment
+    # and Export-FullRangeDetector for why. Outputs are raw per-anchor
+    # regressor/classifier tensors; face_pipeline.py's _detect_faces_npu()
+    # does the anchor-decode + sigmoid + NMS by hand to match.
+    Export-FullRangeDetector -DestName "MediaPipeFace"
 }
 
 if ($CavaFaceJobId) {
@@ -302,7 +421,8 @@ Write-Host "================================================================" -F
 Write-Host " Full NPU pipeline ready!" -ForegroundColor Green
 Write-Host ""
 Write-Host " Models in: $ModelsDir" -ForegroundColor Cyan
-Write-Host "   MediaPipeFace.onnx  (face detector ~0.7ms NPU)" -ForegroundColor White
+Write-Host "   MediaPipeFace.onnx  (full_range face detector, NPU)" -ForegroundColor White
+Write-Host "   MediaPipeFace.data" -ForegroundColor White
 Write-Host "   CavaFace.onnx       (face embedding ~4.3ms NPU)" -ForegroundColor White
 Write-Host "   CavaFace.data       (weights ~250MB)" -ForegroundColor White
 Write-Host ""

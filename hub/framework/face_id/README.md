@@ -59,15 +59,29 @@ recompile from scratch:
 ```powershell
 cd hub\framework\face_id\setup
 .\setup_npu.ps1 -Token YOUR_TOKEN `
-  -MediaPipeFaceJobId jpeyev475 `
+  -MediaPipeFaceJobId jg9dx40v5 `
   -CavaFaceJobId jg9dj44q5
 ```
+
+> **Important — `-MediaPipeFaceJobId jg9dx40v5` is not optional if you want
+> the accurate detector.** `setup_npu.ps1`'s *fresh-export* path (no job ID
+> given) runs `qai-hub-models export mediapipe_face`, which compiles
+> qai_hub_models' own bundled checkpoint (`blazefaceback.pth`) — a
+> **different, less accurate model** than the one actually deployed here. In
+> testing, that checkpoint missed or badly under-scored turned/angled and
+> distant faces that Google's real `full_range` weights (what job
+> `jg9dx40v5` is) detect cleanly (confidence 0.6-0.9 vs 0.05-0.2 on the same
+> images — see `git log` / job history for the comparison that motivated
+> this). **Always pass `-MediaPipeFaceJobId jg9dx40v5` (or a newer job built
+> the same way — see "Rebuilding the detector" below) — never let this run
+> the fresh-export path for MediaPipeFace.**
 
 This skips installing the full `qai-hub-models`/torch dependency stack (only
 the lightweight `qai_hub` client is needed to look up and download an
 existing job) and skips the compile/profile/inference cloud wait entirely —
 it just downloads the already-compiled `.onnx` directly. You can pass either
-flag alone to reuse one model while exporting the other fresh.
+flag alone to reuse one model while exporting the other fresh (but see the
+warning above — never do this for MediaPipeFace).
 
 **Passing both flags is what actually skips the torch install.** `setup.ps1`
 needs `qai-hub-models` for two things: exporting models, and the CPU embedder.
@@ -81,13 +95,67 @@ PyTorch path to fall back to, so a missing `CavaFace.onnx` means face-ID
 reports unavailable rather than running slowly. Re-run `setup.ps1` without the
 job-ID flags to get that safety net back.
 
-The job IDs above are **this repo's own verified-working exports** (`jpeyev475`
-= MediaPipeFace face detector, compiled with `--include-detector-postprocessing`
-so the graph itself does anchor-decoding — see `face_pipeline.py`'s `_detect_npu`;
-`jg9dj44q5` = CavaFace). They only resolve for the AI Hub account/token that
-created them — a different developer's token can't look them up. If you get a
-"not found" error, they've likely been garbage-collected or belong to a
-different account; just omit the job ID flags to export fresh.
+`jg9dj44q5` (CavaFace) **is** this repo's normal `qai-hub-models` catalog
+export and is fine to re-export fresh if needed. `jg9dx40v5` (MediaPipeFace)
+is **not** a catalog export — see "Rebuilding the detector" below for what it
+actually is and how to reproduce it. Job IDs only resolve for the AI Hub
+account/token that created them; if you get a "not found" error, the job
+belongs to a different account or was garbage-collected — CavaFace can be
+re-exported fresh in that case, but MediaPipeFace must be rebuilt via the
+custom conversion process below, not the fresh-export path.
+
+#### Rebuilding the detector (`MediaPipeFace.onnx`'s real provenance)
+
+`MediaPipeFace.onnx` is **not** a `qai-hub-models export mediapipe_face`
+output. It's a from-scratch conversion of Google's official
+`blaze_face_full_range` TFLite model (the same one the CPU path would use via
+MediaPipe Tasks) to ONNX, then compiled for Snapdragon X Elite via Qualcomm AI
+Hub directly (`qai_hub.submit_compile_job`, not the `qai-hub-models` CLI,
+since this model isn't in that package's catalog):
+
+1. Download `blaze_face_full_range.tflite`:
+   `https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_full_range/float16/1/blaze_face_full_range.tflite`
+2. Convert to ONNX with `tflite2onnx` (NOT `tf2onnx` — that requires
+   `tensorflow`, which has no ARM64 Windows wheel):
+   ```python
+   import tflite2onnx
+   tflite2onnx.convert("blaze_face_full_range.tflite", "blaze_face_full_range.onnx")
+   ```
+3. `tflite2onnx`'s output has an ONNX spec violation (input/output tensor
+   names duplicated in `graph.value_info`) that fails AI Hub's compile step —
+   strip them before compiling:
+   ```python
+   import onnx
+   m = onnx.load("blaze_face_full_range.onnx")
+   io_names = {t.name for t in m.graph.input} | {t.name for t in m.graph.output}
+   kept = [vi for vi in m.graph.value_info if vi.name not in io_names]
+   del m.graph.value_info[:]
+   m.graph.value_info.extend(kept)
+   onnx.checker.check_model(m)  # should pass now
+   onnx.save(m, "blaze_face_full_range_fixed.onnx")
+   ```
+4. Compile for NPU:
+   ```python
+   import qai_hub as hub
+   job = hub.submit_compile_job(
+       model="blaze_face_full_range_fixed.onnx",
+       device=hub.Device("Snapdragon X Elite CRD"),
+       options="--target_runtime onnx",
+   )
+   ```
+5. Download and install exactly like `Extract-And-Copy` in `setup_npu.ps1`
+   does (rewrite the external-data reference, save as `MediaPipeFace.onnx` +
+   `MediaPipeFace.data` in `models/`) — or just reuse job ID `jg9dx40v5` per
+   above instead of repeating steps 1-4.
+
+**This model's outputs are raw, undecoded per-anchor tensors** (unlike the
+old catalog export, which used `--include-detector-postprocessing` to bake
+anchor-decoding into the graph) — `face_pipeline.py`'s `_detect_faces_npu()`
+implements the matching decode by hand: a single stride-4 layer over the
+192x192 input (48x48 grid, `fixed_anchor_size`, 2304 anchors total — mirrors
+MediaPipe's `face_detection_full_range_sparse.pbtxt` anchor config), plus
+letterbox (aspect-preserving, padded) preprocessing — a plain squash-resize
+measurably hurt accuracy in testing.
 
 ### Step 2 — Add known faces
 
@@ -216,12 +284,16 @@ hub/framework/face_id/
     .embeddings_cpu.npy       auto-generated cache, gitignored
     .embeddings_npu.npy       auto-generated cache, gitignored
   models/                     all model files, gitignored
-    face_detector.tflite      CPU detector. Pre-fetched by setup on x86; on
-                              ARM64 fetched on demand, only if the NPU
-                              detector is unavailable
+    blaze_face_full_range.tflite  CPU detector (Google's official weights).
+                              Pre-fetched by setup on x86; on ARM64 fetched
+                              on demand, only if the NPU detector is unavailable
     CavaFace.onnx             NPU, populated by setup.ps1 on ARM64
     CavaFace.data             (~250MB)
-    MediaPipeFace.onnx
+    MediaPipeFace.onnx        NPU detector -- a custom TFLite->ONNX conversion
+                              of the same full_range weights above, NOT a
+                              qai-hub-models catalog export; see "Rebuilding
+                              the detector" above before ever re-exporting this
+    MediaPipeFace.data
   wheels/
     opencv_python_headless-*-win_arm64.whl   pre-built ARM64 wheel
 ```

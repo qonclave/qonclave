@@ -20,6 +20,8 @@ Endpoints:
                                /test/* pages)
     POST /edge/event          edge event JSON + frame -> policy-driven
                                verification response
+    POST /recognize            per-track-id face identification: a single
+                               cropped-person JPEG + track_id -> identity
     POST /sms                 Twilio inbound-reply webhook: runs policy
                                on_sms_reply(), optionally publishes MQTT command
 
@@ -33,6 +35,8 @@ Endpoints:
                                page — curl/API only)
     GET  /user/known_faces    names currently enrolled for face-ID
     POST /user/known_faces     enroll a known face (multipart 'image' + 'name')
+    GET  /user/recognize_activity        recent POST /recognize calls (JSON)
+    GET  /user/recognize_activity/<id>.jpg  the crop for one of those calls
 
 Design goals:
     * Runs on ANY laptop (regular x86 Windows/Linux included). Reasoning is
@@ -48,11 +52,12 @@ from __future__ import annotations
 import logging
 import os
 import re
+import time
 import uuid
 
-from flask import Flask, jsonify, redirect, request, send_from_directory
+from flask import Flask, Response, jsonify, redirect, request, send_from_directory
 
-from . import discovery, events, icons, transport
+from . import discovery, events, icons, recognize_activity, transport
 from .llm import LLMBackend
 from .mqtt_bus import MQTTBus
 from .policy import Policy
@@ -246,6 +251,86 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
             "permanent": entry.get("permanent", False)
         })
 
+    # --- /recognize: per-track-id face identification -----------------------
+    @app.post("/recognize")
+    def recognize():
+        """Device contract: identify the single cropped person in the
+        uploaded image, tagged with the edge's own track_id, against the
+        known_faces/ database.
+
+        Request:  multipart 'image' file (or raw image body) + 'track_id'
+                   (form field, query param, or JSON field).
+        Response: {"track_id": int, "identity": str, "confidence": float,
+                    "status": "known"|"unknown"|"no_face"|"unavailable"}
+        The crop is deleted from disk right after inference, unlike
+        /edge/event's frames which are kept permanently for the dashboard —
+        a short-lived copy is kept in memory only, in recognize_activity's
+        capped ring buffer, so the dashboard can show recent activity without
+        persisting every sampled crop to disk.
+        """
+        client = request.remote_addr
+
+        raw_track_id = request.form.get("track_id")
+        if raw_track_id is None:
+            raw_track_id = request.args.get("track_id")
+        if raw_track_id is None and request.is_json:
+            raw_track_id = (request.get_json(silent=True) or {}).get("track_id")
+        if raw_track_id is None:
+            return jsonify({"ok": False, "error": "missing 'track_id'"}), 400
+        try:
+            track_id = int(raw_track_id)
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "'track_id' must be an integer"}), 400
+
+        if face_id is None:
+            return jsonify({"track_id": track_id, "identity": "unavailable",
+                             "confidence": 0.0, "status": "unavailable"}), 503
+
+        path, err = transport.save_incoming_image()
+        if err:
+            log.warning("POST /recognize rejected from %s (track_id=%s): %s",
+                        client, track_id, err)
+            return jsonify({"ok": False, "error": err}), 400
+
+        t0 = time.monotonic()
+        try:
+            with open(path, "rb") as f:
+                image_bytes = f.read()
+            result = face_id.identify(path)
+        finally:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        latency_ms = (time.monotonic() - t0) * 1000
+
+        if not result.get("available"):
+            identity, status, confidence = "unavailable", "unavailable", 0.0
+        elif not result.get("face_detected"):
+            identity, status, confidence = "no_face", "no_face", 0.0
+        elif result.get("identified"):
+            identity, status = result.get("name"), "known"
+            confidence = result.get("confidence") or 0.0
+        else:
+            identity, status = "unknown", "unknown"
+            confidence = result.get("confidence") or 0.0
+
+        log.info("POST /recognize track_id=%s -> %s%s (%.1f%%, %.0fms) from %s",
+                 track_id, status, f" ({identity})" if status == "known" else "",
+                 confidence * 100, latency_ms, client)
+
+        recognize_activity.record(
+            track_id, identity, round(float(confidence), 4), status,
+            latency_ms, image_bytes, source_ip=client,
+        )
+
+        return jsonify({
+            "track_id": track_id,
+            "identity": identity,
+            "confidence": round(float(confidence), 4),
+            "status": status,
+        })
+
     # --- /sms: Twilio inbound-reply webhook ---------------------------------
     @app.post("/sms")
     def sms_reply():
@@ -295,6 +380,23 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
             "vlm_available": vlm.status().get("available"),
             "events": items,
         })
+
+    @app.get("/user/recognize_activity")
+    def user_recognize_activity():
+        """Recent POST /recognize calls (track_id, identity, confidence,
+        status), newest first — what's actually arriving at the hub for
+        per-track face recognition. Distinct from /user/events, which is
+        /edge/event's whole-frame ring buffer."""
+        limit = request.args.get("limit", type=int) or 20
+        items = recognize_activity.recent(limit)
+        return jsonify({"count": len(items), "activity": items})
+
+    @app.get("/user/recognize_activity/<int:entry_id>.jpg")
+    def user_recognize_image(entry_id):
+        image = recognize_activity.get_image(entry_id)
+        if image is None:
+            return jsonify({"error": "not found or already evicted"}), 404
+        return Response(image, mimetype="image/jpeg")
 
     @app.post("/user/robot-command")
     def user_robot_command():

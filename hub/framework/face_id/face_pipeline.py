@@ -38,9 +38,9 @@ MEDIAPIPE_NPU_ONNX_PATH  = MODELS_DIR / "MediaPipeFace.onnx"
 
 MEDIAPIPE_MODEL_URL  = (
     "https://storage.googleapis.com/mediapipe-models/face_detector/"
-    "blaze_face_short_range/float16/1/blaze_face_short_range.tflite"
+    "blaze_face_full_range/float16/1/blaze_face_full_range.tflite"
 )
-MEDIAPIPE_MODEL_PATH = MODELS_DIR / "face_detector.tflite"
+MEDIAPIPE_MODEL_PATH = MODELS_DIR / "blaze_face_full_range.tflite"
 
 THRESHOLD = 0.3   # cosine similarity threshold for same/different person
 
@@ -155,8 +155,58 @@ def _build_detector_cpu():
     return ("mediapipe", FaceDetector.create_from_options(options))
 
 
+_FULLRANGE_INPUT_SIZE = 192  # this model's fixed input resolution
+_FULLRANGE_NUM_CELLS = 48    # 192 / stride(4): single-layer anchor grid
+
+
+def _fullrange_anchors() -> np.ndarray:
+    """Anchor centers for Google's BlazeFace "full_range" (sparse) detector:
+    a single stride-4 layer over the 192x192 input, one fixed-size anchor per
+    48x48 cell (2304 total) -- mirrors MediaPipe's
+    face_detection_full_range_sparse.pbtxt SsdAnchorsCalculator config
+    (num_layers=1, strides=[4], aspect_ratios=[1.0], fixed_anchor_size=true).
+    """
+    centers = [
+        ((col + 0.5) / _FULLRANGE_NUM_CELLS, (row + 0.5) / _FULLRANGE_NUM_CELLS)
+        for row in range(_FULLRANGE_NUM_CELLS)
+        for col in range(_FULLRANGE_NUM_CELLS)
+    ]
+    return np.array(centers, dtype=np.float32)  # [2304, 2], normalized (x, y)
+
+
+_FULLRANGE_ANCHORS = _fullrange_anchors()
+
+
+def _letterbox(rgb: Image.Image, size: int):
+    """Resize preserving aspect ratio onto a black size x size canvas,
+    centered -- matches the preprocessing the reference MediaPipe Tasks CPU
+    detector applies internally (a plain squash-resize measurably hurts this
+    model's accuracy, confirmed empirically). Returns (canvas, scale,
+    pad_left, pad_top) so detections can be mapped back to original-image
+    pixel coordinates."""
+    w, h = rgb.size
+    scale = size / max(w, h)
+    nw, nh = max(1, round(w * scale)), max(1, round(h * scale))
+    resized = rgb.resize((nw, nh), Image.LANCZOS)
+    canvas = Image.new("RGB", (size, size), (0, 0, 0))
+    pad_left, pad_top = (size - nw) // 2, (size - nh) // 2
+    canvas.paste(resized, (pad_left, pad_top))
+    return canvas, scale, pad_left, pad_top
+
+
 def _build_detector_npu():
-    """Load MediaPipe Face Detector ONNX on Hexagon NPU via QNNExecutionProvider."""
+    """Load the full_range BlazeFace detector on Hexagon NPU via
+    QNNExecutionProvider.
+
+    This ONNX model is NOT from qai_hub_models' catalog export (that uses a
+    different, less accurate "back model" checkpoint bundled with the
+    mediapipe_face package -- confirmed empirically to miss/under-score
+    turned or distant faces that Google's actual full_range weights catch
+    cleanly). It's a from-scratch conversion of Google's official
+    blaze_face_full_range.tflite to ONNX (tflite2onnx), then compiled for
+    this device via Qualcomm AI Hub. See setup/README for provenance and how
+    to reproduce.
+    """
     if not MEDIAPIPE_NPU_ONNX_PATH.exists():
         raise FileNotFoundError(
             f"NPU detector not found: {MEDIAPIPE_NPU_ONNX_PATH}\n"
@@ -165,8 +215,7 @@ def _build_detector_npu():
 
     session = _qnn_session(MEDIAPIPE_NPU_ONNX_PATH, "MediaPipeFace")
     input_name = session.get_inputs()[0].name
-    input_shape = session.get_inputs()[0].shape  # e.g. [1, 3, 128, 128]
-    return ("onnx", session, input_name, input_shape)
+    return ("onnx", session, input_name)
 
 
 def _build_detector(use_npu: bool):
@@ -263,37 +312,43 @@ def _detect_faces_mediapipe(mp_detector, pil_img: Image.Image, padding: float,
 
 def _detect_faces_npu(detector_tuple, pil_img: Image.Image, padding: float,
                       min_score: float) -> list:
-    """Run MediaPipe BlazeFace ONNX on NPU, return all faces (post-NMS)."""
-    _, session, input_name, input_shape = detector_tuple
-    h_in, w_in = input_shape[2], input_shape[3]  # e.g. 128x128
+    """Run the full_range BlazeFace ONNX on NPU, return all faces (post-NMS).
 
+    Unlike the old qai_hub_models export (which baked anchor-decoding into
+    the graph via --include-detector-postprocessing), this model's outputs
+    are raw per-anchor regressor/classifier tensors -- BlazeFace's standard
+    anchor-decode + sigmoid + NMS is done here by hand, matching Google's
+    face_detection_full_range_sparse.pbtxt anchor config.
+    """
+    _, session, input_name = detector_tuple
     rgb = pil_img.convert("RGB")
-    w, h = rgb.size
 
-    # Preprocess: resize to model input, normalize [0,1]
-    resized = rgb.resize((w_in, h_in), Image.LANCZOS)
-    arr = np.array(resized, dtype=np.float32) / 255.0
-    inp = arr.transpose(2, 0, 1)[np.newaxis]  # [1, 3, H, W]
+    canvas, scale, pad_left, pad_top = _letterbox(rgb, _FULLRANGE_INPUT_SIZE)
+    arr = np.array(canvas, dtype=np.float32) / 255.0
+    inp = arr.transpose(2, 0, 1)[np.newaxis]  # [1, 3, 192, 192]
 
-    outputs = session.run(None, {input_name: inp})
-    # Exported with --include-detector-postprocessing: outputs are already
-    # decoded + sigmoid-scored (no raw-anchor math needed here).
-    #   boxes:  [1, N, 16] pixel coords relative to the (w_in, h_in) resize,
-    #           first 4 values per anchor are (x_min, y_min, x_max, y_max)
-    #   scores: [1, N] sigmoid confidence per anchor
-    boxes, scores = outputs[0], outputs[1]
-    scores = scores.squeeze()
+    regressor, classifier = session.run(None, {input_name: inp})
+    regressor = regressor[0]  # [2304, 16]: dx, dy, dw, dh, ...landmarks (unused)
+    scores = 1.0 / (1.0 + np.exp(-classifier[0, :, 0]))  # [2304] sigmoid
 
-    sx, sy = w / w_in, h / h_in  # scale from model-input space back to original image
-
-    # Unlike MediaPipe (single argmax), the raw anchor grid fires many
-    # overlapping boxes per face — collect all above threshold, then NMS so
-    # each real face is represented once.
+    # Unlike MediaPipe Tasks (single argmax per face), the raw anchor grid
+    # fires many overlapping boxes per face — collect all above threshold,
+    # then NMS so each real face is represented once.
+    size = _FULLRANGE_INPUT_SIZE
     cand_boxes, cand_scores = [], []
     for i in np.where(scores >= min_score)[0]:
-        box = boxes[0][int(i)][:4]
-        cand_boxes.append((box[0] * sx, box[1] * sy, box[2] * sx, box[3] * sy))
-        cand_scores.append(float(scores[int(i)]))
+        ax, ay = _FULLRANGE_ANCHORS[i]
+        dx, dy, dw, dh = regressor[i, :4]
+        # fixed_anchor_size -> anchor w/h = 1.0 (normalized); scale = input size
+        cx, cy = ax + dx / size, ay + dy / size
+        bw, bh = dw / size, dh / size
+        # normalized letterbox-canvas coords -> canvas pixels -> original image pixels
+        x1 = ((cx - bw / 2) * size - pad_left) / scale
+        y1 = ((cy - bh / 2) * size - pad_top) / scale
+        x2 = ((cx + bw / 2) * size - pad_left) / scale
+        y2 = ((cy + bh / 2) * size - pad_top) / scale
+        cand_boxes.append((x1, y1, x2, y2))
+        cand_scores.append(float(scores[i]))
 
     faces = []
     for i in _nms(cand_boxes, cand_scores):

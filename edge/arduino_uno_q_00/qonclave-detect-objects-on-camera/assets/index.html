@@ -138,10 +138,7 @@ SPDX-License-Identifier: MPL-2.0
     <script>
       const iframe = document.getElementById('dynamicIframe');
       const placeholder = document.getElementById('videoPlaceholder');
-      const currentHostname = window.location.hostname;
-      const targetPort = 4912;
-      const targetPath = '/embed';
-      const streamUrl = `http://${currentHostname}:${targetPort}${targetPath}`;
+      const streamUrl = `${window.location.origin}/camera-preview`;
 
       let intervalId;
 

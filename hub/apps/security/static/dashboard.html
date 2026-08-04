@@ -83,6 +83,15 @@
                   text-align:center; }
   .robot-status.ok { color:var(--ok); }
   .robot-status.err { color:var(--err); }
+  .recognize-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(110px,1fr));
+        gap:10px; margin-top:12px; }
+  .recognize-item { background:#0f1218; border:1px solid var(--border);
+        border-radius:8px; overflow:hidden; }
+  .recognize-item img { width:100%; height:84px; object-fit:cover; display:block;
+        background:#000; }
+  .recognize-item .meta { padding:6px 8px; font-size:11px; }
+  .recognize-item .meta .track { color:var(--muted); margin-bottom:4px; }
+  .recognize-item .pill { font-size:10px; padding:1px 7px; }
 </style>
 </head>
 <body>
@@ -118,6 +127,16 @@
         <label>Reasoning</label>
         <div class="reason" id="reason">—</div>
       </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:18px;">
+    <label>Live recognition feed <span id="recognizePill" class="pill" style="margin-left:8px;font-size:11px;"></span></label>
+    <div class="sub" style="margin-bottom:2px;">
+      Crops arriving via POST /recognize from tracked people on the edge, as they come in.
+    </div>
+    <div id="recognizeGrid" class="recognize-grid">
+      <div style="color:var(--muted);font-size:13px;grid-column:1/-1;">No /recognize calls yet.</div>
     </div>
   </div>
 
@@ -431,12 +450,43 @@ async function refreshLLM() {
   } catch (e) { /* leave prior state */ }
 }
 
+async function refreshRecognizeActivity() {
+  try {
+    const r = await fetch("/user/recognize_activity?limit=16");
+    const j = await r.json();
+
+    $("recognizePill").textContent = j.count ? `${j.count} recent` : "idle";
+    $("recognizePill").className = "pill" + (j.count ? " ok" : "");
+
+    const grid = $("recognizeGrid");
+    if (!j.activity || !j.activity.length) {
+      grid.innerHTML = '<div style="color:var(--muted);font-size:13px;grid-column:1/-1;">No /recognize calls yet.</div>';
+      return;
+    }
+    const statusClass = (s) => s === "known" ? "ok" : s === "unknown" ? "warn" : s === "no_face" ? "" : "err";
+    const statusLabel = (a) => a.status === "known" ? a.identity : a.status.replace("_", " ");
+    grid.innerHTML = j.activity.map(a => `
+      <div class="recognize-item">
+        <img src="/user/recognize_activity/${a.id}.jpg" alt="track ${a.track_id} crop" loading="lazy" />
+        <div class="meta">
+          <div class="track">Track ${a.track_id} · ${shortTime(a.received_at)} · ${a.latency_ms}ms</div>
+          <span class="pill ${statusClass(a.status)}">${statusLabel(a)}</span>
+        </div>
+      </div>`).join("");
+  } catch (e) {
+    $("recognizePill").textContent = "unreachable";
+    $("recognizePill").className = "pill err";
+  }
+}
+
 refresh();
 setInterval(refresh, 2000);
 refreshSMS();
 setInterval(refreshSMS, 2000);
 refreshLLM();
 setInterval(refreshLLM, 2000);
+refreshRecognizeActivity();
+setInterval(refreshRecognizeActivity, 1500);
 </script>
 </body>
 </html>

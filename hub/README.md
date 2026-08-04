@@ -180,6 +180,7 @@ static test pages vary per use case.
 | POST | `/test/mqtt/publish` | Generic MQTT publish proxy: `{"topic": "...", "payload": {...}}` |
 | GET | `/test/mqtt/messages` | Recently received MQTT messages, optionally filtered by `?topic=` |
 | POST | `/edge/event` | Edge event JSON + frame in, policy-driven verification response out |
+| POST | `/recognize` | Per-track-id face identification: one cropped-person JPEG + `track_id` in, `{track_id, identity, confidence, status}` out. Bypasses Policy entirely — a direct `face_id.identify()` passthrough. |
 | POST | `/sms` | Twilio inbound-reply webhook: runs `policy.on_sms_reply()`, optionally publishes MQTT command |
 | GET | `/user/dashboard` | Live event / verification dashboard page (also the default `/user/` landing) |
 | GET | `/user/events` | Recent events + results (JSON) |
@@ -337,6 +338,35 @@ Content-Length: <n>
 ```
 
 Both shapes return the schema-compliant verification response shown above.
+
+## Calling `/recognize` (per-track face identification)
+
+Unlike `/edge/event` (whole-frame, policy-driven, kept for the dashboard),
+`/recognize` is a lightweight, high-frequency-tolerant passthrough straight to
+`FaceIdentityBackend.identify()` — no Policy, no VLM, no dashboard record. The
+uploaded crop is deleted right after inference.
+
+```bash
+curl -F "track_id=4" -F "image=@track_4.jpg" http://HUB_IP:8000/recognize
+```
+
+```json
+{"track_id": 4, "identity": "Jogendra", "confidence": 0.93, "status": "known"}
+```
+
+`status` is one of:
+
+| `status` | `identity` | Meaning |
+|----------|------------|---------|
+| `known` | the matched name | Best match's cosine similarity is above `face_pipeline.THRESHOLD` |
+| `unknown` | `"unknown"` | A face was detected but didn't match anyone in `known_faces/` |
+| `no_face` | `"no_face"` | No face could be detected in the crop |
+| `unavailable` | `"unavailable"` | Face-ID isn't enabled or its models failed to load on this hub |
+
+The edge device (`edge/.../python/recognition_client.py` + `identity_map.py`)
+samples this per tracked person — see that app's README for the sampling
+policy and the known-is-sticky merge rule that keeps a name attached to a
+track once resolved.
 
 ## Dashboard
 

@@ -103,7 +103,7 @@ def main():
         log.info("VLM status after warmup: %s", vlm.status())
         log.info("LLM status after warmup: %s", llm.status())
         log.info("Face ID status after warmup: %s", face_id.status())
-    log.info("Edge  : POST /edge/event")
+    log.info("Edge  : POST /edge/event | POST /recognize (per-track-id face ID)")
     log.info("SMS   : POST /sms  (Twilio inbound-reply webhook)")
     log.info("User  : GET /user/dashboard | GET /user/events | GET /user/latest.jpg")
     log.info("        GET /user/frames/<name> | POST /user/reason | GET /user/")

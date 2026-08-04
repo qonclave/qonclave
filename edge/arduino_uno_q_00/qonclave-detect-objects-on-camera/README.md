@@ -140,6 +140,42 @@ Configurable via environment variables:
 | `PERSON_TRACK_DIRECTION_HISTORY` | `5` | Frames of centroid history used to smooth the direction estimate |
 | `PERSON_TRACK_MIN_MOVEMENT_PX` | `10` | Minimum net movement (px) over the smoothing window before direction is reported as `stationary` |
 
+## Per-Track Face Recognition
+
+Each tracked person (`python/person_tracker.py`'s `track_id`) is independently identified by
+the Qonclave hub: `python/track_crop.py` crops that track's bounding box out of the current
+frame (padded, and rejected if too small or mostly clipped off-frame), and
+`python/recognition_client.py` samples it to the hub's `POST /recognize` endpoint —
+immediately the first time a track appears, then at most once per second while its identity
+is still unresolved, and never again once it's `known`. No frame is ever streamed
+continuously; this is a sampled, per-track request, separate from the whole-frame
+`/edge/event` escalation above and from the LED/auto-centering display, which stays keyed off
+bearing angle only, not identity.
+
+Each track's latest sent crop is saved locally as `track_<id>.jpg` in `TRACK_CROPS_DIR`, so
+you can visually confirm a crop actually shows the right person. `python/identity_map.py`
+then tracks each `track_id -> {name, confidence, status}` with a **known-is-sticky** rule: a
+`"known"` result always updates the entry, but an `"unknown"` / `"no_face"` result only fills
+in a track that has no entry yet — it never overwrites an existing name. That's what keeps a
+name attached to a track through a person briefly turning away or stepping out of frame.
+`status` is one of `unidentified` (no response yet), `known`, `unknown`, `no_face`, or `error`
+(the hub request itself failed). The current map is logged to the console (only when it
+changes) as `Track <id> — <name or status>`, and pushed to the Web UI over the `identity_map`
+message.
+
+Configurable via environment variables:
+
+| Var | Default | Meaning |
+|-----|---------|---------|
+| `TRACK_RECOGNITION_ENABLED` | `1` | Set to `0` to disable per-track recognition entirely |
+| `TRACK_CROP_PADDING` | `0.25` | Fraction of the box's width/height added as padding on the left, right, and bottom edges |
+| `TRACK_CROP_PADDING_TOP` | `0.8` | Fraction of the box's height added above it — larger than `TRACK_CROP_PADDING` by default, since a person's face sits at the top of their box and is the edge most likely to get clipped by a tight detector box |
+| `TRACK_CROP_MIN_SIZE_PX` | `40` | Reject a crop if either dimension, after padding and clamping to the frame, is smaller than this |
+| `TRACK_CROP_MIN_VISIBLE_RATIO` | `0.85` | Reject a crop if less than this fraction of the (unpadded) box actually lies within the frame |
+| `TRACK_CROPS_DIR` | `/app/track_crops` | Where each track's latest crop is saved, as `track_<id>.jpg` |
+| `RECOGNITION_SAMPLE_INTERVAL_SEC` | `1.0` | Minimum seconds between two `/recognize` requests for the same still-unresolved track |
+| `RECOGNITION_REQUEST_TIMEOUT_SEC` | `5` | HTTP request timeout per `/recognize` call |
+
 ## LED Matrix Person Position Display
 
 While a person is being tracked, the onboard **12x8 LED Matrix** shows roughly where
