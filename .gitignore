@@ -62,8 +62,5 @@ edge/**/track_crops/
 # One-off backups taken on-device before deploying a change
 *.bak-pre-*
 
-# Superseded test clip; walking_front_view.mp4 is the tracked one
-edge/**/media/walking_test.mp4
-
 # Arduino App Lab build output
 .cache/
