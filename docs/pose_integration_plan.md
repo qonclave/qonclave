@@ -339,13 +339,5 @@ All tests keep the repo's dependency-free `run_all()` + `if __name__ ==
 - **AI Hub token is now a hard prerequisite.** With no vendored model files,
   nothing pose-related runs until an export completes. `-SkipPose` and the
   `pose: unavailable` degradation path are what keep the hub usable meanwhile.
-- **Face-tuned crop framing degrades pose silently.** `padding_top=0.8` leaves
-  the subject at ~49% of crop height; without the `person_box` re-crop
-  (Phase 4) pose still returns plausible-looking keypoints, just less accurate
-  — no error, no warning. Verify by comparing keypoints from the same frame
-  with and without `person_box` set.
-- **`min_visible_ratio` drops the fall case.** The 0.85 gate rejects anyone
-  >15% out of frame, which is exactly where a fallen person often is. Splitting
-  the threshold per analyzer is not optional if fall detection is the goal.
 - **No caller compatibility.** Replacing `/recognize` outright means the edge
   and the hub must be deployed together; there is no transition window.
