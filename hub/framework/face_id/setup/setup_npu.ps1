@@ -99,9 +99,20 @@ function Extract-And-Copy {
     param([string]$ZipPath, [string]$DestName)
 
     $unzipDir = "$DownloadDir\extracted_$DestName"
+    # $DownloadDir persists across runs, and each AI Hub download extracts into
+    # its own job_<jobid>_optimized_onnx/ subfolder - so without this the dir
+    # accumulates every past run's model.onnx and the Get-ChildItem below picks
+    # whichever job ID happens to sort first, not the one just downloaded. That
+    # silently reinstalled a months-old model over a freshly compiled one; the
+    # only symptom was an input-shape mismatch at inference time.
+    Remove-Item $unzipDir -Recurse -Force -ErrorAction SilentlyContinue
     Expand-Archive -Path $ZipPath -DestinationPath $unzipDir -Force
 
-    $onnxFile = Get-ChildItem $unzipDir -Recurse -Filter "model.onnx" | Select-Object -First 1
+    $onnxFiles = @(Get-ChildItem $unzipDir -Recurse -Filter "model.onnx")
+    if ($onnxFiles.Count -gt 1) {
+        Fail "Expected exactly one model.onnx in $ZipPath, found $($onnxFiles.Count) under $unzipDir"
+    }
+    $onnxFile = $onnxFiles | Select-Object -First 1
     $dataFile = Get-ChildItem $unzipDir -Recurse -Filter "model.data" | Select-Object -First 1
 
     if (-not $onnxFile) { Fail "model.onnx not found in $ZipPath" }
@@ -409,6 +420,32 @@ if ($MediaPipeFaceJobId) {
     # does the anchor-decode + sigmoid + NMS by hand to match.
     Export-FullRangeDetector -DestName "MediaPipeFace"
 }
+
+# Verify the installed detector is actually the full_range model this code
+# decodes. face_pipeline.py's _detect_faces_npu() hardcodes a 192x192 input
+# and a 2304-anchor grid (_FULLRANGE_INPUT_SIZE / _FULLRANGE_NUM_CELLS); the
+# older catalog export is 256x256 with pre-decoded boxes/scores outputs, and
+# installing that by mistake only surfaces as an opaque onnxruntime shape
+# error on the first inference. Catch it here instead.
+Info "Verifying installed detector matches face_pipeline's expected input..."
+& $python -c @"
+import sys, onnx
+EXPECTED = 192  # keep in sync with face_pipeline._FULLRANGE_INPUT_SIZE
+m = onnx.load(r'$ModelsDir\MediaPipeFace.onnx', load_external_data=False)
+shape = [d.dim_value for d in m.graph.input[0].type.tensor_type.shape.dim]
+outs = [o.name for o in m.graph.output]
+if len(shape) != 4 or shape[2] != EXPECTED or shape[3] != EXPECTED:
+    print(f'ERROR: MediaPipeFace.onnx input is {shape}, expected [1, 3, {EXPECTED}, {EXPECTED}].', file=sys.stderr)
+    print('       This looks like the old qai-hub-models catalog export (256x256),', file=sys.stderr)
+    print('       not the full_range conversion. See setup_npu.ps1 header.', file=sys.stderr)
+    sys.exit(1)
+if len(outs) != 2:
+    print(f'ERROR: expected 2 raw anchor outputs, got {len(outs)}: {outs}', file=sys.stderr)
+    sys.exit(1)
+print(f'  detector OK: input {shape}, {len(outs)} raw anchor outputs')
+"@
+if ($LASTEXITCODE -ne 0) { Fail "Installed MediaPipeFace.onnx is not the expected full_range detector." }
+Ok "Detector input shape verified"
 
 if ($CavaFaceJobId) {
     Download-From-Job -JobId $CavaFaceJobId -DestName "CavaFace"
