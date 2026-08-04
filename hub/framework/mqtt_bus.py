@@ -44,6 +44,10 @@ DEFAULT_PORT = 1883
 DEFAULT_CLIENT_ID = "qonclave-hub"
 CONNECT_TIMEOUT_S = 3
 MESSAGES_MAX = 100
+# How long to keep a failed connect() cached before allowing another attempt.
+# Without this, a broker that isn't up yet at hub-startup (e.g. still binding
+# its port) would be marked unavailable for the rest of the process's life.
+RECONNECT_COOLDOWN_S = 5
 
 
 def command_topic(device_id: str) -> str:
@@ -65,7 +69,7 @@ class MQTTBus:
         self.enabled = enabled
         self._client = None
         self._connect_error: str | None = None
-        self._connect_attempted = False
+        self._last_attempt: _dt.datetime | None = None
         self._lock = threading.Lock()
         self._subscriptions: set[str] = set()
         self._messages: "collections.deque[dict]" = collections.deque(maxlen=MESSAGES_MAX)
@@ -76,8 +80,6 @@ class MQTTBus:
             return False
         if self._client is not None:
             return True
-        if self._connect_attempted:
-            return False
         return self.connect()
 
     def status(self) -> dict:
@@ -86,7 +88,7 @@ class MQTTBus:
             "enabled": self.enabled,
             "host": self.host,
             "port": self.port,
-            "connect_attempted": self._connect_attempted,
+            "connect_attempted": self._last_attempt is not None,
             "connect_error": self._connect_error,
         }
 
@@ -95,9 +97,11 @@ class MQTTBus:
         with self._lock:
             if self._client is not None:
                 return True
-            if self._connect_attempted:
+            now = _dt.datetime.now(_dt.timezone.utc)
+            if (self._last_attempt is not None and
+                    (now - self._last_attempt).total_seconds() < RECONNECT_COOLDOWN_S):
                 return False
-            self._connect_attempted = True
+            self._last_attempt = now
 
             if not self.enabled:
                 self._connect_error = "MQTT disabled (QONCLAVE_MQTT_ENABLED=0)"
