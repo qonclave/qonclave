@@ -26,12 +26,17 @@
 # geniex-env interpreter, so the normal hub flow needs no manual run at all.
 # Left unset, this installs into whatever `python` resolves to on PATH, which
 # is what you want for standalone face_id use (no hub server involved).
+#
+# Pass -Internal to route pip through Qualcomm's internal devpi mirror
+# instead of pypi.org, on networks where files.pythonhosted.org is unreachable:
+#   .\setup.ps1 -Internal
 
 param(
     [string]$Token = "",
     [string]$MediaPipeFaceJobId = "",
     [string]$CavaFaceJobId = "",
-    [string]$PythonPath = ""
+    [string]$PythonPath = "",
+    [switch]$Internal
 )
 
 $ErrorActionPreference = "Stop"
@@ -41,6 +46,15 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $PkgDir    = Split-Path -Parent $ScriptDir
 Set-Location $PkgDir
+
+# -Internal routes every pip install below (and in setup_npu.ps1, which this
+# script forwards it to) through Qualcomm's internal devpi mirror instead of
+# pypi.org/files.pythonhosted.org.
+$PipIndexArgs = if ($Internal) {
+    @('--trusted-host', 'devpi.qualcomm.com', '-i', 'https://devpi.qualcomm.com/root/pypi/+simple/')
+} else {
+    @()
+}
 
 function Info { param($m) Write-Host "[INFO]  $m" -ForegroundColor Cyan  }
 function Ok   { param($m) Write-Host "[ OK ]  $m" -ForegroundColor Green }
@@ -99,11 +113,11 @@ if ($arch -eq "ARM64") {
         Write-Host "  into wheels\, then re-run this script." -ForegroundColor Yellow
         Fail "Missing ARM64 opencv wheel for $pyTag."
     }
-    & $python -m pip install $wheel.FullName
+    & $python -m pip install $wheel.FullName @PipIndexArgs
     if ($LASTEXITCODE -ne 0) { Fail "pip install failed for local opencv wheel: $($wheel.Name)" }
     Ok "opencv installed from local wheel: $($wheel.Name)"
 } else {
-    & $python -m pip install opencv-python-headless
+    & $python -m pip install opencv-python-headless @PipIndexArgs
     Ok "opencv-python-headless installed"
 }
 
@@ -111,15 +125,15 @@ if ($arch -eq "ARM64") {
 
 if ($arch -eq "ARM64") {
     Info "Installing onnxruntime-qnn (for NPU support)..."
-    & $python -m pip install onnxruntime-qnn
+    & $python -m pip install onnxruntime-qnn @PipIndexArgs
     Ok "onnxruntime-qnn installed"
 }
 
 # Step 3: mediapipe + qai-hub-models
 
 Info "Installing mediapipe..."
-& $python -m pip install mediapipe --no-deps
-& $python -m pip install matplotlib absl-py sounddevice
+& $python -m pip install mediapipe --no-deps @PipIndexArgs
+& $python -m pip install matplotlib absl-py sounddevice @PipIndexArgs
 if ($LASTEXITCODE -ne 0) { Fail "pip install failed." }
 Ok "mediapipe installed"
 
@@ -161,15 +175,15 @@ if ($reuseBoth) {
         yacs gitpython pillow schema requests_toolbelt "httpx<=0.28.1,>=0.27" `
         gdown boto3 "boto3-stubs[s3]" numpydoc pandas `
         tabulate ipython scipy coverage `
-        --extra-index-url https://download.pytorch.org/whl/cpu -c "$ScriptDir\constraints.txt"
+        --extra-index-url https://download.pytorch.org/whl/cpu -c "$ScriptDir\constraints.txt" @PipIndexArgs
     if ($LASTEXITCODE -ne 0) { Fail "pip install failed." }
 
     Info "Installing qai-hub-models[cavaface] (--no-deps)..."
-    & $python -m pip install "qai-hub-models[cavaface]==0.58.0" --no-deps
+    & $python -m pip install "qai-hub-models[cavaface]==0.58.0" --no-deps @PipIndexArgs
     if ($LASTEXITCODE -ne 0) { Fail "pip install failed." }
 } else {
     Info "Installing qai-hub-models[cavaface] + pillow + numpy..."
-    & $python -m pip install "qai-hub-models[cavaface]" pillow numpy -c "$ScriptDir\constraints.txt"
+    & $python -m pip install "qai-hub-models[cavaface]" pillow numpy -c "$ScriptDir\constraints.txt" @PipIndexArgs
     if ($LASTEXITCODE -ne 0) { Fail "pip install failed." }
 }
 if (-not $reuseBoth) { Ok "qai-hub-models installed" }
@@ -213,6 +227,7 @@ if ($isArm) {
     if ($Token) { $npuArgs.Token = $Token }
     if ($MediaPipeFaceJobId) { $npuArgs.MediaPipeFaceJobId = $MediaPipeFaceJobId }
     if ($CavaFaceJobId) { $npuArgs.CavaFaceJobId = $CavaFaceJobId }
+    if ($Internal) { $npuArgs.Internal = $true }
     & "$ScriptDir\setup_npu.ps1" @npuArgs
     if ($LASTEXITCODE -ne 0) { Fail "NPU setup failed." }
 } else {

@@ -22,6 +22,7 @@ class MotorController {
   void update();
   bool move(String direction, int magnitude);
   void stop();
+  bool isMoving() const;
 
  private:
   static constexpr int TURN_LEFT = 1;

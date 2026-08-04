@@ -97,8 +97,15 @@ class VLMBackend:
         return self._try_load()
 
     def status(self) -> dict:
+        # is_available() (not a bare self._model check) so the FIRST status
+        # call - e.g. the dashboard's initial /user/events poll - triggers the
+        # lazy load itself, matching this method's documented meaning ("is
+        # *or can be* loaded"). Without this, a machine that never got
+        # -Warmup or an explicit /user/reason call reports "unavailable"
+        # forever even though the model loads fine on demand.
+        available = self.is_available()
         return {
-            "available": self._model is not None,
+            "available": available,
             "model_id": self.model_id,
             "device_map": self.device_map,
             "arch": platform.machine(),

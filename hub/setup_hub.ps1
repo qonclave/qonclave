@@ -52,6 +52,10 @@
                         torch: they are the exporter and the CPU embedder, and
                         NPU inference needs neither. Trade-off: no CPU embedder
                         to fall back on if CavaFace.onnx later goes missing.
+      -Internal         resolve all pip installs (here and in the face ID
+                        setup scripts it calls) through Qualcomm's internal
+                        devpi mirror instead of pypi.org - use this on
+                        networks where files.pythonhosted.org is unreachable.
       -- a b c          extra args forwarded to hub/server.py, e.g.:
         .\hub\setup_hub.ps1 -- --verbose --port 8080
 #>
@@ -63,6 +67,7 @@ param(
     [string]$AiHubToken = '',
     [string]$MediaPipeFaceJobId = '',
     [string]$CavaFaceJobId = '',
+    [switch]$Internal,
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$ServerArgs
 )
@@ -90,6 +95,14 @@ $VenvDir         = Join-Path $PSScriptRoot 'geniex-env'
 $RequiredMajor, $RequiredMinor = $PythonVersion.Split('.')[0..1] | ForEach-Object { [int]$_ }
 # This script lives at <repo>/hub/setup_hub.ps1; the repo root is its parent.
 $RepoDir = Split-Path $PSScriptRoot -Parent
+# -Internal routes every pip install (here and in the face ID setup scripts
+# this one calls) through Qualcomm's internal devpi mirror instead of
+# pypi.org/files.pythonhosted.org, for networks that can't reach the latter.
+$PipIndexArgs = if ($Internal) {
+    @('--trusted-host', 'devpi.qualcomm.com', '-i', 'https://devpi.qualcomm.com/root/pypi/+simple/')
+} else {
+    @()
+}
 # ---------------------------------------------------------------------------
 
 function Write-Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
@@ -158,36 +171,7 @@ if (Get-Command git -ErrorAction SilentlyContinue) {
     else { throw "git install did not surface on PATH. Open a new shell and re-run." }
 }
 
-# --- 1b. Claude CLI -----------------------------------------------------------
-Write-Step "Ensuring Claude CLI is installed"
-if (Get-Command claude -ErrorAction SilentlyContinue) {
-    Write-Ok "claude already present: $(claude --version 2>&1)"
-} else {
-    Write-Host "    Installing Claude CLI via npm..."
-    # Ensure Node.js is available (required for npm)
-    if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
-        Write-Host "    Node.js not found - installing via winget..."
-        try {
-            winget install --id OpenJS.NodeJS.LTS -e --source winget --accept-package-agreements --accept-source-agreements
-            $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
-                        [System.Environment]::GetEnvironmentVariable('Path','User')
-        } catch {
-            throw "Failed to install Node.js. Install it manually from https://nodejs.org and re-run."
-        }
-    }
-    if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
-        throw "npm not found after Node.js install. Open a new PowerShell window and re-run."
-    }
-    npm install -g @anthropic-ai/claude-code
-    if ($LASTEXITCODE -ne 0) { throw "Claude CLI install failed." }
-    $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
-                [System.Environment]::GetEnvironmentVariable('Path','User')
-    if (Get-Command claude -ErrorAction SilentlyContinue) {
-        Write-Ok "Claude CLI installed: $(claude --version 2>&1)"
-    } else {
-        Write-Warn "Claude CLI installed but not yet on PATH. Open a new shell to use it."
-    }
-}
+
 
 
 Write-Step "Ensuring Python $PythonVersion is installed"
@@ -381,10 +365,10 @@ if ((Test-VenvComplete) -and $venvAcceptable) {
 Write-Step "Installing Python packages into the venv (using its python directly, no PATH)"
 # Drive everything through the venv's own python.exe by ABSOLUTE PATH so this
 # works even though the venv is not 'activated' on PATH in this session.
-& $VenvPython -m pip install --upgrade pip
+& $VenvPython -m pip install --upgrade pip @PipIndexArgs
 
 if ($IsArm) {
-    & $VenvPython -m pip install -U geniex
+    & $VenvPython -m pip install -U geniex @PipIndexArgs
 
     # --- 5. Verify geniex ----------------------------------------------------
     Write-Step "Verifying geniex install"
@@ -395,7 +379,7 @@ if ($IsArm) {
 
 # --- 6. Install hub requirements --------------------------------------------
 Write-Step "Installing hub requirements into the venv"
-& $VenvPython -m pip install -r (Join-Path $RepoDir 'hub\requirements.txt')
+& $VenvPython -m pip install -r (Join-Path $RepoDir 'hub\requirements.txt') @PipIndexArgs
 Write-Ok "requirements installed"
 
 # --- 6b. Install face ID into the SAME venv ----------------------------------
@@ -455,6 +439,7 @@ if ($SkipFaceId) {
         if ($AiHubToken)         { $faceArgs.Token              = $AiHubToken }
         if ($MediaPipeFaceJobId) { $faceArgs.MediaPipeFaceJobId = $MediaPipeFaceJobId }
         if ($CavaFaceJobId)      { $faceArgs.CavaFaceJobId      = $CavaFaceJobId }
+        if ($Internal)           { $faceArgs.Internal           = $true }
 
         # Non-fatal: the hub server runs fine without face ID (it degrades to
         # "not_enabled"), and on ARM64 this step can need an AI Hub token /

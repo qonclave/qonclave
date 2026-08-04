@@ -19,8 +19,12 @@ from arduino.app_bricks.video_objectdetection import VideoObjectDetection
 from arduino.app_peripherals.camera import IPCamera, V4LCamera
 
 import json
+from basic_auth import BasicAuthMiddleware
 from file_camera import FileCamera
+from led_display import person_display_bitmap
 from mqtt_client import EdgeMQTTClient
+from person_centering import PersonCenteringController, horizontal_bearing_degrees
+from person_tracker import PersonTracker
 
 load_dotenv()
 
@@ -182,6 +186,14 @@ def get_or_trigger_icon(label: str):
 # always has /dev access).
 CAMERA_SOURCE = os.environ.get("CAMERA_SOURCE", "usb").strip().lower()
 
+# A 360-degree dual-lens rig stacks rear-camera on top, front-camera on the
+# bottom of a single frame; the LED matrix's row mapping needs to be
+# vertically flipped to match (front/bottom-half -> top rows, rear/top-half
+# -> bottom rows). Plain USB/IP cameras must NOT set this.
+CAMERA_DUAL_LENS_STACKED = os.environ.get("CAMERA_DUAL_LENS_STACKED", "false").strip().lower() in ("1", "true", "yes")
+CAMERA_HORIZONTAL_FOV_DEGREES = float(os.environ.get("CAMERA_HORIZONTAL_FOV_DEGREES", "70"))
+CAMERA_DUAL_LENS_FOV_DEGREES = float(os.environ.get("CAMERA_DUAL_LENS_FOV_DEGREES", "180"))
+
 if CAMERA_SOURCE == "ip":
   IP_CAMERA_URL = os.environ.get("IP_CAMERA_URL", "http://192.168.18.65:8080/video")
   IP_CAMERA_USERNAME = os.environ.get("IP_CAMERA_USERNAME") or None
@@ -203,6 +215,15 @@ else:
   camera = V4LCamera(device=USB_CAMERA_DEVICE)
 
 ui = WebUI()
+
+WEB_UI_USERNAME = os.environ.get("WEB_UI_USERNAME", "").strip()
+WEB_UI_PASSWORD = os.environ.get("WEB_UI_PASSWORD", "").strip()
+if WEB_UI_USERNAME and WEB_UI_PASSWORD:
+  ui.app.add_middleware(BasicAuthMiddleware, username=WEB_UI_USERNAME, password=WEB_UI_PASSWORD)
+  log.info("Web UI protected with HTTP Basic Auth.")
+else:
+  log.warning("WEB_UI_USERNAME/WEB_UI_PASSWORD not set: Web UI is running WITHOUT authentication.")
+
 def _send_current_hub_status():
   try:
     ui.send_message("hub_status", message={
@@ -298,6 +319,24 @@ HUB_EVENT_TIMEOUT_SEC = float(os.environ.get("HUB_EVENT_TIMEOUT_SEC", "5"))
 ESCALATION_DIR = os.environ.get("ESCALATION_DIR", "/app/escalations")
 ESCALATION_MAX_FILES = int(os.environ.get("ESCALATION_MAX_FILES", "100"))
 
+# --- Person tracking: assign a persistent ID + coarse direction to each
+# detected person across frames, using only the bounding boxes VideoObjectDetection
+# already emits. See python/person_tracker.py for the matching approach.
+person_tracker = PersonTracker(
+  max_disappeared=int(os.environ.get("PERSON_TRACK_MAX_DISAPPEARED", "10")),
+  max_distance=float(os.environ.get("PERSON_TRACK_MAX_DISTANCE_PX", "150")),
+  direction_history=int(os.environ.get("PERSON_TRACK_DIRECTION_HISTORY", "5")),
+  min_movement_px=float(os.environ.get("PERSON_TRACK_MIN_MOVEMENT_PX", "10")),
+)
+person_centering = PersonCenteringController(
+  enabled=os.environ.get("PERSON_AUTO_CENTER_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on"),
+  tolerance_degrees=float(os.environ.get("PERSON_CENTER_TOLERANCE_DEGREES", "3")),
+  max_turn_degrees=float(os.environ.get("PERSON_CENTER_MAX_TURN_DEGREES", "90")),
+  minimum_interval_seconds=float(os.environ.get("PERSON_CENTER_MIN_INTERVAL_SEC", "0.75")),
+  estimated_ms_per_degree=float(os.environ.get("PERSON_CENTER_ESTIMATED_MS_PER_DEGREE", "12")),
+  settle_seconds=float(os.environ.get("PERSON_CENTER_SETTLE_SEC", "0.35")),
+)
+
 _hub_event_lock = threading.Lock()
 _last_hub_event_at = 0.0
 
@@ -383,7 +422,63 @@ def maybe_notify_hub(detections: dict, frame: bytes | None):
 
 # Register a callback for when all objects are detected
 def send_detections_to_ui(detections: dict, frame: bytes | None = None):
-  if detections:
+  person_tracks = person_tracker.update(detections.get("person", []))
+
+  if person_tracks:
+    # A person is actively tracked: show its position on the LED matrix
+    # instead of the usual object icon. Pick the most-established track so a
+    # briefly-flickering new detection doesn't steal the display.
+    tracked = max(person_tracks, key=lambda t: t["frames_tracked"])
+    cx, cy = tracked["centroid"]
+    frame_w, frame_h = camera.resolution
+    angle_to_center = horizontal_bearing_degrees(
+      (cx, cy), frame_w, frame_h,
+      horizontal_fov_degrees=CAMERA_HORIZONTAL_FOV_DEGREES,
+      dual_lens_stacked=CAMERA_DUAL_LENS_STACKED,
+      dual_lens_fov_degrees=CAMERA_DUAL_LENS_FOV_DEGREES,
+    )
+    tracked["angle_to_center_degrees"] = angle_to_center
+    log.debug(
+      f"Tracking person {tracked['track_id']}: angle_to_center={angle_to_center:.2f}°, "
+      f"motion={tracked['direction']}"
+    )
+    ui.send_message("person_tracking_status", message={
+      "track_id": tracked["track_id"],
+      "angle_to_center_degrees": angle_to_center,
+      "centered": abs(angle_to_center) <= person_centering.tolerance_degrees,
+      "centroid": [cx, cy],
+    })
+
+    try:
+      motion_active = Bridge.call("robot_motion_active")
+      turn = None if motion_active else person_centering.command_for(
+        angle_to_center, tracked["track_id"]
+      )
+      if turn:
+        status = _execute_robot_command({
+          "direction": turn.direction,
+          "magnitude": turn.magnitude,
+        })
+        status.update({
+          "automatic": True,
+          "track_id": turn.track_id,
+          "angle_error_degrees": turn.angle_error_degrees,
+        })
+        ui.send_message("robot_move_status", message=status)
+        log.info(
+          f"Auto-centering person {turn.track_id}: {turn.direction} "
+          f"{turn.magnitude}° (measured error {turn.angle_error_degrees:.2f}°)"
+        )
+    except Exception as e:
+      log.error(f"Person auto-centering command failed: {e}")
+
+    if CAMERA_DUAL_LENS_STACKED:
+      cy = frame_h - cy  # rear (top half) -> bottom rows, front (bottom half) -> top rows
+    bitmap = person_display_bitmap((cx, cy), frame_w, frame_h)
+    bitstring = "".join("1" if val else "0" for r in bitmap for val in r[:12])
+    Bridge.call("set_custom_led_array", bitstring)
+    ui.send_message("led_status", message={"state": "active", "trigger": "person", "bitmap": bitmap, "ai_generated": False})
+  elif detections:
     first_obj = list(detections.keys())[0]
     bitmap, is_generating = get_or_trigger_icon(first_obj)
     bitstring = "".join("1" if val else "0" for r in bitmap for val in r[:12]) if bitmap else "0" * 96

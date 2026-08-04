@@ -15,6 +15,19 @@ through an AI model using the `video_objectdetection` Brick, and displaying the
 bounding boxes around detections. The App is managed from an interactive web
 interface.
 
+## Web UI Login
+
+The Web UI (`<board-name>.local:7000`) is protected with HTTP Basic Auth. Set both
+`WEB_UI_USERNAME` and `WEB_UI_PASSWORD` (as env vars / Brick Configuration in App
+Lab) before running the app — the browser will prompt for these credentials on
+first visit. If either var is left unset, the app starts with a warning logged and
+the Web UI is reachable by anyone on the network without a login.
+
+| Var | Default | Meaning |
+|-----|---------|---------|
+| `WEB_UI_USERNAME` | _(none)_ | Login username for the Web UI |
+| `WEB_UI_PASSWORD` | _(none)_ | Login password for the Web UI |
+
 ## Camera Source
 
 Controlled by `CAMERA_SOURCE` — switching between USB, IP camera, and video file is
@@ -28,6 +41,7 @@ unconditionally.
 | Var | Default | Meaning |
 |-----|---------|---------|
 | `CAMERA_SOURCE` | `file` | `usb` for a physically-connected USB camera, `ip` for an Android IP-camera stream, or `file` to loop a local video file instead of a live feed |
+| `CAMERA_DUAL_LENS_STACKED` | `false` | Set to `true` when the camera is a 360° dual-lens rig that stacks the rear-camera image on top and the front-camera image on the bottom of a single frame. Flips the LED Matrix position display's row mapping to match (see LED Matrix Person Position Display below); leave `false` for a normal single-lens camera. |
 
 ### USB (default)
 
@@ -104,6 +118,68 @@ App Lab):
 | `HUB_EVENT_HYSTERESIS_SEC` | `10` | Minimum seconds between two hub events |
 | `HUB_EVENT_TIMEOUT_SEC` | `5` | HTTP request timeout when posting to the hub |
 
+## Person Tracking
+
+Each detection frame from `video_objectdetection` is independent — it has no notion of
+"this is the same person as last frame." To support future features like rotating the
+camera to follow a person, `python/person_tracker.py` assigns persistent track IDs to
+detected people across frames using a lightweight greedy nearest-centroid tracker (no
+extra dependencies), and estimates a coarse 8-way movement direction (`left`, `right`,
+`up`, `down`, and diagonals, or `stationary`) from recent centroid history.
+
+Each frame's person tracks are logged (`qonclave.edge` logger, debug level) and drive
+the LED Matrix position display described below — direction itself doesn't yet drive
+camera rotation, that's the next step.
+
+Configurable via environment variables:
+
+| Var | Default | Meaning |
+|-----|---------|---------|
+| `PERSON_TRACK_MAX_DISAPPEARED` | `10` | Frames a person can go unmatched before their track is dropped |
+| `PERSON_TRACK_MAX_DISTANCE_PX` | `150` | Max centroid movement (px) between frames to still count as the same person |
+| `PERSON_TRACK_DIRECTION_HISTORY` | `5` | Frames of centroid history used to smooth the direction estimate |
+| `PERSON_TRACK_MIN_MOVEMENT_PX` | `10` | Minimum net movement (px) over the smoothing window before direction is reported as `stationary` |
+
+## LED Matrix Person Position Display
+
+While a person is being tracked, the onboard **12x8 LED Matrix** shows roughly where
+they are in the camera frame instead of the usual object-class icon: `python/led_display.py`
+projects the tracked person's centroid (in the camera frame's pixel space, via
+`camera.resolution`) outward from the frame's center onto the grid's **outer ring**
+(row 0, row 7, and the left/right columns of the rows in between) — a ray-cast
+projection, so the lit position sweeps smoothly all the way around the ring as the
+person moves anywhere in frame, and never encroaches on the interior. Of the currently
+tracked people, the most-established track (the one tracked over the most frames) is
+shown, so a briefly-flickering new detection doesn't steal the display from an existing
+one. There's no separate arrow or icon for direction — the dot's position shifting
+around the ring frame-to-frame is the direction signal.
+
+Constraining the position indicator to the ring frees up the interior **6x10 region**
+for a **person emotion** indicator, shown at the same time: `emotion_bitmap()` in
+`led_display.py` currently renders a hardcoded smiley placeholder, but is structured so
+an LLM-generated emotion bitmap (mirroring the existing per-object icon pipeline that
+queries the Qonclave Hub's `/edge/icon` endpoint) can be dropped in later without
+changing the call site.
+
+As soon as no person is tracked, the display reverts to the normal object icon (or
+clear) behavior.
+
+### 360° dual-lens cameras
+
+Some 360° cameras deliver a single frame with the **rear-camera image stacked on top**
+and the **front-camera image on the bottom**. For that layout, the raw top/bottom pixel
+position is the opposite of the LED matrix's natural top/bottom rows: a person seen by
+the front camera (bottom half of the frame) should light up the **top** rows, and a
+person seen by the rear camera (top half of the frame) should light up the **bottom**
+rows. Setting `CAMERA_DUAL_LENS_STACKED=true` (see Camera Source above) makes
+`main.py` vertically flip the centroid's Y coordinate before mapping it to the grid, so
+the displayed position matches which physical camera actually saw the person. Leave it
+`false` for a normal single-lens camera, where the frame's top/bottom already matches
+the matrix's top/bottom rows.
+
+This reuses the existing `set_custom_led_array` Bridge call — no `sketch/sketch.ino` change
+was needed.
+
 ## Hardware and Software Requirements
 
 ### Hardware
@@ -166,8 +242,11 @@ Here is a brief explanation of the full-stack application:
   - Flattens the 12x8 grid into a 96-character bitstring and transmits it to the microcontroller firmware via `Bridge.call("set_custom_led_array", bitstring)`.
   - Pushes dynamic bitmap data and an `ai_generated` boolean flag to the frontend via `ui.send_message("led_status", ...)`.
 
+- **Person Position + Emotion on LED Matrix (`led_display.py`)**:
+  - While `person_tracker.py` has an active person track, `led_display.person_display_bitmap()` projects that track's centroid (via `camera.resolution`, flipped first when `CAMERA_DUAL_LENS_STACKED=true`) onto the grid's outer ring and composes it with a center smiley placeholder, instead of the usual object icon, and reverts to icon rendering once no person is tracked.
+
 - Wires detection events to actions using callbacks:
-  - `on_detect_all(send_detections_to_ui)`: sends `{ content, confidence, timestamp }` via `ui.send_message("detection", ...)` and triggers icon rendering.
+  - `on_detect_all(send_detections_to_ui)`: sends `{ content, confidence, timestamp }` via `ui.send_message("detection", ...)` and triggers icon rendering (or the person-position display, when applicable).
 
 ---
 

@@ -63,6 +63,10 @@ bool move_robot(String direction, int magnitude) {
   return motors.move(direction, magnitude);
 }
 
+bool robot_motion_active() {
+  return motors.isMoving();
+}
+
 void setup() {
   motors.begin();
 
@@ -75,6 +79,7 @@ void setup() {
   Bridge.provide("set_custom_led_array", set_custom_led_array_handler);
   Bridge.provide("move_robot", move_robot);
   Bridge.provide("stop_robot", stop_robot);
+  Bridge.provide("robot_motion_active", robot_motion_active);
 
   smoothedKnob = analogRead(KNOB_PIN);
 }
