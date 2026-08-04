@@ -23,6 +23,7 @@ from basic_auth import BasicAuthMiddleware
 from file_camera import FileCamera
 from led_display import person_display_bitmap
 from mqtt_client import EdgeMQTTClient
+from person_centering import PersonCenteringController, horizontal_bearing_degrees
 from person_tracker import PersonTracker
 
 load_dotenv()
@@ -190,6 +191,8 @@ CAMERA_SOURCE = os.environ.get("CAMERA_SOURCE", "usb").strip().lower()
 # vertically flipped to match (front/bottom-half -> top rows, rear/top-half
 # -> bottom rows). Plain USB/IP cameras must NOT set this.
 CAMERA_DUAL_LENS_STACKED = os.environ.get("CAMERA_DUAL_LENS_STACKED", "false").strip().lower() in ("1", "true", "yes")
+CAMERA_HORIZONTAL_FOV_DEGREES = float(os.environ.get("CAMERA_HORIZONTAL_FOV_DEGREES", "70"))
+CAMERA_DUAL_LENS_FOV_DEGREES = float(os.environ.get("CAMERA_DUAL_LENS_FOV_DEGREES", "180"))
 
 if CAMERA_SOURCE == "ip":
   IP_CAMERA_URL = os.environ.get("IP_CAMERA_URL", "http://192.168.18.65:8080/video")
@@ -325,6 +328,14 @@ person_tracker = PersonTracker(
   direction_history=int(os.environ.get("PERSON_TRACK_DIRECTION_HISTORY", "5")),
   min_movement_px=float(os.environ.get("PERSON_TRACK_MIN_MOVEMENT_PX", "10")),
 )
+person_centering = PersonCenteringController(
+  enabled=os.environ.get("PERSON_AUTO_CENTER_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on"),
+  tolerance_degrees=float(os.environ.get("PERSON_CENTER_TOLERANCE_DEGREES", "3")),
+  max_turn_degrees=float(os.environ.get("PERSON_CENTER_MAX_TURN_DEGREES", "90")),
+  minimum_interval_seconds=float(os.environ.get("PERSON_CENTER_MIN_INTERVAL_SEC", "0.75")),
+  estimated_ms_per_degree=float(os.environ.get("PERSON_CENTER_ESTIMATED_MS_PER_DEGREE", "12")),
+  settle_seconds=float(os.environ.get("PERSON_CENTER_SETTLE_SEC", "0.35")),
+)
 
 _hub_event_lock = threading.Lock()
 _last_hub_event_at = 0.0
@@ -414,13 +425,53 @@ def send_detections_to_ui(detections: dict, frame: bytes | None = None):
   person_tracks = person_tracker.update(detections.get("person", []))
 
   if person_tracks:
-    log.debug(f"Person tracks: {[{'id': t['track_id'], 'direction': t['direction']} for t in person_tracks]}")
     # A person is actively tracked: show its position on the LED matrix
     # instead of the usual object icon. Pick the most-established track so a
     # briefly-flickering new detection doesn't steal the display.
     tracked = max(person_tracks, key=lambda t: t["frames_tracked"])
     cx, cy = tracked["centroid"]
     frame_w, frame_h = camera.resolution
+    angle_to_center = horizontal_bearing_degrees(
+      (cx, cy), frame_w, frame_h,
+      horizontal_fov_degrees=CAMERA_HORIZONTAL_FOV_DEGREES,
+      dual_lens_stacked=CAMERA_DUAL_LENS_STACKED,
+      dual_lens_fov_degrees=CAMERA_DUAL_LENS_FOV_DEGREES,
+    )
+    tracked["angle_to_center_degrees"] = angle_to_center
+    log.debug(
+      f"Tracking person {tracked['track_id']}: angle_to_center={angle_to_center:.2f}°, "
+      f"motion={tracked['direction']}"
+    )
+    ui.send_message("person_tracking_status", message={
+      "track_id": tracked["track_id"],
+      "angle_to_center_degrees": angle_to_center,
+      "centered": abs(angle_to_center) <= person_centering.tolerance_degrees,
+      "centroid": [cx, cy],
+    })
+
+    try:
+      motion_active = Bridge.call("robot_motion_active")
+      turn = None if motion_active else person_centering.command_for(
+        angle_to_center, tracked["track_id"]
+      )
+      if turn:
+        status = _execute_robot_command({
+          "direction": turn.direction,
+          "magnitude": turn.magnitude,
+        })
+        status.update({
+          "automatic": True,
+          "track_id": turn.track_id,
+          "angle_error_degrees": turn.angle_error_degrees,
+        })
+        ui.send_message("robot_move_status", message=status)
+        log.info(
+          f"Auto-centering person {turn.track_id}: {turn.direction} "
+          f"{turn.magnitude}° (measured error {turn.angle_error_degrees:.2f}°)"
+        )
+    except Exception as e:
+      log.error(f"Person auto-centering command failed: {e}")
+
     if CAMERA_DUAL_LENS_STACKED:
       cy = frame_h - cy  # rear (top half) -> bottom rows, front (bottom half) -> top rows
     bitmap = person_display_bitmap((cx, cy), frame_w, frame_h)

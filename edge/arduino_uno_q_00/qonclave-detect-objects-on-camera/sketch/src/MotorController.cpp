@@ -80,6 +80,10 @@ void MotorController::stop() {
   turnOutputOn_ = false;
 }
 
+bool MotorController::isMoving() const {
+  return movementActive_;
+}
+
 void MotorController::setMotorPins(bool left1, bool left2, bool right1,
                                    bool right2) {
   digitalWrite(config_.leftInput1Pin, left1 ? HIGH : LOW);
