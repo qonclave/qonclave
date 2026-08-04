@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Conclave — Edge Assistant</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>Conclave</h1>
+    <div id="hub-status" class="hub-status hub-offline">
+      <span class="dot"></span>
+      <span id="hub-status-text">Hub Offline</span>
+    </div>
+  </header>
+
+  <main>
+    <section id="state-section">
+      <div id="state-badge" class="state-badge state-idle">IDLE</div>
+      <p class="state-hint" id="state-hint">Say <strong>"Conclave"</strong> to start</p>
+    </section>
+
+    <section id="conversation-section">
+      <div id="query-bubble" class="bubble bubble-query hidden">
+        <span class="bubble-label">You</span>
+        <span id="query-text"></span>
+      </div>
+      <div id="response-bubble" class="bubble bubble-response hidden">
+        <span class="bubble-label">Conclave</span>
+        <span id="response-text"></span>
+        <span id="tool-badge" class="tool-badge hidden"></span>
+      </div>
+    </section>
+  </main>
+
+  <script src="libs/socket.io.min.js"></script>
+  <script src="libs/arduino.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
