@@ -47,6 +47,10 @@ hub/framework/face_id/known_faces/.embeddings_*.npy
 # Hub runtime uploads (camera frames received from edge devices)
 hub/uploads/
 
+# Hub runtime-generated icon cache + VLM placeholder image
+hub/icons_cache.json
+hub/scratch_blank.jpg
+
 # Edge escalation frames saved locally on threshold-triggered detections
 edge/**/escalations/
 

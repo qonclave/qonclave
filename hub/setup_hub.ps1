@@ -80,7 +80,7 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 
 # ---- Config ---------------------------------------------------------------
-$PythonVersion   = '3.13.3'
+$PythonVersion   = '3.12.10'
 $PythonUrl       = "https://www.python.org/ftp/python/$PythonVersion/python-$PythonVersion-arm64.exe"
 # Pinned Git for Windows ARM64 build, used only as a fallback when winget
 # itself can't run (see step 1) - not "latest", so this stays reproducible.
@@ -187,10 +187,18 @@ function Test-ArmPython($exe) {
     # just prints "Python was not found; run without arguments to install from
     # the Microsoft Store" and exits. Lives under ...\WindowsApps\.
     if ($exe -match '\\WindowsApps\\') { return $false }
-    $machine = (& $exe -c "import platform; print(platform.machine())" 2>$null)
-    $ver     = (& $exe -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>$null)
-    if ($LASTEXITCODE -ne 0 -or -not $machine -or -not $ver) { return $false }
-    if ($machine -notmatch 'ARM64') { return $false }
+    # sysconfig.get_platform() reflects how THIS interpreter was actually
+    # compiled ('win-arm64' vs 'win-amd64'), unlike platform.machine() - which
+    # on Windows reads the OS's native architecture (via PROCESSOR_ARCHITEW6432
+    # under WOW64), so an x64 Python running under emulation on an ARM64 box
+    # still reports 'ARM64' there too. Relying on machine() alone lets an x64
+    # interpreter (e.g. an Anaconda/Miniconda install on PATH) be mistaken for
+    # the real ARM64 build, producing a venv that can never install win_arm64
+    # wheels.
+    $platformTag = (& $exe -c "import sysconfig; print(sysconfig.get_platform())" 2>$null)
+    $ver         = (& $exe -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>$null)
+    if ($LASTEXITCODE -ne 0 -or -not $platformTag -or -not $ver) { return $false }
+    if ($platformTag -notmatch 'arm64') { return $false }
     $mj,$mn = $ver.Split('.') | ForEach-Object { [int]$_ }
     return ($mj -eq $RequiredMajor -and $mn -eq $RequiredMinor)
 }
@@ -289,7 +297,14 @@ if ($pythonExe) {
     $installer = Join-Path $env:TEMP "python-$PythonVersion-arm64.exe"
     Invoke-WebRequest -Uri $PythonUrl -OutFile $installer
     Write-Host "    Running silent install (per-user, adds to PATH)..."
-    $installArgs = @('/quiet', 'InstallAllUsers=0', 'PrependPath=1', 'Include_launcher=1', 'Include_pip=1')
+    # Include_launcher=0: on a locked-down box (WDAC/Software Restriction
+    # Policy enforced), the py-launcher package's shell-extension registration
+    # (ARM64_SHELLEXT) can get rejected by policy (MSI error 1625) even though
+    # every other component (core/exe/dev/lib/test/doc/tcltk) installs fine -
+    # and because the installer bundle is atomic, that one failure rolls back
+    # the entire install. The launcher is a convenience `py` command only;
+    # Get-Python resolves the interpreter by absolute path and doesn't need it.
+    $installArgs = @('/quiet', 'InstallAllUsers=0', 'PrependPath=1', 'Include_launcher=0', 'Include_pip=1')
     Start-Process -FilePath $installer -ArgumentList $installArgs -Wait
     # Refresh PATH for current session (best-effort; we resolve by absolute path anyway)
     $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
