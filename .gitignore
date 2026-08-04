@@ -54,5 +54,16 @@ hub/scratch_blank.jpg
 # Edge escalation frames saved locally on threshold-triggered detections
 edge/**/escalations/
 
+# Edge per-track person crops (track_crop.save_crop_locally). Regenerated at
+# runtime and overwritten per track_id — and they are photographs of whoever
+# walked past the camera, so they must not end up in the repo.
+edge/**/track_crops/
+
+# One-off backups taken on-device before deploying a change
+*.bak-pre-*
+
+# Superseded test clip; walking_front_view.mp4 is the tracked one
+edge/**/media/walking_test.mp4
+
 # Arduino App Lab build output
 .cache/
