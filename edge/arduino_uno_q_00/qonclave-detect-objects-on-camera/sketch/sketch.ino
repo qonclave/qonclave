@@ -22,6 +22,8 @@ int smoothedKnob = 500;
 int lastSentPercentage = -1;
 String currentObject = "clear";
 unsigned long lastKnobReadAt = 0;
+unsigned long lastImuStatusAt = 0;
+uint32_t lastImuSample = 0;
 
 // 12x8 Bitmap Icons (1 = LED ON, 0 = LED OFF; 13th column is hardware alignment padding)
 
@@ -68,6 +70,9 @@ bool robot_motion_active() {
 }
 
 void setup() {
+  Serial.begin(115200);
+  if (Serial) Serial.println("[IMU] Starting BNO08x diagnostics");
+
   motors.begin();
 
   matrix.begin();
@@ -87,6 +92,21 @@ void setup() {
 void loop() {
   Bridge.update();
   motors.update();
+
+  const uint32_t imuSample = orientation.sampleCount();
+  if (Serial && imuSample != lastImuSample && orientation.available() &&
+      millis() - lastImuStatusAt >= 250) {
+    lastImuSample = imuSample;
+    lastImuStatusAt = millis();
+    Serial.print("[IMU] angle_deg=");
+    Serial.print(orientation.angleDegrees(), 2);
+    Serial.print(" sample=");
+    Serial.println(imuSample);
+  } else if (Serial && !orientation.ready() &&
+             millis() - lastImuStatusAt >= 2000) {
+    lastImuStatusAt = millis();
+    Serial.println("[IMU] ERROR sensor not connected; retrying");
+  }
 
   if (millis() - lastKnobReadAt >= 15) {
     lastKnobReadAt = millis();
