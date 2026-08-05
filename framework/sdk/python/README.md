@@ -55,7 +55,7 @@ python -m pytest tests -v
 
 | | |
 |---|---|
-| `test_layering.py` | parses imports and enforces the [dependency ladder](../../CONVENTIONS.md), including that role packages never import each other |
+| `test_layering.py` | parses imports and enforces the [dependency ladder](../../docs/CONVENTIONS.md), including that role packages never import each other |
 | `test_spec_conformance.py` | every model against its JSON Schema, and the fixtures in [`../../conformance/`](../../conformance/) |
 | `test_placement.py` | the ladder mechanism — fallback, `deny` enforcement, deadline accounting |
 | `test_interop.py` | decodes CBOR emitted by the **C** binding and checks it means the same thing |
@@ -84,7 +84,7 @@ edge/ hub/ compute/ archive/                    roles — never import each othe
 cli.py
 ```
 
-The order is the dependency ladder from [`../../CONVENTIONS.md`](../../CONVENTIONS.md), and it is
+The order is the dependency ladder from [`../../docs/CONVENTIONS.md`](../../docs/CONVENTIONS.md), and it is
 enforced by a test rather than by review. It is also why `inference/` and `storage/` sit *below*
 the roles: a hub doing its own VLM work must not have to import `qonclave.compute`, or "optional"
 would not be true.

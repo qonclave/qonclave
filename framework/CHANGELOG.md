@@ -57,4 +57,4 @@ and independently under `spec/v1/`.
 
 `hub/` and `edge/` are untouched. `hub/framework/` still runs the working demo; `framework/` is a
 parallel implementation. Pointing `hub/server.py` at `qonclave.hub` is a separate, later change —
-`CONVENTIONS.md` carries the module-by-module map.
+`docs/CONVENTIONS.md` carries the module-by-module map.

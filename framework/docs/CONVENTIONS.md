@@ -4,6 +4,40 @@ The rules that keep this package coherent. Two of them are enforced by tests rat
 review, because a layering rule that lives only in a document is one that gets broken during the
 first tired refactor and stays broken until someone finds Flask on a sensor.
 
+![The three layers: spec, sdk, app](assets/conventions/layering.svg)  
+*[Edit in Excalidraw](assets/conventions/layering.excalidraw)*
+
+Three layers, three questions:
+
+| Layer | The question it answers | The test |
+|---|---|---|
+| `spec/v1/` | What must every implementation agree on? | Could a C edge and a Python hub disagree about it? |
+| `sdk/` | How is that agreement expressed in code? | Is it a contract, a name, or an encoding? Then yes. Is it a library that opens a socket? Then no. |
+| `hub/apps/<name>/` | What does any of it *mean*, and what carries it? | The application-specific blocks: the only layer where "person" appears, and the only layer that picks a client library. |
+
+`security/` is this repo's example, not the definition. Every app supplies all three of the green
+blocks — its own meaning, its own pipes, its own egress.
+
+**The SDK owns the contract, the naming, and the encoding. The developer supplies the pipe.**
+
+This is the rule that is easiest to get backwards, so state it concretely. `transport/` holds the
+`Transport` and `PubSubTransport` ABCs and the scheme registry. It does **not** hold a `paho`
+client, a `requests` session, or an `aiocoap` context — those are the developer's choice, and they
+live wherever that developer wants them. The same applies to egress: `EgressChannel` is the
+contract, and a Twilio client is not.
+
+What stays normative is only the part two implementations could disagree about. A developer who
+writes their own MQTT transport must still publish to `qonclave/commands/<node_id>` carrying a
+spec `Command` — so that naming lives in `core/`, as spec-derived data, testable by
+`conformance/` with no broker anywhere in sight. Put the topic string in the transport
+implementation instead and it drifts once per application, which is exactly how this repo already
+ended up with two incompatible topic layouts.
+
+"The developer's choice" is bounded, not unbounded: [`spec/v1/profiles/`](../spec/v1/profiles/) says
+a `full` node must be reachable over HTTP, MQTT, and gRPC, while a `minimal` one owes nothing more
+than "one exchange, any link." The profile fixes *what must be supported*; the developer picks
+*what implements it*.
+
 ---
 
 ## 1. The spec is normative; code is a binding
@@ -63,6 +97,18 @@ The rule that decides this: **if more than one role needs it, it belongs below t
 | running a model | `inference/` | `compute/` |
 | persisting a record | `storage/` | `archive/` |
 | deciding where work runs | `placement/` | — |
+| naming a topic or route | `core/` | — |
+| **carrying bytes** | `transport/` — **the ABCs and registry only** | the client library lives in the **app** |
+| **reaching a human** | `hub/egress/` — **the ABC only** | the vendor client lives in the **app** |
+
+The last two rows are what this table originally got wrong, in the same way twice. The framework
+must be in both paths — `SECURITY.md` §1 makes the hub the only node permitted egress, and
+placement cannot promise a deadline the layer beneath it may block past, which is why
+`Transport.request` obliges implementations to honor `timeout_s`. But being in the path means
+owning the **contract**, not shipping the **client**. `paho`, `requests`, `aiocoap`, `grpcio`, and
+`twilio` are all the same kind of thing: somebody else's library for reaching somebody else's
+process. None of them belong in a binding whose whole claim is to be transport- and
+vendor-agnostic.
 
 Putting `ModelBackend` inside `compute/` was the original design and it was wrong: a hub doing its
 own VLM work would have had to import the optional server it is supposed to be able to do without.
@@ -115,10 +161,11 @@ once a day:
 |---|---|
 | `policy.py` | `hub/policy.py` |
 | `server.py` | `hub/app.py` |
-| `transport.py` | `hub/ingest.py` + `transport/http.py` |
+| `transport.py` | `hub/ingest.py` — the Flask half stays in the app |
 | `events.py`, `recognize_activity.py` | `hub/events.py` |
-| `mqtt_bus.py` | `transport/mqtt.py` + `hub/egress/` |
-| `sms_bus.py` | `hub/egress/sms.py` |
+| `mqtt_bus.py` | **stays put** — it is the demo's chosen pipe, wrapped in `PubSubTransport` |
+| `sms_bus.py` | `apps/<name>/egress/twilio_sms.py` — **leaves the framework** |
+| `server.py`'s `POST /sms` route | `apps/<name>/` — it reads Twilio's own form fields |
 | `discovery.py` | `discovery/backends/udp.py` |
 | `vlm.py`, `llm.py` | `inference/local/geniex.py` |
 | `face_id/` | `inference/local/face_id/` |
@@ -134,3 +181,8 @@ compute node present.
 `icons.py` is LED-icon rendering — use-case-specific logic that already violates `AGENTS.md`'s own
 rule against app logic in the framework. The new layout gives it nowhere to go, which is the
 correct outcome rather than an oversight.
+
+`sms_bus.py` is the same mistake, less visibly, because "notifications" sounds infrastructural.
+It is 195 lines of `TWILIO_ACCOUNT_SID`, `from twilio.rest import Client`, and one hardcoded
+recipient. Twilio appears nowhere in `spec/v1/`, and the SDK's own `egress/webhook.py` docstring
+already argues the point: enterprises "do not want a hardcoded SMS vendor."

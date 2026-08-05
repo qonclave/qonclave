@@ -102,7 +102,7 @@ cmake -S sdk/c -B build-dev -DQONCLAVE_PROFILE=minimal \
 python -m pytest sdk/python/tests -v
 ```
 
-`tests/test_layering.py` enforces the dependency ladder in [CONVENTIONS.md](CONVENTIONS.md) by
+`tests/test_layering.py` enforces the dependency ladder in [CONVENTIONS.md](docs/CONVENTIONS.md) by
 parsing imports — including the rule that role packages never import each other, which is what
 keeps an edge install free of a web framework.
 
@@ -110,5 +110,5 @@ keeps an edge install free of a web framework.
 
 `hub/framework/` still runs the working demo and is **not** modified by this package.
 `framework/` is the forward-looking implementation; pointing `hub/server.py` at `qonclave.hub` is
-a later, separate change. [CONVENTIONS.md](CONVENTIONS.md) carries the module-by-module map for
+a later, separate change. [CONVENTIONS.md](docs/CONVENTIONS.md) carries the module-by-module map for
 when that happens.
