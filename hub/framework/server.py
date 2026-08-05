@@ -435,6 +435,51 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
         log.info("Dashboard robot command %s -> device %s", command, device_id)
         return jsonify({"ok": True, "device_id": device_id, "command": command})
 
+    @app.post("/user/buzzer-command")
+    def user_buzzer_command():
+        """Publish a validated dashboard buzzer command to one edge device."""
+        body = request.get_json(silent=True) or {}
+        device_id = str(body.get("device_id") or events.latest_device_id() or "buzzer-01").strip()
+        action = str(body.get("action") or "").strip().lower()
+
+        if not device_id:
+            return jsonify({"ok": False, "error": "no edge device selected"}), 400
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]+", device_id):
+            return jsonify({"ok": False, "error": "invalid device_id"}), 400
+        if action not in {"start", "stop", "tone"}:
+            return jsonify({"ok": False, "error": "action must be 'start', 'stop', or 'tone'"}), 400
+
+        try:
+            frequency = int(body.get("frequency", 440))
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "frequency must be an integer"}), 400
+        if not 20 <= frequency <= 20000:
+            return jsonify({"ok": False, "error": "frequency must be between 20 and 20000 Hz"}), 400
+
+        try:
+            duration = int(body.get("duration", 0))
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "duration must be an integer"}), 400
+        if duration < 0:
+            return jsonify({"ok": False, "error": "duration must be >= 0 ms"}), 400
+
+        command = {
+            "type": "buzzer",
+            "action": action,
+            "frequency": frequency,
+            "duration": duration,
+        }
+        ok = mqtt.publish_command(device_id, command)
+        if not ok:
+            return jsonify({
+                "ok": False,
+                "error": "MQTT broker unavailable or publish failed",
+                "device_id": device_id,
+            }), 503
+
+        log.info("Dashboard buzzer command %s -> device %s", command, device_id)
+        return jsonify({"ok": True, "device_id": device_id, "command": command})
+
     @app.get("/user/frames/<path:name>")
     def user_frame(name):
         return send_from_directory(transport.UPLOAD_DIR, name)
