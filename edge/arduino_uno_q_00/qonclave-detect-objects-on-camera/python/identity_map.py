@@ -4,7 +4,8 @@
 
 """
 identity_map.py -- per-track identity bookkeeping for the hub's face
-recognition results (POST /recognize), fed by RecognitionClient/main.py.
+recognition results (the `face` half of POST /track/analyze), fed by
+AnalysisClient/main.py.
 
 Implements a "never lose information" rule: known > unknown > no_face >
 unidentified/error/unavailable, and a track's status can only move up that
@@ -51,7 +52,7 @@ _STATUS_RANK = {
 
 class IdentityMap:
     """Thread-safe: recognition responses arrive on background HTTP threads
-    (see recognition_client.py) while main.py reads/prunes it from the
+    (see analysis_client.py) while main.py reads/prunes it from the
     detection callback thread."""
 
     def __init__(self):
@@ -59,7 +60,7 @@ class IdentityMap:
         self._lock = threading.Lock()
 
     def merge(self, track_id: int, result: dict) -> None:
-        """Apply one hub /recognize response to track_id -- see module
+        """Apply one hub `face` sub-result to track_id -- see module
         docstring for the full upgrade-only rule."""
         entry = {
             "name": result.get("identity", UNKNOWN),

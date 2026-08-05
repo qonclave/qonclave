@@ -29,6 +29,12 @@ env/
 # nested under hub/framework/face_id/.
 **/models/*
 !hub/framework/face_id/models/README.txt
+!hub/framework/pose/models/README.txt
+
+# Annotated per-track frames written by /track/analyze. Imagery persisting on
+# the hub is exactly what the privacy cascade otherwise avoids, so this is
+# gated by QONCLAVE_TRACK_FRAMES_ENABLED, capped, and never committed.
+hub/track_frames/
 
 # OS / editor
 .DS_Store

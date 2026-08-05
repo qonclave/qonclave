@@ -63,41 +63,15 @@ def _embed_cpu(app, face_img: Image.Image) -> np.ndarray:
 
 # ── CavaFace: NPU (onnxruntime-qnn + QNNExecutionProvider) ───────────────────
 
-def _qnn_session(onnx_path: Path, label: str):
-    """Create an InferenceSession on the Hexagon NPU via onnxruntime-qnn.
-
-    onnxruntime's QNN support is a dynamically-registered "plugin" execution
-    provider (added in the 1.20+ device-based EP API): the provider library
-    must be registered by path, then bound to the actual NPU OrtEpDevice via
-    SessionOptions.add_provider_for_devices — passing "QNNExecutionProvider"
-    as a plain string to InferenceSession(providers=...) silently no-ops and
-    falls back to CPU on this onnxruntime version.
-    """
-    import onnxruntime as ort
-
-    try:
-        import onnxruntime_qnn as qnn
-
-        try:
-            ort.register_execution_provider_library(qnn.get_ep_name(), qnn.get_library_path())
-        except Exception:
-            pass  # already registered from a previous _qnn_session() call
-
-        npu_devices = [
-            d for d in ort.get_ep_devices()
-            if d.ep_name == qnn.get_ep_name() and d.device.type == ort.OrtHardwareDeviceType.NPU
-        ]
-        if not npu_devices:
-            raise RuntimeError("no QNN NPU device found")
-
-        so = ort.SessionOptions()
-        so.add_provider_for_devices(npu_devices, {"backend_path": qnn.get_qnn_htp_path()})
-        session = ort.InferenceSession(str(onnx_path), sess_options=so)
-        print(f"  {label} running on: {session.get_providers()[0]}")
-        return session
-    except Exception as e:
-        print(f"  [!] QNNExecutionProvider unavailable for {label} ({e}), falling back to CPU ONNX")
-        return ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
+# Moved to framework/qnn_session.py so face ID and pose share one QNN entry
+# point instead of two copies that drift. Kept as an alias because this module's
+# own CLI calls it, and so does anything that imported it directly.
+try:
+    from ..qnn_session import qnn_session as _qnn_session  # noqa: F401
+except ImportError:  # running this file directly as a script
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from qnn_session import qnn_session as _qnn_session  # type: ignore  # noqa: F401
 
 
 def _build_cavaface_npu():

@@ -31,6 +31,9 @@
       6. Installs hub/requirements.txt (from this checkout) into the venv.
       6a. Installs the in-tree Qonclave SDK (framework/sdk/python) editable into
          the same venv, so `import qonclave` works for hub/server.py.
+      6b. Exports the pose model (hub/framework/pose/setup/setup_pose.ps1) into
+         that same venv. Needs an AI Hub token; -SkipPose opts out and the hub
+         reports pose as unavailable.
       7. Installs face ID (hub/framework/face_id/setup/setup.ps1) into that same venv, since
          hub/server.py imports framework.face_id.identity in-process. Skipped when
          already installed, so re-runs stay quick.
@@ -43,6 +46,9 @@
       -Warmup           pre-load the VLM model at server start (default: off, loads lazily on first request)
       -SkipFaceId       don't install face ID at all (hub still runs; face-ID
                         reports "not_enabled")
+      -SkipPose         don't export the pose model (hub still runs; pose
+                        reports "unavailable"). Pose needs an AI Hub token,
+                        so this is the switch for a machine without one.
       -AiHubToken       Qualcomm AI Hub token for the ARM64 NPU model export.
                         Omitted on ARM64, framework/face_id/setup/setup_npu.ps1 prompts for it
                         interactively. Free at https://workbench.aihub.qualcomm.com
@@ -66,6 +72,7 @@ param(
     [switch]$NoRun,
     [switch]$Warmup,
     [switch]$SkipFaceId,
+    [switch]$SkipPose,
     [string]$AiHubToken = '',
     [string]$MediaPipeFaceJobId = '',
     [string]$CavaFaceJobId = '',
@@ -479,6 +486,37 @@ if ($SkipFaceId) {
             Write-Warn "Re-run it directly: hub\framework\face_id\setup\setup.ps1 -PythonPath `"$VenvPython`""
         } finally {
             Pop-Location
+        }
+    }
+}
+
+# --- 6c. Export the pose model into the SAME venv ----------------------------
+# Non-fatal, exactly like face ID: pose needs an AI Hub token and a cloud
+# compile, and a hub that reports "pose: unavailable" is still a working hub.
+Write-Step "Exporting the pose model"
+if ($SkipPose) {
+    Write-Ok "-SkipPose set - skipping (hub will report pose as unavailable)"
+} else {
+    $PoseSetup  = Join-Path $RepoDir 'hubramework\pose\setup\setup_pose.ps1'
+    $PoseModels = Join-Path $RepoDir 'hubramework\pose\models'
+
+    if (Test-Path (Join-Path $PoseModels 'hrnet_pose.onnx')) {
+        Write-Ok "pose model already present, skipping"
+        Write-Host "        (re-run hubramework\pose\setup\setup_pose.ps1 -PythonPath `"$VenvPython`" to force)"
+    } else {
+        $poseArgs = @{ PythonPath = $VenvPython }
+        if ($AiHubToken) { $poseArgs.Token = $AiHubToken }
+        if ($Internal)   { $poseArgs.Internal = $true }
+        try {
+            & $PoseSetup @poseArgs
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warn "pose setup exited $LASTEXITCODE - hub will report pose as unavailable."
+            } else {
+                Write-Ok "pose model exported"
+            }
+        } catch {
+            Write-Warn "pose setup failed ($($_.Exception.Message)) - hub will report pose as unavailable."
+            Write-Warn "Re-run it directly: hubramework\pose\setup\setup_pose.ps1 -PythonPath `"$VenvPython`""
         }
     }
 }
