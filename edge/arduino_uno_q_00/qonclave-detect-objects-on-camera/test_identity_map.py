@@ -119,7 +119,7 @@ def test_same_rank_response_does_not_refresh_confidence():
 
 
 def test_prune_drops_inactive_and_keeps_active():
-    im = IdentityMap()
+    im = IdentityMap(inactive_grace_sec=0)
     im.merge(4, _known("Jogendra", 0.93))
     im.merge(7, _unknown(0.25))
     dropped = im.prune({4})
@@ -129,11 +129,39 @@ def test_prune_drops_inactive_and_keeps_active():
 
 
 def test_snapshot_reflects_current_entries_only():
-    im = IdentityMap()
+    im = IdentityMap(inactive_grace_sec=0)
     im.merge(4, _known("Jogendra", 0.93))
     im.merge(7, _unknown(0.25))
     im.prune({4})
     assert set(im.snapshot().keys()) == {4}
+
+
+def test_known_identity_survives_short_same_id_gap():
+    now = [10.0]
+    im = IdentityMap(inactive_grace_sec=5.0, clock=lambda: now[0])
+    im.prune({1})
+    im.merge(1, _known("Alice", 0.61))
+
+    now[0] = 13.0
+    assert im.prune(set()) == []
+    assert im.is_recent(1)
+    assert im.get(1)["name"] == "Alice"
+
+    # The same numeric ID returns and keeps its sticky known result.
+    now[0] = 14.0
+    im.prune({1})
+    im.merge(1, _unknown(0.1))
+    assert im.get(1)["name"] == "Alice"
+
+
+def test_delayed_result_is_rejected_after_same_id_grace_expires():
+    now = [10.0]
+    im = IdentityMap(inactive_grace_sec=5.0, clock=lambda: now[0])
+    im.prune({1})
+
+    now[0] = 15.1
+    assert im.prune(set()) == [1]
+    assert not im.is_recent(1)
 
 
 def run_all():

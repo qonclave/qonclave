@@ -19,6 +19,7 @@ from framework.vlm import VLMBackend
 from framework.llm import LLMBackend
 from framework.sms_bus import SMSBus
 from framework.face_id.identity import FaceIdentityBackend
+from .posture import PostureStateMachine
 
 log = logging.getLogger("qonclave.hub")
 
@@ -73,6 +74,7 @@ class SecurityPolicy(Policy):
         self.face_id = face_id
         self.sms = sms
         self.llm = llm
+        self.posture = PostureStateMachine()
         # Last verified verdict stored so it can be injected into LLM context
         # for richer SMS reply reasoning.
         self._last_verdict: Verdict | None = None
@@ -81,6 +83,20 @@ class SecurityPolicy(Policy):
         # (sender, body); holds the most recent result only.
         self._llm_cache: tuple[str, str, dict] | None = None  # (sender, body, result)
         self._llm_cache_lock = threading.Lock()
+
+    def analyze_track(self, track_id, image_bytes, face, pose):
+        # Posture monitoring is deliberately limited to enrolled identities.
+        # Unknown/no-face tracks remain visible in the security dashboard but
+        # never enter the posture state machine.
+        if not face or face.get("status") != "known" or not face.get("identity"):
+            return None
+        return self.posture.analyze(track_id, image_bytes, face, pose)
+
+    def track_settings(self):
+        return self.posture.settings_dict()
+
+    def update_track_settings(self, values):
+        return self.posture.update_settings(values)
 
     def evaluate(self, image_path: str, event: dict) -> Verdict:
         # Run face-ID up front — it does its own independent face detection,

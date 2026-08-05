@@ -211,7 +211,7 @@ elif CAMERA_SOURCE == "file":
   if not VIDEO_FILE_PATH:
     raise RuntimeError("CAMERA_SOURCE=file requires VIDEO_FILE_PATH to be set")
   VIDEO_FILE_LOOP = os.environ.get("VIDEO_FILE_LOOP", "true").strip().lower() not in ("0", "false", "no")
-  VIDEO_FILE_FPS = int(os.environ.get("VIDEO_FILE_FPS", "10"))
+  VIDEO_FILE_FPS = int(os.environ.get("VIDEO_FILE_FPS", "25"))
   camera = FileCamera(VIDEO_FILE_PATH, loop=VIDEO_FILE_LOOP, fps=VIDEO_FILE_FPS)
 else:
   # VIDEO_DEVICE is set by arduino-app-cli when it detects a local USB
@@ -346,7 +346,12 @@ def handle_knob_change(percentage_str):
 Bridge.provide("on_knob_change", handle_knob_change)
 green_bmp = _get_bitmap_entry("green")
 if green_bmp:
-  Bridge.call("set_custom_led_array", "".join("1" if val else "0" for r in green_bmp for val in r[:12]))
+  try:
+    Bridge.call("set_custom_led_array", "".join("1" if val else "0" for r in green_bmp for val in r[:12]))
+  except Exception as e:
+    # The MCU bridge can still be coming online after a container restart.
+    # LED initialization is cosmetic and must not take down video analysis.
+    log.warning(f"Initial LED update unavailable; continuing without it: {e}")
 
 # --- Hub event forwarding: notify the Qonclave hub when a person is detected ---
 
@@ -390,7 +395,7 @@ TRACK_CROP_MIN_VISIBLE_RATIO = float(os.environ.get("TRACK_CROP_MIN_VISIBLE_RATI
 TRACK_CROP_POSE_MIN_BOX_HEIGHT_PX = int(os.environ.get("TRACK_CROP_POSE_MIN_BOX_HEIGHT_PX", "100"))
 TRACK_CROP_POSE_MIN_VISIBLE_RATIO = float(os.environ.get("TRACK_CROP_POSE_MIN_VISIBLE_RATIO", "0.5"))
 TRACK_CROPS_DIR = os.environ.get("TRACK_CROPS_DIR", "/app/track_crops")
-FACE_SAMPLE_INTERVAL_SEC = float(os.environ.get("FACE_SAMPLE_INTERVAL_SEC", "1.0"))
+FACE_SAMPLE_INTERVAL_SEC = float(os.environ.get("FACE_SAMPLE_INTERVAL_SEC", "0.5"))
 POSE_SAMPLE_INTERVAL_SEC = float(os.environ.get("POSE_SAMPLE_INTERVAL_SEC", "0.25"))
 ANALYSIS_REQUEST_TIMEOUT_SEC = float(os.environ.get("ANALYSIS_REQUEST_TIMEOUT_SEC", "5"))
 
@@ -421,10 +426,15 @@ _latest_pose_lock = threading.Lock()
 def _on_analysis_result(track_id: int, result: dict, latency_s: float):
   with _live_track_ids_lock:
     is_live = track_id in _live_track_ids
-  if not is_live:
-    log.debug(f"Ignoring /track/analyze result for track {track_id}: no longer active ({latency_s * 1000:.0f}ms round trip)")
-    return
   face = result.get("face")
+  # A positive face match is safe to retain for its own numeric track ID even
+  # when crop/HTTP work completed after the detector's grace window. Without
+  # this exception, the hub can prove Track 1 is Alice while the edge discards
+  # that result and continues sending weaker face samples for Track 1.
+  known_face = bool(face and face.get("status") == "known")
+  if not is_live and not identity_map.is_recent(track_id) and not known_face:
+    log.debug(f"Ignoring /track/analyze result for track {track_id}: outside inactive grace period ({latency_s * 1000:.0f}ms round trip)")
+    return
   if face:
     identity_map.merge(track_id, face)
   pose = result.get("pose")
@@ -444,7 +454,7 @@ def _crop_and_analyze(frame: bytes, due_map: dict):
   # analysis_client.claim() already reserved every track in due_map before
   # this thread was started, so it's safe to take as long as it needs here.
   crops = crop_persons(
-    frame, {tid: box for tid, (box, _due) in due_map.items()},
+    frame, {tid: box for tid, (box, _due, _identity) in due_map.items()},
     padding=TRACK_CROP_PADDING,
     padding_top=TRACK_CROP_PADDING_TOP,
     face_min_size_px=TRACK_CROP_MIN_SIZE_PX,
@@ -452,7 +462,7 @@ def _crop_and_analyze(frame: bytes, due_map: dict):
     pose_min_box_height_px=TRACK_CROP_POSE_MIN_BOX_HEIGHT_PX,
     pose_min_visible_ratio=TRACK_CROP_POSE_MIN_VISIBLE_RATIO,
   )
-  for track_id, (_box, due) in due_map.items():
+  for track_id, (_box, due, known_identity) in due_map.items():
     entry = crops.get(track_id)
     # Send only the analyzers that are both due AND accept this crop's
     # geometry (e.g. a small-but-visible person samples face, not pose).
@@ -465,6 +475,7 @@ def _crop_and_analyze(frame: bytes, due_map: dict):
     analysis_client.send_claimed(
       track_id, entry["jpeg"], analyzers, _on_analysis_result,
       person_box=entry["person_box"],
+      known_identity=known_identity,
     )
 
 
@@ -580,16 +591,18 @@ def send_detections_to_ui(detections: dict, frame: bytes | None = None):
     due_map = {}
     for track in person_tracks:
       track_id = track["track_id"]
-      due = analysis_client.analyzers_due(track_id, identity_map.is_known(track_id))
+      identity = identity_map.get(track_id)
+      due = analysis_client.analyzers_due(track_id, identity["status"] == "known")
       if due:
-        due_map[track_id] = (track["bounding_box_xyxy"], due)
+        known_identity = identity["name"] if identity["status"] == "known" else None
+        due_map[track_id] = (track["bounding_box_xyxy"], due, known_identity)
     if due_map:
       # Claim synchronously (cheap) so a frame arriving before the crop/encode
       # work below finishes can't also decide to sample these tracks; the
       # actual decode/crop/encode/save/POSTs all happen off this
       # detection-callback thread, on one background thread for the whole
       # frame (decode once, crop all due tracks).
-      for track_id, (_box, due) in due_map.items():
+      for track_id, (_box, due, _known_identity) in due_map.items():
         analysis_client.claim(track_id, due)
       threading.Thread(
         target=_crop_and_analyze, args=(frame, due_map),

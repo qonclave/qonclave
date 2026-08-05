@@ -64,7 +64,8 @@ def _touch_locked(track_id: int) -> None:
 
 
 def record(track_id: int, face_result: "dict | None", pose_result: "dict | None",
-           frame_name: "str | None" = None) -> None:
+           frame_name: "str | None" = None,
+           analysis: "dict | None" = None) -> None:
     """Append one /track/analyze result to the track's ring buffer.
 
     face_result / pose_result are the endpoint's per-analyzer sub-objects
@@ -78,6 +79,7 @@ def record(track_id: int, face_result: "dict | None", pose_result: "dict | None"
         "keypoints": (pose_result or {}).get("keypoints"),
         "mean_score": (pose_result or {}).get("mean_score"),
         "pose_status": (pose_result or {}).get("status"),
+        "analysis": analysis,
     }
     with _lock:
         buf = _tracks.get(track_id)
@@ -152,10 +154,21 @@ def snapshot() -> dict:
         for tid, buf in _tracks.items():
             last = buf[-1] if buf else {}
             identity, status = None, None
-            for sample in reversed(buf):
-                if sample.get("status"):
-                    identity, status = sample.get("identity"), sample.get("status")
-                    break
+            # A successful known match is sticky for this numeric track ID.
+            # Later weak crops can legitimately report unknown/no_face when a
+            # person turns or falls, but must not erase the established name.
+            known_sample = next(
+                (sample for sample in reversed(buf)
+                 if sample.get("status") == "known" and sample.get("identity")),
+                None,
+            )
+            if known_sample is not None:
+                identity, status = known_sample.get("identity"), "known"
+            else:
+                for sample in reversed(buf):
+                    if sample.get("status"):
+                        identity, status = sample.get("identity"), sample.get("status")
+                        break
             out[tid] = {
                 "identity": identity,
                 "status": status,
@@ -166,6 +179,9 @@ def snapshot() -> dict:
                 },
                 "history_len": len(buf),
                 "has_frame": tid in _frame_bytes or tid in _latest_frame,
+                "posture": next(
+                    (sample.get("analysis") for sample in reversed(buf)
+                     if sample.get("analysis") is not None), None),
             }
         return out
 

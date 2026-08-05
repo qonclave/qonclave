@@ -88,7 +88,7 @@ It is the default, so this mode works out of the box.
 |-----|---------|---------|
 | `VIDEO_FILE_PATH` | `/app/media/walking_front_view.mp4` | Path to the video file, as seen inside the container |
 | `VIDEO_FILE_LOOP` | `true` | Rewind and replay the file once it ends, so detection keeps running continuously |
-| `VIDEO_FILE_FPS` | `10` | Frames per second to read from the file |
+| `VIDEO_FILE_FPS` | `25` | Frames per second to read from the file |
 
 ## Brick Used
 
@@ -185,17 +185,30 @@ Configurable via environment variables:
 | `TRACK_RECOGNITION_ENABLED` | `1` | Set to `0` to disable per-track analysis entirely |
 | `TRACK_ANALYZERS` | `face,pose` | Which hub analyzers to sample for (comma-separated) |
 | `TRACK_CROP_PADDING` | `0.25` | Fraction of the box's width/height added as padding on the left, right, and bottom edges |
-| `TRACK_CROP_PADDING_TOP` | `0.8` | Fraction of the box's height added above it — larger than `TRACK_CROP_PADDING` by default, since a person's face sits at the top of their box and is the edge most likely to get clipped by a tight detector box |
+| `TRACK_CROP_PADDING_TOP` | `0.8` | Fraction of the box's height added above it so a face at the top of the person box is not clipped |
 | `TRACK_CROP_MIN_SIZE_PX` | `40` | Face gate: reject for face if either crop dimension, after padding and clamping to the frame, is smaller than this |
 | `TRACK_CROP_MIN_VISIBLE_RATIO` | `0.85` | Face gate: reject for face if less than this fraction of the (unpadded) box actually lies within the frame |
 | `TRACK_CROP_POSE_MIN_BOX_HEIGHT_PX` | `100` | Pose gate: reject for pose if the unpadded box is shorter than this (too few limb pixels) |
 | `TRACK_CROP_POSE_MIN_VISIBLE_RATIO` | `0.5` | Pose gate: visibility floor for pose — deliberately lax, a person half out of frame is exactly the fall-detection case |
 | `TRACK_CROPS_DIR` | `/app/track_crops` | Where each track's latest crop is saved, as `track_<id>.jpg` |
-| `FACE_SAMPLE_INTERVAL_SEC` | `1.0` | Minimum seconds between two face samples for the same still-unresolved track |
+| `FACE_SAMPLE_INTERVAL_SEC` | `0.5` | Minimum seconds between two face samples for the same still-unresolved track |
 | `POSE_SAMPLE_INTERVAL_SEC` | `0.25` | Seconds between pose samples per live track (raise it if the UNO Q's CPU struggles) |
 | `ANALYSIS_REQUEST_TIMEOUT_SEC` | `5` | HTTP request timeout per `/track/analyze` call |
 
 ## LED Matrix Person Position Display
+
+### MCU serial diagnostics
+
+RouterBridge owns the MCU/Linux serial channel, so raw sketch diagnostics are
+disabled by default. For a dedicated debug firmware build only, enable them
+with the Arduino compile property:
+
+```text
+compiler.cpp.extra_flags=-DQONCLAVE_MCU_DEBUG_SERIAL=1
+```
+
+Do not enable this flag while using RouterBridge RPC; raw serial text and RPC
+packets cannot safely share the same transport.
 
 While a person is being tracked, the onboard **12x8 LED Matrix** shows roughly where
 they are in the camera frame instead of the usual object-class icon: `python/led_display.py`

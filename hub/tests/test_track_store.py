@@ -97,6 +97,19 @@ def test_snapshot_identity_is_the_most_recent_face_result():
     assert (snap["identity"], snap["status"]) == ("Jogendra", "known")
 
 
+def test_snapshot_known_identity_survives_later_weak_face_results():
+    track_store.clear()
+    track_store.record(6, _FACE, _POSE)
+    track_store.record(
+        6, {"identity": "unknown", "confidence": 0.12, "status": "unknown"}, _POSE)
+    track_store.record(
+        6, {"identity": "no_face", "confidence": 0.0, "status": "no_face"}, _POSE)
+
+    snap = track_store.snapshot()[6]
+    assert snap["identity"] == "Jogendra"
+    assert snap["status"] == "known"
+
+
 def test_record_frame_is_served_from_memory():
     track_store.clear()
     assert track_store.latest_frame_bytes(4) is None

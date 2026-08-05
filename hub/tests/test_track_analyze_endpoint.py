@@ -78,6 +78,10 @@ class _StubFaceID:
         assert os.path.exists(image_path), "server must save the crop before calling identify()"
         return self._result
 
+    def known_names(self):
+        name = self._result.get("name")
+        return [name] if name else []
+
 
 _KNOWN_FACE = {"available": True, "face_detected": True, "identified": True,
                "name": "Jogendra", "confidence": 0.93}
@@ -158,7 +162,8 @@ def _make_app(face_id=None, pose=None):
     )
 
 
-def _post_analyze(client, track_id, analyzers=None, person_box=None, jpeg=_TINY_JPEG):
+def _post_analyze(client, track_id, analyzers=None, person_box=None,
+                  known_identity=None, jpeg=_TINY_JPEG):
     data = {
         "track_id": str(track_id),
         "image": (io.BytesIO(jpeg), "crop.jpg"),
@@ -167,6 +172,8 @@ def _post_analyze(client, track_id, analyzers=None, person_box=None, jpeg=_TINY_
         data["analyzers"] = analyzers
     if person_box is not None:
         data["person_box"] = person_box
+    if known_identity is not None:
+        data["known_identity"] = known_identity
     return client.post("/track/analyze", data=data, content_type="multipart/form-data")
 
 
@@ -257,6 +264,26 @@ def test_pose_only_request_skips_face():
     assert "face" not in body
     assert body["pose"]["status"] == "ok"
     assert face_calls == [], "face analyzer must not run when not requested"
+
+
+def test_pose_only_request_carries_enrolled_identity_after_hub_restart():
+    app = _make_app(face_id=_StubFaceID(_KNOWN_FACE), pose=_ok_pose())
+    client = app.test_client()
+    body = _post_analyze(client, 4, analyzers="pose",
+                         known_identity="Jogendra").get_json()
+    assert "face" not in body
+    track = client.get("/user/tracks").get_json()["tracks"]["4"]
+    assert track["identity"] == "Jogendra"
+    assert track["status"] == "known"
+
+
+def test_pose_only_request_rejects_identity_not_enrolled_on_hub():
+    app = _make_app(face_id=_StubFaceID(_KNOWN_FACE), pose=_ok_pose())
+    client = app.test_client()
+    _post_analyze(client, 4, analyzers="pose", known_identity="Mallory")
+    track = client.get("/user/tracks").get_json()["tracks"]["4"]
+    assert track["identity"] is None
+    assert track["status"] is None
 
 
 def test_unknown_analyzer_is_rejected():

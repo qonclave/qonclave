@@ -116,6 +116,19 @@
   .pose-item .meta .pose-face { width:40px; height:40px; flex:0 0 40px;
         object-fit:cover; border-radius:6px; border:1px solid var(--border);
         background:#000; }
+  .posture-settings { display:flex; gap:10px; flex-wrap:wrap; align-items:end;
+        margin:12px 0; padding:10px; background:#0f1218; border-radius:8px; }
+  .posture-settings label { margin:0; }
+  .posture-settings input { display:block; width:105px; margin-top:5px; padding:6px 8px;
+        background:var(--bg); color:var(--fg); border:1px solid var(--border); border-radius:6px; }
+  .posture-settings button { padding:7px 12px; background:var(--accent); border:0;
+        border-radius:6px; cursor:pointer; }
+  .posture-debug { display:grid; grid-template-columns:1fr 1fr; gap:3px 10px;
+        margin-top:7px; color:var(--muted); font-size:10px; }
+  .posture-debug strong { color:var(--fg); }
+  .posture-state.NORMAL { color:var(--ok); }
+  .posture-state.SUSPICIOUS { color:var(--warn); }
+  .posture-state.DANGER { color:var(--err); font-weight:700; }
 </style>
 </head>
 <body>
@@ -159,6 +172,13 @@
     <div class="sub" style="margin-bottom:2px;">
       One tile per tracked person: live skeleton stream, plus the face crop they
       were identified from. Both come from the same POST /track/analyze sample.
+    </div>
+    <div class="posture-settings">
+      <label>Abnormal seconds<input id="postureAbnormal" type="number" min="0.1" step="0.5"></label>
+      <label>Motionless seconds<input id="postureMotionless" type="number" min="0.1" step="0.5"></label>
+      <label>Movement threshold<input id="postureMovement" type="number" min="0.001" step="0.005"></label>
+      <button id="postureSave" type="button">Apply</button>
+      <span id="postureSettingsMsg" class="sub" style="margin:0"></span>
     </div>
     <div id="poseGrid" class="pose-grid">
       <div style="color:var(--muted);font-size:13px;grid-column:1/-1;">No tracked people yet.</div>
@@ -547,7 +567,7 @@ async function refreshPersonTracking() {
     renderRecognizeActivity(act);   // the collapsed raw-history section
 
     const tracks = j.tracks || {};
-    const ids = Object.keys(tracks).filter(id => tracks[id].has_frame);
+    const ids = Object.keys(tracks);
 
     $("posePill").textContent = ids.length ? `${ids.length} tracked` : "idle";
     $("posePill").className = "pill" + (ids.length ? " ok" : "");
@@ -582,6 +602,7 @@ async function refreshPersonTracking() {
               <span class="track">Track ${id}</span>
               <span class="pill" id="posePill-${id}"></span>
               <span class="stats" id="poseStats-${id}"></span>
+              <span class="posture-debug" id="poseDebug-${id}"></span>
             </span>
           </div>`;
         grid.appendChild(el);
@@ -609,6 +630,21 @@ async function refreshPersonTracking() {
       if (t.history_len) bits.push(`${t.history_len} samples`);
       document.getElementById(`poseStats-${id}`).textContent = bits.join(" · ");
 
+      const posture = t.posture;
+      const debug = document.getElementById(`poseDebug-${id}`);
+      if (debug && posture) {
+        debug.innerHTML = `
+          <span>Torso <strong>${posture.torso_angle.toFixed(1)}°</strong></span>
+          <span>Movement <strong>${posture.movement}</strong></span>
+          <span>Score <strong>${posture.posture_score}</strong></span>
+          <span>State <strong class="posture-state ${posture.state}">${posture.state}</strong></span>
+          <span>Duration <strong>${posture.duration_seconds.toFixed(1)} sec</strong></span>`;
+      } else if (debug) {
+        debug.innerHTML = status === "known"
+          ? '<span style="grid-column:1/-1">Waiting for a valid pose sample…</span>'
+          : '<span style="grid-column:1/-1">Posture tracking starts after identity is known.</span>';
+      }
+
       // Inset the crop this track was identified from, once there is one.
       const thumb = document.getElementById(`poseFace-${id}`);
       if (thumb && face) {
@@ -623,10 +659,37 @@ async function refreshPersonTracking() {
   }
 }
 
+async function loadPostureSettings() {
+  try {
+    const j = await fetch("/user/track-settings").then(r => r.json());
+    if (!j.ok) return;
+    $("postureAbnormal").value = j.settings.abnormal_seconds;
+    $("postureMotionless").value = j.settings.motionless_seconds;
+    $("postureMovement").value = j.settings.movement_threshold;
+  } catch (_) {}
+}
+
+$("postureSave").addEventListener("click", async () => {
+  const body = {
+    abnormal_seconds: Number($("postureAbnormal").value),
+    motionless_seconds: Number($("postureMotionless").value),
+    movement_threshold: Number($("postureMovement").value),
+  };
+  const msg = $("postureSettingsMsg");
+  try {
+    const j = await fetch("/user/track-settings", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body),
+    }).then(r => r.json());
+    msg.textContent = j.ok ? "Saved" : `Error: ${j.error}`;
+  } catch (_) { msg.textContent = "Unreachable"; }
+});
+
 refresh();
 setInterval(refresh, 2000);
 refreshPersonTracking();
 setInterval(refreshPersonTracking, 2000);
+loadPostureSettings();
 refreshSMS();
 setInterval(refreshSMS, 2000);
 refreshLLM();

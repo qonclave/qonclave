@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "BNO08xOrientation.h"
+#include "DebugSerial.h"
 
 #include <math.h>
 
@@ -18,7 +19,7 @@ BNO08xOrientation::BNO08xOrientation(const Config &config, SPIClass &spi)
 
 bool BNO08xOrientation::begin() {
   if (threadStarted_) {
-    if (Serial) Serial.println("[IMU] ERROR orientation thread already started");
+    QONCLAVE_DEBUG(if (Serial) Serial.println("[IMU] ERROR orientation thread already started"));
     return false;
   }
 
@@ -26,13 +27,13 @@ bool BNO08xOrientation::begin() {
       &thread_, threadStack_, K_KERNEL_STACK_SIZEOF(threadStack_), threadEntry,
       this, nullptr, nullptr, K_PRIO_PREEMPT(THREAD_PRIORITY), 0, K_NO_WAIT);
   if (threadId == nullptr) {
-    if (Serial) Serial.println("[IMU] ERROR failed to create orientation thread");
+    QONCLAVE_DEBUG(if (Serial) Serial.println("[IMU] ERROR failed to create orientation thread"));
     return false;
   }
 
   k_thread_name_set(&thread_, "bno08x_orientation");
   threadStarted_ = true;
-  if (Serial) Serial.println("[IMU] Orientation thread started");
+  QONCLAVE_DEBUG(if (Serial) Serial.println("[IMU] Orientation thread started"));
   return true;
 }
 
@@ -93,10 +94,10 @@ void BNO08xOrientation::run() {
         k_mutex_unlock(&stateMutex_);
 
         if (sensorConnected) {
-          if (Serial) Serial.println("[IMU] BNO08x connected over SPI");
+          QONCLAVE_DEBUG(if (Serial) Serial.println("[IMU] BNO08x connected over SPI"));
           enableOrientationReport();
         } else {
-          if (Serial) Serial.println("[IMU] ERROR SPI connection failed");
+          QONCLAVE_DEBUG(if (Serial) Serial.println("[IMU] ERROR SPI connection failed"));
         }
       }
       k_msleep(10);
@@ -123,13 +124,13 @@ void BNO08xOrientation::run() {
           k_mutex_unlock(&stateMutex_);
 
           if (!sensorConnected) {
-            if (Serial) Serial.println("[IMU] ERROR SPI recovery reconnect failed");
+            QONCLAVE_DEBUG(if (Serial) Serial.println("[IMU] ERROR SPI recovery reconnect failed"));
             awaitingRecoveryData_ = false;
             resetRecoveryPending_ = false;
             lastRetryAt_ = millis();
             continue;
           }
-          if (Serial) Serial.println("[IMU] SPI recovery reconnect succeeded");
+          QONCLAVE_DEBUG(if (Serial) Serial.println("[IMU] SPI recovery reconnect succeeded"));
           enableOrientationReport();
           awaitingRecoveryData_ = true;
           resetRecoveryAt_ = millis() + RECOVERY_DATA_TIMEOUT_MS;
@@ -151,7 +152,7 @@ void BNO08xOrientation::run() {
     }
 
     if (sensor_.wasReset()) {
-      if (Serial) Serial.println("[IMU] WARNING sensor reset detected; recovering");
+      QONCLAVE_DEBUG(if (Serial) Serial.println("[IMU] WARNING sensor reset detected; recovering"));
       resetRecoveryPending_ = true;
       awaitingRecoveryData_ = false;
       resetRecoveryAt_ = millis() + RESET_SETTLE_MS;
@@ -179,12 +180,12 @@ bool BNO08xOrientation::connectSensor() {
 
 void BNO08xOrientation::enableOrientationReport() {
   if (sensor_.enableReport(SH2_ROTATION_VECTOR, config_.reportIntervalUs)) {
-    if (Serial) {
+    QONCLAVE_DEBUG(if (Serial) {
       Serial.print("[IMU] Rotation-vector report enabled, interval_us=");
       Serial.println(config_.reportIntervalUs);
-    }
+    });
   } else {
-    if (Serial) Serial.println("[IMU] ERROR failed to enable rotation-vector report");
+    QONCLAVE_DEBUG(if (Serial) Serial.println("[IMU] ERROR failed to enable rotation-vector report"));
   }
 }
 

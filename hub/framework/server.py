@@ -382,6 +382,19 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
             except ValueError:
                 pass
 
+        # A known edge track may stop requesting face inference. It echoes
+        # the identity the hub previously returned so a hub restart can
+        # recover that association. Accept only names still enrolled here.
+        carried_face = None
+        raw_known_identity = (request.form.get("known_identity")
+                              or request.args.get("known_identity"))
+        if raw_known_identity and face_id is not None and "face" not in analyzers:
+            known_names = getattr(face_id, "known_names", lambda: [])()
+            enrolled = next((name for name in known_names
+                             if name.casefold() == raw_known_identity.strip().casefold()), None)
+            if enrolled:
+                carried_face = {"identity": enrolled, "status": "known"}
+
         path, err = transport.save_incoming_image()
         if err:
             log.warning("POST /track/analyze rejected from %s (track_id=%s): %s",
@@ -455,8 +468,9 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
         if ((TRACK_FRAMES_ENABLED or TRACK_STREAM_ENABLED)
                 and pose_result is not None and pose_result["status"] == "ok"):
             label = f"Track {track_id}"
-            identity = face_result["identity"] if (
-                face_result and face_result["status"] == "known") else None
+            effective_face = face_result or carried_face
+            identity = effective_face["identity"] if (
+                effective_face and effective_face["status"] == "known") else None
             if identity is None:
                 for sample in reversed(track_store.history(track_id)):
                     if sample.get("status") == "known":
@@ -467,13 +481,28 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
             frame_name = _publish_track_frame(
                 track_id, image_bytes, pose_result["keypoints"], label)
 
-        track_store.record(track_id, face_result, pose_result, frame_name)
+        # Face sampling normally stops after a track resolves. Give app-level
+        # analysis the retained result so pose-only ticks keep their identity.
+        analysis_face = face_result or carried_face
+        if analysis_face is None:
+            for sample in reversed(track_store.history(track_id)):
+                if sample.get("status"):
+                    analysis_face = {"identity": sample.get("identity"),
+                                     "status": sample.get("status")}
+                    break
+        analyze_track = getattr(policy, "analyze_track", None)
+        analysis = (analyze_track(track_id, image_bytes, analysis_face, pose_result)
+                    if analyze_track else None)
+        track_store.record(track_id, face_result or carried_face, pose_result,
+                           frame_name, analysis)
 
         response = {"track_id": track_id, "latency_ms": latency_ms}
         if face_result is not None:
             response["face"] = face_result
         if pose_result is not None:
             response["pose"] = pose_result
+        if analysis is not None:
+            response["analysis"] = analysis
         return jsonify(response)
 
     # --- /sms: Twilio inbound-reply webhook ---------------------------------
@@ -549,6 +578,20 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
         keypoint ring buffer /track/analyze feeds (see track_store.py)."""
         tracks = track_store.snapshot()
         return jsonify({"count": len(tracks), "tracks": tracks})
+
+    @app.route("/user/track-settings", methods=["GET", "POST"])
+    def user_track_settings():
+        """Expose optional app-owned, UI-tunable tracking thresholds."""
+        if request.method == "GET":
+            settings = policy.track_settings()
+        else:
+            try:
+                settings = policy.update_track_settings(request.get_json(silent=True) or {})
+            except (TypeError, ValueError) as exc:
+                return jsonify({"ok": False, "error": str(exc)}), 400
+        if settings is None:
+            return jsonify({"ok": False, "error": "track settings unsupported"}), 404
+        return jsonify({"ok": True, "settings": settings})
 
     @app.get("/user/tracks/<int:track_id>.jpg")
     def user_track_frame(track_id):

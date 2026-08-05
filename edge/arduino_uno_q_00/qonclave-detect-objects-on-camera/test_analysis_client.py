@@ -2,6 +2,7 @@
 
 import os
 import sys
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "python"))
 from analysis_client import AnalysisClient  # noqa: E402
@@ -119,6 +120,29 @@ def test_disabled_analyzer_is_never_due():
     c = _client(analyzers=("face",))
     assert c.analyzers_due(4, is_known=False, now=0.0) == {"face"}
     assert c.analyzers_due(4, is_known=True, now=0.0) == set()
+
+
+def test_pose_request_carries_resolved_identity():
+    class Response:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"track_id": 4, "pose": {"status": "ok"}}
+
+    sent = {}
+
+    def post(_url, **kwargs):
+        sent.update(kwargs["data"])
+        return Response()
+
+    client = _client()
+    client.claim(4, {"pose"}, now=0.0)
+    with patch("analysis_client.requests.post", side_effect=post):
+        client.send_claimed(4, b"jpeg", {"pose"}, lambda *_: None,
+                            known_identity="bob")
+    assert sent["known_identity"] == "bob"
+    assert sent["analyzers"] == "pose"
 
 
 def run_all():

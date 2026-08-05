@@ -34,7 +34,7 @@ ANALYZERS = ("face", "pose")
 
 class AnalysisClient:
     def __init__(self, get_hub_base_url, timeout_sec: float = 5.0,
-                 face_interval_sec: float = 1.0, pose_interval_sec: float = 0.25,
+                 face_interval_sec: float = 0.5, pose_interval_sec: float = 0.25,
                  analyzers=ANALYZERS, logger=None):
         self._get_hub_base_url = get_hub_base_url
         self.timeout_sec = timeout_sec
@@ -89,7 +89,7 @@ class AnalysisClient:
             self._in_flight.discard(track_id)
 
     def send_claimed(self, track_id: int, crop_jpeg: bytes, analyzers,
-                     on_result, person_box=None) -> None:
+                     on_result, person_box=None, known_identity=None) -> None:
         """POST /track/analyze for a track already claim()'d. Performs the
         HTTP call inline in the calling thread -- call this from a background
         thread you've already started (after doing crop/encode work there
@@ -104,9 +104,11 @@ class AnalysisClient:
         on failure/timeout (each requested analyzer present with
         status "error") -- callers don't need a separate error path.
         """
-        self._send(track_id, crop_jpeg, analyzers, on_result, person_box)
+        self._send(track_id, crop_jpeg, analyzers, on_result, person_box,
+                   known_identity)
 
-    def _send(self, track_id, crop_jpeg, analyzers, on_result, person_box):
+    def _send(self, track_id, crop_jpeg, analyzers, on_result, person_box,
+              known_identity):
         analyzer_list = sorted(analyzers)
         t0 = time.monotonic()
         try:
@@ -114,6 +116,8 @@ class AnalysisClient:
             data = {"track_id": str(track_id), "analyzers": ",".join(analyzer_list)}
             if person_box is not None:
                 data["person_box"] = ",".join(str(int(v)) for v in person_box)
+            if known_identity:
+                data["known_identity"] = str(known_identity)
             resp = requests.post(
                 url,
                 data=data,
