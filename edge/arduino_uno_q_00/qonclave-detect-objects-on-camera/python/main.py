@@ -237,7 +237,17 @@ else:
 # own indirection so what the preview shows can change without an index.html
 # edit.
 _latest_track_preview: bytes | None = None
-_track_preview_lock = threading.Lock()
+# Bumped on every publish so a streaming client can tell "new frame" from "same
+# frame again" without comparing bytes, and woken the moment a frame lands
+# rather than on a fixed tick -- a timed poll both delayed each new frame by up
+# to its interval and re-sent unchanged ones in between.
+_track_preview_seq = 0
+_track_preview_cond = threading.Condition()
+# One frame is published per completed detection, so a gap much longer than that
+# means the pipeline stalled. Re-send the last frame then: it keeps the MJPEG
+# connection alive, and gives the generator a yield point at which a client that
+# has gone away can be noticed instead of blocking its worker thread forever.
+_PREVIEW_KEEPALIVE_SEC = 2.0
 
 def _camera_preview_page(_request):
   return HTMLResponse(
@@ -248,12 +258,20 @@ def _camera_preview_page(_request):
   )
 
 def _track_preview_mjpeg():
+  """Stream each published preview frame once, as soon as it is published.
+
+  Each client tracks the sequence number it last sent, so several viewers can
+  stream independently and none of them re-sends a frame another one consumed.
+  """
+  last_seq = -1
   while True:
-    with _track_preview_lock:
+    with _track_preview_cond:
+      _track_preview_cond.wait_for(
+        lambda: _track_preview_seq != last_seq, timeout=_PREVIEW_KEEPALIVE_SEC)
       frame = _latest_track_preview
+      last_seq = _track_preview_seq
     if frame:
       yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
-    time.sleep(0.1)
 
 def _track_preview_stream(_request):
   return StreamingResponse(_track_preview_mjpeg(), media_type="multipart/x-mixed-replace; boundary=frame")
@@ -619,7 +637,7 @@ def send_detections_to_ui(detections: dict, frame: bytes | None = None):
       ui.send_message("pose_status", message=pose_snapshot)
 
   if frame:
-    global _latest_track_preview
+    global _latest_track_preview, _track_preview_seq
     if person_tracks:
       labels = {
         tid: f"Track {tid}: {entry['name']}" if entry["status"] == "known"
@@ -629,8 +647,10 @@ def send_detections_to_ui(detections: dict, frame: bytes | None = None):
       preview_frame = draw_track_overlay(frame, person_tracks, labels)
     else:
       preview_frame = frame
-    with _track_preview_lock:
+    with _track_preview_cond:
       _latest_track_preview = preview_frame
+      _track_preview_seq += 1
+      _track_preview_cond.notify_all()
 
   if person_tracks:
     # A person is actively tracked: show its position on the LED matrix
