@@ -23,6 +23,7 @@ import json
 from basic_auth import BasicAuthMiddleware
 from file_camera import FileCamera
 from hub_protocol import build_edge_event, command_expired, normalize_command
+from placement import EscalationPolicy
 from identity_map import IdentityMap
 from led_display import person_display_bitmap
 from mqtt_client import EdgeMQTTClient
@@ -355,9 +356,20 @@ if green_bmp:
 
 # --- Hub event forwarding: notify the Qonclave hub when a person is detected ---
 
-PERSON_CONFIDENCE_THRESHOLD = float(os.environ.get("PERSON_CONFIDENCE_THRESHOLD", "0.7"))
-HUB_EVENT_HYSTERESIS_SEC = float(os.environ.get("HUB_EVENT_HYSTERESIS_SEC", "10"))
 HUB_EVENT_TIMEOUT_SEC = float(os.environ.get("HUB_EVENT_TIMEOUT_SEC", "5"))
+
+# Placement: where a detection gets verified. The env vars keep their names so
+# existing deployments are unaffected, but the decision is no longer a threshold
+# comparison inlined at the call site — see python/placement.py.
+escalation_policy = EscalationPolicy(
+  confidence_threshold=float(os.environ.get("PERSON_CONFIDENCE_THRESHOLD", "0.7")),
+  min_interval_s=float(os.environ.get("HUB_EVENT_HYSTERESIS_SEC", "10")),
+  deadline_ms=int(os.environ.get("HUB_EVENT_DEADLINE_MS", "3000")),
+  battery_floor_pct=(
+    float(os.environ["ESCALATION_BATTERY_FLOOR_PCT"])
+    if os.environ.get("ESCALATION_BATTERY_FLOOR_PCT") else None
+  ),
+)
 ESCALATION_DIR = os.environ.get("ESCALATION_DIR", "/app/escalations")
 ESCALATION_MAX_FILES = int(os.environ.get("ESCALATION_MAX_FILES", "100"))
 
@@ -447,8 +459,9 @@ def _log_identity_map_if_changed(snapshot: dict):
     log.info(f"Track {track_id} — {label}")
 
 
+# Guards the placement decision + commit, so two detection callbacks cannot
+# both decide to escalate in the same interval window.
 _hub_event_lock = threading.Lock()
-_last_hub_event_at = 0.0
 
 
 def _prune_escalation_frames():
@@ -480,7 +493,7 @@ def _save_escalation_frame(confidence: float, frame: bytes, timestamp: str):
     with open(f"{base_path}.json", "w") as f:
       json.dump({
         "timestamp": timestamp,
-        "threshold": PERSON_CONFIDENCE_THRESHOLD,
+        "threshold": escalation_policy.confidence_threshold,
         "confidence": confidence,
       }, f)
     _prune_escalation_frames()
@@ -488,8 +501,11 @@ def _save_escalation_frame(confidence: float, frame: bytes, timestamp: str):
     log.error(f"Failed to save escalation frame locally: {e}")
 
 
-def _post_person_event(confidence: float, frame: bytes):
+def _post_person_event(confidence: float, frame: bytes, decided_at: float):
   url = f"{get_hub_base_url()}{HUB_EVENTS_PATH}"
+  # How much of the deadline this tier already spent. The hub subtracts from
+  # what is left rather than re-planning against the original budget.
+  elapsed_ms = int((time.monotonic() - decided_at) * 1000)
   event = build_edge_event(
     node_id=DEVICE_ID,
     trigger="person_detected",
@@ -497,8 +513,9 @@ def _post_person_event(confidence: float, frame: bytes):
     frame=frame,
     metadata={
       "edge_model": "video_object_detection",
-      "threshold": PERSON_CONFIDENCE_THRESHOLD,
+      "threshold": escalation_policy.confidence_threshold,
     },
+    task=escalation_policy.task_descriptor(elapsed_ms=elapsed_ms),
   )
   try:
     resp = requests.post(url, json=event, timeout=HUB_EVENT_TIMEOUT_SEC)
@@ -516,19 +533,22 @@ def maybe_notify_hub(detections: dict, frame: bytes | None):
     return
 
   best_confidence = max(d.get("confidence", 0.0) for d in person_detections)
-  if best_confidence <= PERSON_CONFIDENCE_THRESHOLD:
-    return
 
-  global _last_hub_event_at
+  # Placement, not a threshold comparison. `decide` is side-effect free, so the
+  # interval clock only starts once the escalation is actually committed to.
   with _hub_event_lock:
-    now = time.monotonic()
-    if now - _last_hub_event_at < HUB_EVENT_HYSTERESIS_SEC:
+    decision = escalation_policy.decide(confidence=best_confidence)
+    if not decision.escalates:
+      log.debug(f"Keeping detection on the edge: {decision.reason}")
       return
-    _last_hub_event_at = now
+    decided_at = time.monotonic()
+    escalation_policy.committed(decided_at)
 
+  log.info(f"Escalating to {decision.tier}: {decision.reason}")
   timestamp = datetime.now(UTC).isoformat()
   threading.Thread(target=_save_escalation_frame, args=(best_confidence, frame, timestamp), daemon=True).start()
-  threading.Thread(target=_post_person_event, args=(best_confidence, frame), daemon=True).start()
+  threading.Thread(target=_post_person_event,
+                   args=(best_confidence, frame, decided_at), daemon=True).start()
 
 
 # Register a callback for when all objects are detected

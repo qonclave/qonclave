@@ -30,6 +30,7 @@ def build_edge_event(*, node_id: str, trigger: str,
                      confidence: float | None = None,
                      frame: bytes | None = None,
                      metadata: dict | None = None,
+                     task: dict | None = None,
                      event_id: str | None = None,
                      timestamp: str | None = None) -> dict:
     """One edge event in spec/v1 shape.
@@ -54,6 +55,11 @@ def build_edge_event(*, node_id: str, trigger: str,
         event["confidence"] = confidence
     if metadata:
         event["metadata"] = dict(metadata)
+    if task:
+        # Carries the REMAINING deadline, not the original. Without it every
+        # tier re-plans against a budget that was already partly spent, and the
+        # ladder blows an SLA nobody is tracking.
+        event["task"] = dict(task)
     if frame:
         event["payload"] = {
             "media_type": "image/jpeg",
