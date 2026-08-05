@@ -20,6 +20,11 @@ class PostureSettings:
     wide_box_ratio: float = 0.90
     rapid_drop_ratio_per_second: float = 0.22
     keypoint_threshold: float = 0.25
+    # A gap this long (person left and came back, hub restarted, etc.) means
+    # the next sample starts a fresh session instead of resuming old timers.
+    # Must comfortably exceed normal pose-sampling gaps (~0.25s at 4 Hz) so
+    # jitter/network hiccups never trigger it.
+    session_gap_seconds: float = 30.0
 
 
 def jpeg_size(data: bytes) -> tuple[int, int] | None:
@@ -129,6 +134,12 @@ class PostureStateMachine:
                      else self._track_keys.get(track_id, ("track", track_id)))
         self._track_keys[track_id] = state_key
         old = self._tracks.get(state_key, {})
+        # A gap this long means the person left and came back (or the hub
+        # restarted) since the last sample under this key -- resume as a
+        # fresh session instead of reactivating a stale abnormal/still timer
+        # that could be hours old.
+        if now - old.get("ts", now) > cfg.session_gap_seconds:
+            old = {}
         elapsed = max(now - old.get("ts", now), 1e-6)
         previous = old.get("points") or {}
 

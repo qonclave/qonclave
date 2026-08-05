@@ -76,17 +76,17 @@ def get_hub_base_url() -> str:
 
   # Attempt UDP LAN broadcast discovery on port 8888
   try:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-    sock.settimeout(1.5)
-    sock.sendto(json.dumps({"probe": "qonclave-hub"}).encode("utf-8"), ("255.255.255.255", 8888))
-    data, addr = sock.recvfrom(1024)
-    msg = json.loads(data.decode("utf-8", errors="ignore"))
-    if isinstance(msg, dict) and msg.get("service") == "qonclave-hub":
-      _resolved_hub_host = addr[0]
-      _discovery_method = "UDP Broadcast"
-      log.info(f"Discovered Qonclave Hub via UDP LAN Broadcast at: {_resolved_hub_host}")
-      return f"http://{_resolved_hub_host}:{HUB_PORT}"
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+      sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+      sock.settimeout(1.5)
+      sock.sendto(json.dumps({"probe": "qonclave-hub"}).encode("utf-8"), ("255.255.255.255", 8888))
+      data, addr = sock.recvfrom(1024)
+      msg = json.loads(data.decode("utf-8", errors="ignore"))
+      if isinstance(msg, dict) and msg.get("service") == "qonclave-hub":
+        _resolved_hub_host = addr[0]
+        _discovery_method = "UDP Broadcast"
+        log.info(f"Discovered Qonclave Hub via UDP LAN Broadcast at: {_resolved_hub_host}")
+        return f"http://{_resolved_hub_host}:{HUB_PORT}"
   except Exception:
     log.debug(f"UDP LAN discovery timed out; falling back to HUB_IP '{HUB_IP}'")
 

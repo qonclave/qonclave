@@ -59,15 +59,21 @@ def extract_json(text: str) -> dict:
         return obj if isinstance(obj, dict) else {}
     except (ValueError, TypeError):
         pass
-    # fall back to the first {...} span
+    # Fall back to scanning for a balanced {...} object. Naively slicing from
+    # the first "{" to the last "}" breaks if the model emits more than one
+    # brace span (e.g. a trailing example or aside) - raw_decode() at each
+    # "{" instead parses only the balanced object starting there, skipping to
+    # the next "{" candidate on failure.
+    decoder = json.JSONDecoder()
     start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end != -1 and end > start:
+    while start != -1:
         try:
-            obj = json.loads(text[start:end + 1])
-            return obj if isinstance(obj, dict) else {}
+            obj, _end = decoder.raw_decode(text, start)
+            if isinstance(obj, dict):
+                return obj
         except (ValueError, TypeError):
-            return {}
+            pass
+        start = text.find("{", start + 1)
     return {}
 
 
