@@ -22,9 +22,15 @@ from framework.server import API_PREFIX, create_app  # noqa: E402
 
 
 class _StubPolicy(Policy):
+    """Typed contract: evaluate(event: EdgeEvent, image_path=None)."""
+
     name = "stub"
 
-    def evaluate(self, image_path, event):
+    def __init__(self):
+        self.seen: list[tuple] = []
+
+    def evaluate(self, event, image_path=None):
+        self.seen.append((event, image_path))
         return Verdict(verified=False, confidence=None, alert="stub")
 
 
@@ -51,12 +57,17 @@ class _StubMQTT(_StubBackend):
 
 
 @pytest.fixture
-def client(tmp_path):
+def policy():
+    return _StubPolicy()
+
+
+@pytest.fixture
+def client(tmp_path, policy):
     static = tmp_path / "static"
     static.mkdir()
     (static / "dashboard.html").write_text("<html></html>", encoding="utf-8")
     app = create_app(
-        policy=_StubPolicy(), vlm=_StubBackend(), mqtt=_StubMQTT(),
+        policy=policy, vlm=_StubBackend(), mqtt=_StubMQTT(),
         sms=_StubBackend(), static_dir=str(static),
     )
     app.config["TESTING"] = True
@@ -186,10 +197,33 @@ def test_spec_payload_is_decoded_to_the_same_bytes(client):
     assert blobs[0] == blobs[1] == FRAME
 
 
-def test_event_without_a_frame_is_still_rejected(client):
-    """Phase 2 changes vocabulary, not behaviour. Payload-free events become
-    legal in phase 3, when Policy.evaluate stops requiring an image."""
+def test_policy_receives_a_typed_event_and_a_path(client, policy):
+    """The typed contract: an EdgeEvent first, an optional path second."""
+    from qonclave.core.models import EdgeEvent
+
+    client.post(f"/edge/event?{LEGACY_QUERY}", data=FRAME, content_type="image/jpeg")
+    event, image_path = policy.seen[-1]
+    assert isinstance(event, EdgeEvent)
+    assert event.source_node_id == "unoq-01"
+    assert image_path and os.path.exists(image_path)
+
+
+def test_payload_free_event_is_accepted(client, policy):
+    """The spec makes payload optional: a threshold crossing from a sensor is a
+    real observation with nothing to look at."""
     resp = client.post(f"/edge/event?{LEGACY_QUERY}")
+    assert resp.status_code == 200
+    assert resp.get_json()["received"] is True
+    event, image_path = policy.seen[-1]
+    assert event.source_node_id == "unoq-01"
+    assert image_path is None
+
+
+def test_offered_but_unreadable_frame_is_still_a_400(client):
+    """A camera that silently stopped attaching frames must not look identical
+    to a device that never had one."""
+    resp = client.post(f"/edge/event?{LEGACY_QUERY}",
+                       data={"image": (None, "")}, content_type="multipart/form-data")
     assert resp.status_code == 400
     assert resp.get_json()["received"] is False
 

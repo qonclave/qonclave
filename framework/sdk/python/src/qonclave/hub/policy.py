@@ -98,3 +98,17 @@ class Policy(ABC):
     def reply_for(self, sender: str, body: str) -> str | None:
         """Optional text to send back after `on_reply`."""
         return None
+
+    def dashboard_state(self) -> dict[str, Any] | None:
+        """Optional app-specific state for the operator UI.
+
+        The framework serves whatever this returns without interpreting it, which
+        is the point: an app that reasons about operator replies, tracks a
+        occupancy count, or holds a calibration state has somewhere to surface it
+        without the framework growing a method per use case.
+
+        Returning None — the default — means the app has no such state, and the
+        framework reports that rather than an empty object, so a UI can tell
+        "nothing yet" from "not applicable".
+        """
+        return None

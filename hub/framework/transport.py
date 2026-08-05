@@ -104,11 +104,33 @@ def save_incoming_image(event: "EdgeEvent | None" = None) -> tuple[str | None, s
                 fh.write(data)
             return path, None
 
+    # Nothing was offered at all. That is a legal event, not an error: the spec
+    # makes `payload` optional because a threshold crossing from a sensor is a
+    # real observation with nothing to look at. The Policy decides what to do
+    # with it.
+    #
+    # An error is reserved for the case where a frame WAS offered and could not
+    # be used — an empty file field, or an undecodable payload. Collapsing the
+    # two would mean a device whose camera silently stopped attaching frames
+    # looks identical to one that never had a camera.
+    if not frame_was_offered(event):
+        return None, None
+
     return None, (
-        "no image found. Send multipart form field 'image', POST raw image "
-        "bytes with Content-Type image/jpeg, or include a base64 `payload` in a "
-        "spec/v1 event document."
+        "a frame was offered but could not be read. Send multipart form field "
+        "'image', POST raw image bytes with Content-Type image/jpeg, or include "
+        "a base64 `payload` in a spec/v1 event document."
     )
+
+
+def frame_was_offered(event: "EdgeEvent | None" = None) -> bool:
+    """Whether this request intended to carry a frame, however badly."""
+    if "image" in request.files:
+        return True
+    ct = request.headers.get("Content-Type", "")
+    if request.data and (ct.startswith("image/") or "octet-stream" in ct):
+        return True
+    return event is not None and event.payload is not None
 
 
 def result_sidecar_path(frame_name: str) -> str:

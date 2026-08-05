@@ -181,7 +181,7 @@ static test pages vary per use case.
 | GET | `/test/mqtt/messages` | Recently received MQTT messages, optionally filtered by `?topic=` |
 | POST | `/edge/event` | Edge event JSON + frame in, policy-driven verification response out |
 | POST | `/recognize` | Per-track-id face identification: one cropped-person JPEG + `track_id` in, `{track_id, identity, confidence, status}` out. Bypasses Policy entirely — a direct `face_id.identify()` passthrough. |
-| POST | `/sms` | Twilio inbound-reply webhook: runs `policy.on_sms_reply()`, optionally publishes MQTT command |
+| POST | `/sms` | Twilio inbound-reply webhook: runs `policy.on_reply()`, optionally publishes MQTT command |
 | GET | `/user/dashboard` | Live event / verification dashboard page (also the default `/user/` landing) |
 | GET | `/user/events` | Recent events + results (JSON) |
 | GET | `/user/latest.jpg` | Most recent frame |
@@ -455,7 +455,7 @@ Twilio webhook:
 > A paid ngrok plan lets you reserve a stable domain with `--domain`.
 
 Once configured, replies from the recipient's phone arrive at `POST /sms` and
-are processed by `SecurityPolicy.on_sms_reply()`.
+are processed by `SecurityPolicy.on_reply()`.
 
 **Supported reply keywords** (case-insensitive):
 

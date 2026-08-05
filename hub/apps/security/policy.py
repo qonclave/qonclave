@@ -14,6 +14,9 @@ import json
 import logging
 import threading
 
+from qonclave.core.models import Command, EdgeEvent
+
+from framework import adapter
 from framework.policy import Policy, Verdict, Notification
 from framework.vlm import VLMBackend
 from framework.llm import LLMBackend
@@ -76,13 +79,24 @@ class SecurityPolicy(Policy):
         # Last verified verdict stored so it can be injected into LLM context
         # for richer SMS reply reasoning.
         self._last_verdict: Verdict | None = None
-        # One LLM call per inbound message, shared between on_sms_reply() and
-        # reply_for_sms() which the framework calls back-to-back. Keyed by
+        # One LLM call per inbound message, shared between on_reply() and
+        # reply_for() which the framework calls back-to-back. Keyed by
         # (sender, body); holds the most recent result only.
         self._llm_cache: tuple[str, str, dict] | None = None  # (sender, body, result)
         self._llm_cache_lock = threading.Lock()
 
-    def evaluate(self, image_path: str, event: dict) -> Verdict:
+    def evaluate(self, event: EdgeEvent, image_path: str | None = None) -> Verdict:
+        # A payload-free event is a real event — a threshold crossing from a
+        # duty-cycled sensor has nothing to look at. This app verifies frames,
+        # so it declines rather than crashing on one.
+        if image_path is None:
+            return Verdict(
+                verified=False, confidence=None,
+                alert="unverified (event carried no frame)",
+                reasoning_available=False,
+                extra={"identity_status": "not_enabled"},
+            )
+
         # Run face-ID up front — it does its own independent face detection,
         # so it doesn't need to wait on the VLM's person_present verdict —
         # and fold any known name into the verify prompt so the VLM's
@@ -239,14 +253,14 @@ class SecurityPolicy(Policy):
             "identity_unknown_count": sum(1 for f in faces if not f.get("identified")),
         }
 
-    def notify_for(self, verdict: Verdict, event: dict) -> Notification | None:
+    def notify_for(self, verdict: Verdict, event: EdgeEvent) -> Notification | None:
         if verdict.verified:
             self._last_verdict = verdict
             reasoning = verdict.reasoning_text or ""
             message = f"{verdict.alert}. {reasoning}".strip() if reasoning else verdict.alert
             return Notification(
                 message=message,
-                recipient=event.get("device_id", "unknown"),
+                recipient=event.source_node_id,
             )
         return None
 
@@ -255,7 +269,7 @@ class SecurityPolicy(Policy):
     def _llm_interpret_reply(self, sender: str, body: str) -> dict:
         """
         Run (or return cached) LLM interpretation of an inbound SMS reply.
-        Called from both on_sms_reply() and reply_for_sms() so the model runs
+        Called from both on_reply() and reply_for() so the model runs
         exactly once per inbound message regardless of call order.
 
         Returns a parsed dict with keys: intent, mqtt_command, reply.
@@ -324,7 +338,7 @@ class SecurityPolicy(Policy):
             self._llm_cache = (sender, body, parsed)
         return parsed
 
-    def on_sms_reply(self, sender: str, body: str) -> dict | None:
+    def on_reply(self, sender: str, body: str) -> Command | None:
         keyword = body.strip().upper()
 
         if keyword == "STOP":
@@ -335,22 +349,37 @@ class SecurityPolicy(Policy):
 
         if keyword == "DISPATCH":
             log.info("SMS reply DISPATCH from %s — publishing dispatch command", sender)
-            return {"type": "dispatch", "source": "sms_reply", "requested_by": sender}
+            return self._command({"type": "dispatch", "source": "sms_reply",
+                                  "requested_by": sender})
 
         # Unrecognised keyword — ask the LLM.
         parsed = self._llm_interpret_reply(sender, body)
         command = parsed.get("mqtt_command")
         if command:
             log.info("LLM SMS intent=%s -> MQTT command %s", parsed.get("intent"), command)
-            return command
+            return self._command(command)
 
         log.info("LLM SMS intent=%s, no command for reply %r from %s",
                  parsed.get("intent"), body, sender)
         return None
 
-    def reply_for_sms(self, sender: str, body: str) -> str | None:
+    @staticmethod
+    def _command(raw: dict) -> Command | None:
+        """Lift a legacy command dict into a spec Command.
+
+        The LLM is prompted to emit {"type": ..., ...}, and rewriting that prompt
+        is a separate change with its own failure modes — so the shape is
+        translated here instead, where a malformed model response degrades to
+        "no command" rather than raising inside an SMS webhook.
+        """
+        if not isinstance(raw, dict) or not raw.get("type"):
+            log.warning("ignoring malformed command from policy: %r", raw)
+            return None
+        return adapter.command_from_legacy(raw, issuer_id=adapter.hub_node_id())
+
+    def reply_for(self, sender: str, body: str) -> str | None:
         keyword = body.strip().upper()
-        # Keywords are handled entirely in on_sms_reply; no LLM reply needed.
+        # Keywords are handled entirely in on_reply; no LLM reply needed.
         if keyword in ("STOP", "DISPATCH"):
             return None
 
@@ -358,7 +387,12 @@ class SecurityPolicy(Policy):
         reply = parsed.get("reply")
         return reply if reply else None
 
-    def last_sms_analysis(self) -> dict | None:
+    def dashboard_state(self) -> dict | None:
+        """Latest LLM interpretation of an inbound operator reply, for the UI.
+
+        Was `last_sms_analysis()`. The framework serves whatever this returns
+        without interpreting it, so the shape is this app's business.
+        """
         with self._llm_cache_lock:
             if self._llm_cache is None:
                 return None

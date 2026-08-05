@@ -1,108 +1,37 @@
 """
-policy.py — the app contract for the Qonclave framework.
+policy.py — the app contract, now supplied by the qonclave SDK.
 
-A "policy" is what a developer declares to build a new use case on top of
-the framework: given an escalated frame and its edge event metadata, decide
-whether the event is verified, at what confidence, and what alert (and,
-optionally, what hub->edge command) to emit. The framework's HTTP layer
-(framework/server.py) drives this interface; it never encodes any
-use-case-specific logic itself.
+This module used to define `Policy`, `Verdict` and `Notification`. They now live
+in `qonclave.hub.policy` and are re-exported here so that every existing import
+
+    from framework.policy import Policy, Verdict, Notification
+
+keeps working while `hub/` converges on `framework/`. When hub/framework/ is
+finally absorbed, this file goes away and apps import qonclave.hub directly.
+
+What changed for an app subclassing Policy:
+
+    evaluate(image_path, event: dict)   ->  evaluate(event: EdgeEvent, image_path=None)
+    command_for(...) -> dict | None     ->  -> Command | None
+    on_sms_reply / reply_for_sms        ->  on_reply / reply_for
+    last_sms_analysis()                 ->  dashboard_state()
+
+`Verdict` and `Notification` are positionally compatible with the old ones — the
+new definitions only add defaults and a `urgency` field — so existing
+constructions need no change.
+
+`image_path` is now optional because a payload-free event is a real event: a
+threshold crossing from a duty-cycled sensor has nothing to look at, and a
+Policy that assumes an image crashes on the smallest devices in the fleet.
+
+`dashboard_state()` replaces `last_sms_analysis()`. The old name described one
+app's use of one transport; the new one is a generic hook the framework serves
+without interpreting, which is why it did not need to become
+`last_whatsapp_analysis()` the moment a second app appeared.
 """
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from qonclave.hub.policy import Notification, Policy, Verdict
 
-
-@dataclass
-class Notification:
-    """An SMS notification request from a Policy to the framework."""
-    message: str
-    recipient: str
-
-
-@dataclass
-class Verdict:
-    """Result of a policy evaluating one escalated frame."""
-
-    verified: bool
-    confidence: float | None
-    alert: str
-    reasoning_text: str | None = None
-    reasoning_available: bool | None = None
-    latency_s: float | None = None
-    # App-specific wire fields merged flat into the response envelope,
-    # e.g. {"identity_status": "not_enabled"}.
-    extra: dict = field(default_factory=dict)
-
-
-class Policy(ABC):
-    """
-    Base class for a Qonclave app. Subclasses declare the model, prompt,
-    thresholds, and alert text for one use case (security, fall detection,
-    hazard detection, ...); the framework handles transport, verification
-    plumbing, and the event store around it.
-    """
-
-    name: str = "policy"
-
-    @abstractmethod
-    def evaluate(self, image_path: str, event: dict) -> Verdict:
-        """Evaluate one escalated frame + its edge event metadata."""
-        raise NotImplementedError
-
-    def command_for(self, verdict: Verdict, event: dict) -> dict | None:
-        """
-        Optional hub->edge command to send back in the response (e.g.
-        {"type": "navigate_to", "target": "living_room"}). Most apps have
-        no edge actuator to command, so the default is no command.
-        """
-        return None
-
-    def notify_for(self, verdict: Verdict, event: dict) -> Notification | None:
-        """
-        Optional SMS notification to send after a verdict. Return a
-        Notification(message, recipient) to trigger an SMS; None to suppress.
-        In trial mode the framework sends a fixed template to a fixed number
-        regardless of the Notification's field values — they are accepted now
-        and will be used in a future release.
-        """
-        return None
-
-    def on_sms_reply(self, sender: str, body: str) -> dict | None:
-        """
-        Called when Twilio delivers an inbound SMS reply to POST /sms.
-        Return an MQTT command dict to publish to the last known device, or
-        None to take no action. The framework handles the MQTT publish;
-        the Policy decides what the reply means.
-
-        sender  the phone number that replied (e.g. "+15551234567")
-        body    the reply text as received (leading/trailing whitespace stripped)
-        """
-        return None
-
-    def reply_for_sms(self, sender: str, body: str) -> str | None:
-        """
-        Optional outbound reply to send back to the operator after processing
-        their inbound SMS. Called by the framework immediately after
-        on_sms_reply(); the framework sends the returned text as an SMS via
-        SMSBus.send(). Return None to send no reply.
-
-        sender  the phone number that replied (e.g. "+15551234567")
-        body    the reply text as received (same value passed to on_sms_reply)
-        """
-        return None
-
-    def last_sms_analysis(self) -> dict | None:
-        """
-        Optional: return the most recent LLM analysis of an inbound SMS reply,
-        for display on the operator dashboard. Apps that use an LLM to
-        interpret SMS replies should override this to expose the latest result.
-        The framework surfaces this at GET /user/llm_response.
-
-        Expected return shape (all fields optional):
-            {"intent": str, "reply": str|None, "mqtt_command": dict|None,
-             "latency_s": float|None, "from": str|None}
-        """
-        return None
+__all__ = ["Policy", "Verdict", "Notification"]

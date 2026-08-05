@@ -32,6 +32,7 @@ import base64
 import binascii
 import datetime as _dt
 import logging
+import os
 import uuid
 from typing import Any
 
@@ -65,6 +66,16 @@ DEFAULT_NODE_ID = "unknown"
 
 def now_iso() -> str:
     return _dt.datetime.now(_dt.timezone.utc).isoformat()
+
+
+def hub_node_id() -> str:
+    """This hub's node id, used as the `issuer_id` on commands it mints.
+
+    A single-hub deployment has no discovery to learn its own name from, so it
+    is configuration. It becomes meaningful the moment a second hub exists, at
+    which point a device needs to know which hub told it to move.
+    """
+    return os.environ.get("QONCLAVE_NODE_ID", "qonclave-hub")
 
 
 def looks_like_spec(raw: dict[str, Any]) -> bool:

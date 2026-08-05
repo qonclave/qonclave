@@ -23,7 +23,7 @@ Endpoints:
     POST /recognize            per-track-id face identification: a single
                                cropped-person JPEG + track_id -> identity
     POST /sms                 Twilio inbound-reply webhook: runs policy
-                               on_sms_reply(), optionally publishes MQTT command
+                               on_reply(), optionally publishes MQTT command
 
     GET  /user/dashboard      live dashboard page (app-provided static/);
                                also the default landing page (/, /user/)
@@ -100,7 +100,7 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
     sms         shared SMSBus; sends an SMS when notify_for() returns a
                 Notification (trial mode: fixed template + fixed number)
     llm         optional LLMBackend (text-only Qwen3-4B); used by the Policy
-                for on_sms_reply() reasoning; exposed via /health
+                for on_reply() reasoning; exposed via /health
     static_dir  directory holding the app's dashboard.html, test_*.html
     """
     app = Flask(__name__, static_folder=None)
@@ -213,8 +213,8 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
         # One validated model from here down, whichever vocabulary arrived.
         # adapter.to_legacy_dict renders it back for the Policy, which still
         # takes a dict; phase 3 retires that call.
+        # One validated model from here down, whichever vocabulary arrived.
         event = transport.parse_edge_event()
-        legacy_event = adapter.to_legacy_dict(event)
 
         path, err = transport.save_incoming_image(event)
         if err:
@@ -222,17 +222,21 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
             return jsonify({"received": False, "error": err}), 400
 
         event_id = event.event_id
-        frame_name = os.path.basename(path)
+        frame_name = os.path.basename(path) if path else None
         log.info("Edge event %s | device=%s | edge_conf=%s | frame=%s",
-                 event_id, event.source_node_id, event.confidence, frame_name)
+                 event_id, event.source_node_id, event.confidence,
+                 frame_name or "(none)")
 
-        verdict = policy.evaluate(path, legacy_event)
-        command = policy.command_for(verdict, legacy_event)
+        verdict = policy.evaluate(event, path)
+        command = policy.command_for(verdict, event)
         device_id = event.source_node_id
-        if command is not None and device_id:
-            mqtt.publish_command(device_id, command)
+        # The Policy returns a spec Command; the wire form carries both that and
+        # the flat shape today's firmware parses, so one payload serves both.
+        command_wire = adapter.command_to_wire(command) if command is not None else None
+        if command_wire is not None and device_id:
+            mqtt.publish_command(device_id, command_wire)
 
-        notification = policy.notify_for(verdict, legacy_event)
+        notification = policy.notify_for(verdict, event)
         if notification is not None:
             sms.send(notification)
 
@@ -243,7 +247,7 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
             "hub_verified": verdict.verified,
             "hub_confidence": verdict.confidence,
             "alert": verdict.alert,
-            "command": command,
+            "command": command_wire,
             **verdict.extra,
         }
 
@@ -270,9 +274,11 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
         # <frame>.json, so stored frames carry their result on disk (and are
         # fetchable via /user/frames/<frame>.json) — not just in the in-memory
         # ring buffer the dashboard reads.
-        sidecar = transport.save_result_sidecar(frame_name, record)
-        if sidecar:
-            log.info("Saved result sidecar -> %s", os.path.basename(sidecar))
+        # No frame means no sidecar — it is named after the frame it sits beside.
+        if frame_name:
+            sidecar = transport.save_result_sidecar(frame_name, record)
+            if sidecar:
+                log.info("Saved result sidecar -> %s", os.path.basename(sidecar))
 
         return jsonify(response)
 
@@ -391,12 +397,13 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
         body = request.form.get("Body", "").strip()
         log.info("SMS reply from %s: %r", sender, body)
 
-        command = policy.on_sms_reply(sender, body)
+        command = policy.on_reply(sender, body)
         if command is not None:
             device_id = events.latest_device_id()
             if device_id:
-                mqtt.publish_command(device_id, command)
-                log.info("SMS reply MQTT command %s -> device %s", command, device_id)
+                wire = adapter.command_to_wire(command)
+                mqtt.publish_command(device_id, wire)
+                log.info("SMS reply MQTT command %s -> device %s", wire, device_id)
                 action = "mqtt_published"
             else:
                 log.warning("SMS reply returned command %s but no device_id known yet", command)
@@ -406,11 +413,11 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
         else:
             action = "ignored"
 
-        reply_text = policy.reply_for_sms(sender, body)
+        reply_text = policy.reply_for(sender, body)
         if reply_text:
             from .policy import Notification
             sent = sms.send(Notification(message=reply_text, recipient=sender))
-            log.info("SMS reply_for_sms -> sent=%s: %r", sent, reply_text[:80])
+            log.info("SMS reply_for -> sent=%s: %r", sent, reply_text[:80])
 
         sms.record_reply(sender, body, action)
         return ("", 200)
@@ -505,8 +512,10 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
 
     @app.get("/user/llm_response")
     def user_llm_response():
-        """Latest LLM analysis of an inbound SMS reply, for the dashboard."""
-        analysis = policy.last_sms_analysis()
+        """App-specific dashboard state — for this app, the latest LLM analysis
+        of an inbound SMS reply. The framework serves whatever the Policy
+        returns without interpreting it."""
+        analysis = policy.dashboard_state()
         return jsonify({
             "available": (llm.status().get("available") if llm else False),
             "analysis": analysis,
