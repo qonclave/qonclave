@@ -1,0 +1,9 @@
+name: hub_Buzzer
+description: This example showcases buzzer control from hub.
+ports: []
+bricks:
+- arduino:video_object_detection:
+    devices:
+    - remote_camera_0
+- arduino:web_ui: {}
+icon: 📽️
