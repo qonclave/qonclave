@@ -29,6 +29,8 @@
          ARM64 only, installs `geniex` from PyPI into it.
       5. On ARM64, verifies the install by importing geniex and printing its version.
       6. Installs hub/requirements.txt (from this checkout) into the venv.
+      6a. Installs the in-tree Qonclave SDK (framework/sdk/python) editable into
+         the same venv, so `import qonclave` works for hub/server.py.
       7. Installs face ID (hub/framework/face_id/setup/setup.ps1) into that same venv, since
          hub/server.py imports framework.face_id.identity in-process. Skipped when
          already installed, so re-runs stay quick.
@@ -381,6 +383,25 @@ if ($IsArm) {
 Write-Step "Installing hub requirements into the venv"
 & $VenvPython -m pip install -r (Join-Path $RepoDir 'hub\requirements.txt') @PipIndexArgs
 Write-Ok "requirements installed"
+
+# --- 6a. Install the in-tree Qonclave SDK (editable) -------------------------
+# framework/sdk/python is the forward-looking framework package. It is installed
+# EDITABLE so edits under framework/ take effect without a reinstall, and by
+# ABSOLUTE path because pip resolves relative paths in requirements files against
+# the caller's working directory rather than the file's own location - which is
+# exactly why this is a step here and not a line in requirements.txt.
+#
+# Run unconditionally rather than probed: an editable install records an absolute
+# path to the source tree, so a checkout that moved would otherwise keep a stale
+# working install that imports from the old location.
+Write-Step "Installing the Qonclave SDK (editable) into the venv"
+$SdkDir = Join-Path $RepoDir 'framework\sdk\python'
+& $VenvPython -m pip install -e $SdkDir @PipIndexArgs
+if ($LASTEXITCODE -ne 0) {
+    throw "qonclave SDK install failed (pip exited $LASTEXITCODE). Expected the package at $SdkDir."
+}
+& $VenvPython -c "import qonclave.core.models as m; print('    qonclave OK, schema_version', m.SCHEMA_VERSION)"
+Write-Ok "qonclave SDK installed"
 
 # --- 6b. Install face ID into the SAME venv ----------------------------------
 # hub/server.py imports framework.face_id.identity in-process, so face-ID's dependencies

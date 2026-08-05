@@ -2,7 +2,19 @@
 # NOTE: `geniex` is intentionally NOT listed here — it is Snapdragon-X-only and
 # is imported conditionally at runtime (see hub/framework/vlm.py). Install it
 # separately on the Snapdragon laptop via hub/setup_hub.ps1.
+#
+# NOTE: `qonclave` (the in-tree SDK at framework/sdk/python) is also NOT listed
+# here, and deliberately so. pip resolves a relative path in a requirements file
+# against the CURRENT WORKING DIRECTORY, not against the file's own location, so
+# `-e ./framework/sdk/python` would silently install the wrong thing — or
+# nothing — depending on where pip happened to be run from. setup_hub.ps1
+# installs it editable using an absolute path instead. To do it by hand:
+#     hub\geniex-env\Scripts\python.exe -m pip install -e framework\sdk\python
 flask>=3.0
+
+# The SDK's only base dependency; listed so a hand-built venv that skips the
+# editable install above still resolves. framework/sdk/python asks for >=2.0.
+pydantic>=2.7
 
 # Loads .env into os.environ at startup (hub/server.py).
 python-dotenv>=1.0
