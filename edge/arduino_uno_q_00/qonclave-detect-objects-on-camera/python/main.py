@@ -334,6 +334,36 @@ def handle_robot_move(sid, message):
 
 ui.on_message("robot_move", handle_robot_move)
 
+def _execute_buzzer_command(message):
+  if not isinstance(message, dict):
+    raise ValueError("Buzzer command must be an object")
+
+  action = str(message.get("action", "")).strip().lower()
+  frequency = int(message.get("frequency", 440))
+  duration = int(message.get("duration", 0))
+
+  if action in ("start", "tone"):
+    Bridge.call("trigger_buzzer", frequency, duration)
+    return {"ok": True, "action": action, "frequency": frequency, "duration": duration}
+  elif action in ("stop", "notone"):
+    Bridge.call("stop_buzzer")
+    return {"ok": True, "action": action}
+  else:
+    raise ValueError(f"Unsupported buzzer action: {action or '(empty)'}")
+
+def handle_buzzer(sid, message):
+  try:
+    status = _execute_buzzer_command(message)
+    ui.send_message("buzzer_status", message=status)
+  except (TypeError, ValueError) as e:
+    log.warning(f"Rejected buzzer command from UI client {sid}: {e}")
+    ui.send_message("buzzer_status", message={"ok": False, "error": str(e)})
+  except Exception as e:
+    log.error(f"Buzzer command failed: {e}")
+    ui.send_message("buzzer_status", message={"ok": False, "error": "MCU buzzer command failed"})
+
+ui.on_message("buzzer", handle_buzzer)
+
 # 1. Listen for Potentiometer Knob adjustments from MCU (sketch.ino)
 def handle_knob_change(percentage_str):
   try:
@@ -655,18 +685,33 @@ detection_stream.on_detect_all(send_detections_to_ui)
 # commands the hub pushes to this device.
 def _handle_hub_command(command: dict):
   log.info(f"Received hub command: {command}")
-  if not isinstance(command, dict) or command.get("type") != "robot_move":
-    log.warning(f"Ignoring unsupported hub command: {command}")
+  if not isinstance(command, dict):
+    log.warning(f"Ignoring invalid hub command format: {command}")
     return
 
-  try:
-    status = _execute_robot_command(command)
-    log.info(f"Executed hub robot command: {status}")
-    ui.send_message("robot_move_status", message=status)
-  except (TypeError, ValueError) as e:
-    log.warning(f"Rejected hub robot command: {e}")
-  except Exception as e:
-    log.error(f"Hub robot command failed: {e}")
+  cmd_type = str(command.get("type", "")).strip().lower()
+  action = str(command.get("action", "")).strip().lower()
+
+  if cmd_type == "robot_move":
+    try:
+      status = _execute_robot_command(command)
+      log.info(f"Executed hub robot command: {status}")
+      ui.send_message("robot_move_status", message=status)
+    except (TypeError, ValueError) as e:
+      log.warning(f"Rejected hub robot command: {e}")
+    except Exception as e:
+      log.error(f"Hub robot command failed: {e}")
+  elif cmd_type == "buzzer" or action in ("start", "stop", "tone", "notone"):
+    try:
+      status = _execute_buzzer_command(command)
+      log.info(f"Executed hub buzzer command: {status}")
+      ui.send_message("buzzer_status", message=status)
+    except (TypeError, ValueError) as e:
+      log.warning(f"Rejected hub buzzer command: {e}")
+    except Exception as e:
+      log.error(f"Hub buzzer command failed: {e}")
+  else:
+    log.warning(f"Ignoring unsupported hub command: {command}")
 
 mqtt_client = EdgeMQTTClient(
   device_id=DEVICE_ID,
