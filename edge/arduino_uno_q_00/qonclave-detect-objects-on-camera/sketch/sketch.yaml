@@ -1,5 +1,16 @@
 profiles:
   default:
+    fqbn: 
     platforms:
       - platform: arduino:zephyr
+    libraries:
+      - dependency: ArduinoGraphics (1.1.5)
+      - Arduino_HS300x (1.0.0)
+      - Arduino_LPS22HB (1.0.2)
+      - Arduino_LSM6DSOX (1.1.2)
+      - Arduino_LTR381RGB (1.0.1)
+      - Arduino_Modulino (0.9.0)
+      - STM32duino VL53L4CD (1.0.5)
+      - STM32duino VL53L4ED (1.0.1)
+
 default_profile: default

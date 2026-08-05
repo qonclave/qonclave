@@ -29,7 +29,7 @@ void BuzzerController::tone(int frequency, unsigned long duration) {
     toneDuration_ = duration;
     isBuzzing_ = true;
   } else {
-    buzzer_.tone(frequency);
+    buzzer_.tone(frequency,1);
     isBuzzing_ = true;
     toneDuration_ = 0;
   }
