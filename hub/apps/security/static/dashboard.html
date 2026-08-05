@@ -92,6 +92,30 @@
   .recognize-item .meta { padding:6px 8px; font-size:11px; }
   .recognize-item .meta .track { color:var(--muted); margin-bottom:4px; }
   .recognize-item .pill { font-size:10px; padding:1px 7px; }
+  .pose-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr));
+        gap:12px; margin-top:12px; }
+  .pose-item { background:#0f1218; border:1px solid var(--border);
+        border-radius:8px; overflow:hidden; }
+  /* Direct child only: the live pose stream. A bare `.pose-item img` also
+     matched the face thumbnail nested in .meta and, being more specific than
+     a lone .pose-face class, sized it to the full tile -- which covered the
+     skeleton completely. */
+  .pose-item > img { width:100%; height:230px; object-fit:contain; display:block;
+        background:#000; }
+  .pose-item .meta { padding:7px 9px; font-size:11px; display:flex;
+        align-items:center; gap:8px; }
+  .pose-item .meta .who { flex:1; min-width:0; }
+  .pose-item .meta .track { color:var(--muted); display:block; margin-bottom:3px; }
+  .pose-item .meta .stats { color:var(--muted); font-size:10px; display:block;
+        margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .pose-item .pill { font-size:10px; padding:1px 7px; }
+  /* Face crop the person was identified from. Sits in the caption row beside
+     the text, NOT overlaid on the stream -- anything drawn over the video
+     hides part of the skeleton, and the lower body is exactly what matters
+     for fall detection. Selector kept specific enough to beat the rule above. */
+  .pose-item .meta .pose-face { width:40px; height:40px; flex:0 0 40px;
+        object-fit:cover; border-radius:6px; border:1px solid var(--border);
+        background:#000; }
 </style>
 </head>
 <body>
@@ -131,13 +155,26 @@
   </div>
 
   <div class="card" style="margin-bottom:18px;">
-    <label>Live recognition feed <span id="recognizePill" class="pill" style="margin-left:8px;font-size:11px;"></span></label>
+    <label>Live person tracking <span id="posePill" class="pill" style="margin-left:8px;font-size:11px;"></span></label>
     <div class="sub" style="margin-bottom:2px;">
-      Crops arriving via POST /recognize from tracked people on the edge, as they come in.
+      One tile per tracked person: live skeleton stream, plus the face crop they
+      were identified from. Both come from the same POST /track/analyze sample.
     </div>
-    <div id="recognizeGrid" class="recognize-grid">
-      <div style="color:var(--muted);font-size:13px;grid-column:1/-1;">No /recognize calls yet.</div>
+    <div id="poseGrid" class="pose-grid">
+      <div style="color:var(--muted);font-size:13px;grid-column:1/-1;">No tracked people yet.</div>
     </div>
+
+    <details id="recognizeDetails" style="margin-top:14px;">
+      <summary style="cursor:pointer;color:var(--muted);font-size:12px;">
+        Recent recognition samples <span id="recognizePill" class="pill" style="margin-left:6px;font-size:10px;"></span>
+      </summary>
+      <div class="sub" style="margin:8px 0 2px;">
+        Every face crop that arrived, newest first — the raw call history behind the tiles above.
+      </div>
+      <div id="recognizeGrid" class="recognize-grid">
+        <div style="color:var(--muted);font-size:13px;grid-column:1/-1;">No /track/analyze calls yet.</div>
+      </div>
+    </details>
   </div>
 
   <div class="card" style="margin-bottom:18px;">
@@ -450,43 +487,155 @@ async function refreshLLM() {
   } catch (e) { /* leave prior state */ }
 }
 
-async function refreshRecognizeActivity() {
+const statusClass = (s) => s === "known" ? "ok" : s === "unknown" ? "warn"
+  : s === "no_face" ? "" : s ? "err" : "";
+
+// Raw per-call history, collapsed under the tiles. Takes the already-fetched
+// payload -- refreshPersonTracking() does the one request both views need.
+function renderRecognizeActivity(j) {
+  $("recognizePill").textContent = j.count ? `${j.count} recent` : "idle";
+  $("recognizePill").className = "pill" + (j.count ? " ok" : "");
+
+  // Skip the DOM work entirely while the section is collapsed.
+  if (!$("recognizeDetails").open) return;
+
+  const grid = $("recognizeGrid");
+  if (!j.activity || !j.activity.length) {
+    grid.innerHTML = '<div style="color:var(--muted);font-size:13px;grid-column:1/-1;">No /track/analyze calls yet.</div>';
+    return;
+  }
+  const statusLabel = (a) => a.status === "known" ? a.identity : a.status.replace("_", " ");
+  grid.innerHTML = j.activity.map(a => `
+    <div class="recognize-item">
+      <img src="/user/recognize_activity/${a.id}.jpg" alt="track ${a.track_id} crop" loading="lazy" />
+      <div class="meta">
+        <div class="track">Track ${a.track_id} · ${shortTime(a.received_at)} · ${a.latency_ms}ms</div>
+        <span class="pill ${statusClass(a.status)}">${statusLabel(a)}</span>
+      </div>
+    </div>`).join("");
+}
+
+// Tracks currently rendered as <img> tiles. The MJPEG stream lives in the
+// element itself, so tiles are created/removed only when the set of live
+// tracks changes -- re-rendering the grid every poll would tear down and
+// reopen every stream, which shows as a constant flicker.
+let poseRendered = new Set();
+
+// Newest face-recognition entry per track, so each tile can show the crop the
+// person was actually identified from. Pose-only samples don't feed the
+// activity buffer, so for a resolved track this stays pinned to the crop that
+// resolved it -- which is the useful thing to look at.
+function latestFaceByTrack(activity) {
+  const byTrack = {};
+  for (const a of activity || []) {          // newest first
+    if (!(a.track_id in byTrack)) byTrack[a.track_id] = a;
+  }
+  return byTrack;
+}
+
+async function refreshPersonTracking() {
+  let faces = {};
   try {
-    const r = await fetch("/user/recognize_activity?limit=16");
-    const j = await r.json();
+    const [tr, ar] = await Promise.all([
+      fetch("/user/tracks"),
+      fetch("/user/recognize_activity?limit=16"),
+    ]);
+    const j = await tr.json();
+    const act = await ar.json();
+    faces = latestFaceByTrack(act.activity);
 
-    $("recognizePill").textContent = j.count ? `${j.count} recent` : "idle";
-    $("recognizePill").className = "pill" + (j.count ? " ok" : "");
+    renderRecognizeActivity(act);   // the collapsed raw-history section
 
-    const grid = $("recognizeGrid");
-    if (!j.activity || !j.activity.length) {
-      grid.innerHTML = '<div style="color:var(--muted);font-size:13px;grid-column:1/-1;">No /recognize calls yet.</div>';
+    const tracks = j.tracks || {};
+    const ids = Object.keys(tracks).filter(id => tracks[id].has_frame);
+
+    $("posePill").textContent = ids.length ? `${ids.length} tracked` : "idle";
+    $("posePill").className = "pill" + (ids.length ? " ok" : "");
+
+    const grid = $("poseGrid");
+    if (!ids.length) {
+      if (poseRendered.size) { grid.innerHTML = ""; poseRendered.clear(); }
+      if (!grid.children.length) {
+        grid.innerHTML = '<div style="color:var(--muted);font-size:13px;grid-column:1/-1;">No tracked people yet.</div>';
+      }
       return;
     }
-    const statusClass = (s) => s === "known" ? "ok" : s === "unknown" ? "warn" : s === "no_face" ? "" : "err";
-    const statusLabel = (a) => a.status === "known" ? a.identity : a.status.replace("_", " ");
-    grid.innerHTML = j.activity.map(a => `
-      <div class="recognize-item">
-        <img src="/user/recognize_activity/${a.id}.jpg" alt="track ${a.track_id} crop" loading="lazy" />
-        <div class="meta">
-          <div class="track">Track ${a.track_id} · ${shortTime(a.received_at)} · ${a.latency_ms}ms</div>
-          <span class="pill ${statusClass(a.status)}">${statusLabel(a)}</span>
-        </div>
-      </div>`).join("");
+
+    const wanted = new Set(ids);
+    if (poseRendered.size && [...poseRendered].every(id => wanted.has(id)) && poseRendered.size === wanted.size) {
+      // Same tracks as last poll: refresh captions only, leave streams alone.
+    } else {
+      if (!poseRendered.size) grid.innerHTML = "";
+      for (const id of poseRendered) {
+        if (!wanted.has(id)) document.getElementById(`poseItem-${id}`)?.remove();
+      }
+      for (const id of ids) {
+        if (poseRendered.has(id)) continue;
+        const el = document.createElement("div");
+        el.className = "pose-item";
+        el.id = `poseItem-${id}`;
+        el.innerHTML = `
+          <img src="/user/tracks/${id}/stream.mjpg" alt="track ${id} pose" />
+          <div class="meta">
+            <img class="pose-face" id="poseFace-${id}" alt="" title="face crop this person was identified from" style="display:none;" />
+            <span class="who">
+              <span class="track">Track ${id}</span>
+              <span class="pill" id="posePill-${id}"></span>
+              <span class="stats" id="poseStats-${id}"></span>
+            </span>
+          </div>`;
+        grid.appendChild(el);
+      }
+      poseRendered = wanted;
+    }
+
+    for (const id of ids) {
+      const t = tracks[id];
+      const face = faces[id];
+      const pill = document.getElementById(`posePill-${id}`);
+      if (!pill) continue;
+
+      const score = t.latest_pose && t.latest_pose.mean_score;
+      const status = t.status || (face && face.status);
+      const name = t.identity || (face && face.identity);
+      pill.textContent = status === "known" ? name : (status || "tracking").replace("_", " ");
+      pill.className = "pill " + statusClass(status);
+
+      const bits = [];
+      if (face && face.status === "known" && face.confidence != null) {
+        bits.push(`face ${(face.confidence * 100).toFixed(0)}%`);
+      }
+      if (score != null) bits.push(`pose ${score.toFixed(2)}`);
+      if (t.history_len) bits.push(`${t.history_len} samples`);
+      document.getElementById(`poseStats-${id}`).textContent = bits.join(" · ");
+
+      // Inset the crop this track was identified from, once there is one.
+      const thumb = document.getElementById(`poseFace-${id}`);
+      if (thumb && face) {
+        const src = `/user/recognize_activity/${face.id}.jpg`;
+        if (thumb.dataset.src !== src) { thumb.dataset.src = src; thumb.src = src; }
+        thumb.style.display = "block";
+      }
+    }
   } catch (e) {
-    $("recognizePill").textContent = "unreachable";
-    $("recognizePill").className = "pill err";
+    $("posePill").textContent = "unreachable";
+    $("posePill").className = "pill err";
   }
 }
 
 refresh();
 setInterval(refresh, 2000);
+refreshPersonTracking();
+setInterval(refreshPersonTracking, 2000);
 refreshSMS();
 setInterval(refreshSMS, 2000);
 refreshLLM();
 setInterval(refreshLLM, 2000);
-refreshRecognizeActivity();
-setInterval(refreshRecognizeActivity, 1500);
+// Expanding the raw-history section renders it immediately rather than
+// waiting for the next poll tick.
+$("recognizeDetails").addEventListener("toggle", () => {
+  if ($("recognizeDetails").open) refreshPersonTracking();
+});
 </script>
 </body>
 </html>

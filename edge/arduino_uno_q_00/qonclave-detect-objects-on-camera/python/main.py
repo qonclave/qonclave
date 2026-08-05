@@ -25,10 +25,10 @@ from file_camera import FileCamera
 from identity_map import IdentityMap
 from led_display import person_display_bitmap
 from mqtt_client import EdgeMQTTClient
+from analysis_client import AnalysisClient
 from person_centering import PersonCenteringController, horizontal_bearing_degrees
 from person_tracker import PersonTracker
-from recognition_client import RecognitionClient
-from track_crop import crop_person, remove_crop_locally, save_crop_locally
+from track_crop import crop_persons, remove_crop_locally, save_crop_locally
 from track_overlay import draw_track_overlay
 
 load_dotenv()
@@ -374,62 +374,98 @@ person_centering = PersonCenteringController(
   settle_seconds=float(os.environ.get("PERSON_CENTER_SETTLE_SEC", "0.35")),
 )
 
-# --- Per-track face recognition: sample each tracked person's crop to the
-# hub's POST /recognize endpoint (not the motor-following pipeline above --
-# this only resolves who each track_id is).
+# --- Per-track analysis: sample each tracked person's crop to the hub's
+# POST /track/analyze endpoint (not the motor-following pipeline above).
+# One crop per request, fanned out hub-side to the requested analyzers:
+# face resolves who each track_id is (until known, then never again), pose
+# runs continuously at ~4 Hz for fall detection.
 TRACK_RECOGNITION_ENABLED = os.environ.get("TRACK_RECOGNITION_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
+TRACK_ANALYZERS = tuple(
+  a.strip() for a in os.environ.get("TRACK_ANALYZERS", "face,pose").split(",") if a.strip()
+)
 TRACK_CROP_PADDING = float(os.environ.get("TRACK_CROP_PADDING", "0.25"))
 TRACK_CROP_PADDING_TOP = float(os.environ.get("TRACK_CROP_PADDING_TOP", "0.8"))
 TRACK_CROP_MIN_SIZE_PX = int(os.environ.get("TRACK_CROP_MIN_SIZE_PX", "40"))
 TRACK_CROP_MIN_VISIBLE_RATIO = float(os.environ.get("TRACK_CROP_MIN_VISIBLE_RATIO", "0.85"))
+TRACK_CROP_POSE_MIN_BOX_HEIGHT_PX = int(os.environ.get("TRACK_CROP_POSE_MIN_BOX_HEIGHT_PX", "100"))
+TRACK_CROP_POSE_MIN_VISIBLE_RATIO = float(os.environ.get("TRACK_CROP_POSE_MIN_VISIBLE_RATIO", "0.5"))
 TRACK_CROPS_DIR = os.environ.get("TRACK_CROPS_DIR", "/app/track_crops")
-RECOGNITION_SAMPLE_INTERVAL_SEC = float(os.environ.get("RECOGNITION_SAMPLE_INTERVAL_SEC", "1.0"))
-RECOGNITION_REQUEST_TIMEOUT_SEC = float(os.environ.get("RECOGNITION_REQUEST_TIMEOUT_SEC", "5"))
+FACE_SAMPLE_INTERVAL_SEC = float(os.environ.get("FACE_SAMPLE_INTERVAL_SEC", "1.0"))
+POSE_SAMPLE_INTERVAL_SEC = float(os.environ.get("POSE_SAMPLE_INTERVAL_SEC", "0.25"))
+ANALYSIS_REQUEST_TIMEOUT_SEC = float(os.environ.get("ANALYSIS_REQUEST_TIMEOUT_SEC", "5"))
 
 identity_map = IdentityMap()
-recognition_client = RecognitionClient(
+analysis_client = AnalysisClient(
   get_hub_base_url=get_hub_base_url,
-  timeout_sec=RECOGNITION_REQUEST_TIMEOUT_SEC,
-  sample_interval_sec=RECOGNITION_SAMPLE_INTERVAL_SEC,
+  timeout_sec=ANALYSIS_REQUEST_TIMEOUT_SEC,
+  face_interval_sec=FACE_SAMPLE_INTERVAL_SEC,
+  pose_interval_sec=POSE_SAMPLE_INTERVAL_SEC,
+  analyzers=TRACK_ANALYZERS,
   logger=log,
 )
 
-# Track_ids from the *current* frame, so a /recognize response that arrives
-# after its track was dropped (hub was slow, person already left) is ignored
-# instead of resurrecting a stale identity.
+# Track_ids from the *current* frame, so a /track/analyze response that
+# arrives after its track was dropped (hub was slow, person already left) is
+# ignored instead of resurrecting a stale identity.
 _live_track_ids: set = set()
 _live_track_ids_lock = threading.Lock()
 _last_logged_identity_snapshot: dict = {}
 
+# Latest pose sub-result per live track, for the Web UI's pose_status
+# message. The full keypoint time series lives on the hub (track_store);
+# the edge only mirrors the newest status/score.
+_latest_pose: dict = {}
+_latest_pose_lock = threading.Lock()
 
-def _on_recognition_result(track_id: int, result: dict, latency_s: float):
+
+def _on_analysis_result(track_id: int, result: dict, latency_s: float):
   with _live_track_ids_lock:
     is_live = track_id in _live_track_ids
   if not is_live:
-    log.debug(f"Ignoring /recognize result for track {track_id}: no longer active ({latency_s * 1000:.0f}ms round trip)")
+    log.debug(f"Ignoring /track/analyze result for track {track_id}: no longer active ({latency_s * 1000:.0f}ms round trip)")
     return
-  identity_map.merge(track_id, result)
+  face = result.get("face")
+  if face:
+    identity_map.merge(track_id, face)
+  pose = result.get("pose")
+  if pose:
+    with _latest_pose_lock:
+      _latest_pose[track_id] = {
+        "status": pose.get("status"),
+        "mean_score": pose.get("mean_score"),
+      }
 
 
-def _crop_and_recognize(track_id: int, frame: bytes, bounding_box_xyxy):
-  # Runs entirely off the detection-callback thread: the decode/crop/encode
-  # work here used to run inline in send_detections_to_ui, adding real CPU
-  # cost to the hot video-processing path on every unresolved track, every
-  # frame. recognition_client.claim() already reserved this track before
+def _crop_and_analyze(frame: bytes, due_map: dict):
+  # ONE background thread per detection callback: decode the frame once,
+  # crop every due track from it, and post each crop. This used to be one
+  # thread (and one cv2.imdecode) per track per sample -- at pose's 4 Hz
+  # cadence across N tracks that decode cost is real on the UNO Q.
+  # analysis_client.claim() already reserved every track in due_map before
   # this thread was started, so it's safe to take as long as it needs here.
-  crop = crop_person(
-    frame, bounding_box_xyxy,
+  crops = crop_persons(
+    frame, {tid: box for tid, (box, _due) in due_map.items()},
     padding=TRACK_CROP_PADDING,
     padding_top=TRACK_CROP_PADDING_TOP,
-    min_size_px=TRACK_CROP_MIN_SIZE_PX,
-    min_visible_ratio=TRACK_CROP_MIN_VISIBLE_RATIO,
+    face_min_size_px=TRACK_CROP_MIN_SIZE_PX,
+    face_min_visible_ratio=TRACK_CROP_MIN_VISIBLE_RATIO,
+    pose_min_box_height_px=TRACK_CROP_POSE_MIN_BOX_HEIGHT_PX,
+    pose_min_visible_ratio=TRACK_CROP_POSE_MIN_VISIBLE_RATIO,
   )
-  if crop is None:
-    log.debug(f"Rejected crop for track {track_id}: too small or badly clipped")
-    recognition_client.release(track_id)
-    return
-  save_crop_locally(track_id, crop, TRACK_CROPS_DIR)
-  recognition_client.send_claimed(track_id, crop, _on_recognition_result)
+  for track_id, (_box, due) in due_map.items():
+    entry = crops.get(track_id)
+    # Send only the analyzers that are both due AND accept this crop's
+    # geometry (e.g. a small-but-visible person samples face, not pose).
+    analyzers = due & entry["analyzers_ok"] if entry else set()
+    if not analyzers:
+      log.debug(f"Rejected crop for track {track_id}: too small or badly clipped for all due analyzers")
+      analysis_client.release(track_id)
+      continue
+    save_crop_locally(track_id, entry["jpeg"], TRACK_CROPS_DIR)
+    analysis_client.send_claimed(
+      track_id, entry["jpeg"], analyzers, _on_analysis_result,
+      person_box=entry["person_box"],
+    )
 
 
 def _log_identity_map_if_changed(snapshot: dict):
@@ -535,28 +571,39 @@ def send_detections_to_ui(detections: dict, frame: bytes | None = None):
     _live_track_ids.update(active_track_ids)
 
   for dropped_id in identity_map.prune(active_track_ids):
-    recognition_client.forget(dropped_id)
+    analysis_client.forget(dropped_id)
     remove_crop_locally(dropped_id, TRACK_CROPS_DIR)
+    with _latest_pose_lock:
+      _latest_pose.pop(dropped_id, None)
 
   if TRACK_RECOGNITION_ENABLED and frame:
+    due_map = {}
     for track in person_tracks:
       track_id = track["track_id"]
-      if not recognition_client.should_sample(track_id, identity_map.is_known(track_id)):
-        continue
+      due = analysis_client.analyzers_due(track_id, identity_map.is_known(track_id))
+      if due:
+        due_map[track_id] = (track["bounding_box_xyxy"], due)
+    if due_map:
       # Claim synchronously (cheap) so a frame arriving before the crop/encode
-      # work below finishes can't also decide to sample this track; the actual
-      # decode/crop/encode/save/POST all happen off this detection-callback
-      # thread, on their own background thread.
-      recognition_client.claim(track_id)
+      # work below finishes can't also decide to sample these tracks; the
+      # actual decode/crop/encode/save/POSTs all happen off this
+      # detection-callback thread, on one background thread for the whole
+      # frame (decode once, crop all due tracks).
+      for track_id, (_box, due) in due_map.items():
+        analysis_client.claim(track_id, due)
       threading.Thread(
-        target=_crop_and_recognize, args=(track_id, frame, track["bounding_box_xyxy"]),
-        name=f"Recognize-{track_id}", daemon=True,
+        target=_crop_and_analyze, args=(frame, due_map),
+        name="TrackAnalyze", daemon=True,
       ).start()
 
   if person_tracks:
     identity_snapshot = {tid: identity_map.get(tid) for tid in active_track_ids}
     _log_identity_map_if_changed(identity_snapshot)
     ui.send_message("identity_map", message=identity_snapshot)
+    with _latest_pose_lock:
+      pose_snapshot = {tid: _latest_pose[tid] for tid in active_track_ids if tid in _latest_pose}
+    if pose_snapshot:
+      ui.send_message("pose_status", message=pose_snapshot)
 
   if frame:
     global _latest_track_preview

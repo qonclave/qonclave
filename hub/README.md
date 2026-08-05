@@ -20,10 +20,12 @@ flowchart TB
         direction TB
 
         subgraph FrameworkPkg["framework/ (reusable, use-case agnostic)"]
-            FSERVER["server.py\ncreate_app(policy, vlm, mqtt, static_dir)\n/health, /edge/event, /user/*"]
+            FSERVER["server.py\ncreate_app(policy, vlm, mqtt, static_dir)\n/health, /edge/event, /track/analyze, /user/*"]
             FTRANSPORT["transport.py\nupload + edge-event parsing"]
             FEVENTS["events.py\nevent ring buffer"]
+            FTRACKS["track_store.py\nper-track keypoint ring buffer"]
             FVLM["vlm.py\nVLMBackend: reason(), structured_query()"]
+            FPOSE["pose/\nPoseBackend: HRNetPose w8a8 on NPU"]
             FMQTT["mqtt_bus.py\nMQTTBus: publish_command()"]
             FPOLICY["policy.py\nPolicy ABC, Verdict"]
         end
@@ -40,6 +42,8 @@ flowchart TB
         ENTRY --> APOLICY
         FSERVER --> FTRANSPORT
         FSERVER --> FEVENTS
+        FSERVER --> FTRACKS
+        FSERVER -- "pose analyzer" --> FPOSE
         FSERVER --> FVLM
         FSERVER -- "command_for() result" --> FMQTT
         FSERVER -- "policy.evaluate()" --> APOLICY
@@ -180,12 +184,17 @@ static test pages vary per use case.
 | POST | `/test/mqtt/publish` | Generic MQTT publish proxy: `{"topic": "...", "payload": {...}}` |
 | GET | `/test/mqtt/messages` | Recently received MQTT messages, optionally filtered by `?topic=` |
 | POST | `/edge/event` | Edge event JSON + frame in, policy-driven verification response out |
-| POST | `/recognize` | Per-track-id face identification: one cropped-person JPEG + `track_id` in, `{track_id, identity, confidence, status}` out. Bypasses Policy entirely — a direct `face_id.identify()` passthrough. |
+| POST | `/track/analyze` | Per-track-id analysis: one cropped-person JPEG + `track_id` in, fanned out to the requested `analyzers` (`face`, `pose`), independent sub-objects out. Bypasses Policy entirely. |
 | POST | `/sms` | Twilio inbound-reply webhook: runs `policy.on_sms_reply()`, optionally publishes MQTT command |
 | GET | `/user/dashboard` | Live event / verification dashboard page (also the default `/user/` landing) |
 | GET | `/user/events` | Recent events + results (JSON) |
 | GET | `/user/latest.jpg` | Most recent frame |
 | GET | `/user/frames/<name>` | A specific stored frame |
+| GET | `/user/tracks` | Per-track latest identity + pose + retained history length (JSON) |
+| GET | `/user/tracks/<id>.jpg` | Latest skeleton-annotated frame for one track (a single still) |
+| GET | `/user/tracks/<id>/stream.mjpg` | **Live pose video** for one track as multipart MJPEG — drop into an `<img src>`, no JS needed |
+| GET | `/user/recognize_activity` | Recent face-analyzer calls (JSON, metadata only) |
+| GET | `/user/recognize_activity/<id>.jpg` | The crop for one of those calls (in-memory ring buffer) |
 | POST | `/user/reason` | Raw VLM tester: image in, reasoning text out (curl/API only, no page) |
 
 ### File layout
@@ -339,22 +348,34 @@ Content-Length: <n>
 
 Both shapes return the schema-compliant verification response shown above.
 
-## Calling `/recognize` (per-track face identification)
+## Calling `/track/analyze` (per-track face ID + pose)
 
 Unlike `/edge/event` (whole-frame, policy-driven, kept for the dashboard),
-`/recognize` is a lightweight, high-frequency-tolerant passthrough straight to
-`FaceIdentityBackend.identify()` — no Policy, no VLM, no dashboard record. The
-uploaded crop is deleted right after inference.
+`/track/analyze` is a lightweight, high-frequency-tolerant fan-out to the
+requested analyzers — no Policy, no VLM. The uploaded crop is deleted right
+after inference; short-lived copies live only in memory (the dashboard's
+recognition feed) and, when enabled, as the single per-track annotated frame.
 
 ```bash
-curl -F "track_id=4" -F "image=@track_4.jpg" http://HUB_IP:8000/recognize
+curl -F "track_id=4" -F "image=@track_4.jpg" \
+     -F "analyzers=face,pose" -F "person_box=10,120,180,400" \
+     http://HUB_IP:8000/track/analyze
 ```
 
 ```json
-{"track_id": 4, "identity": "Jogendra", "confidence": 0.93, "status": "known"}
+{"track_id": 4,
+ "face": {"identity": "Jogendra", "confidence": 0.93, "status": "known"},
+ "pose": {"status": "ok", "keypoints": [[96.0, 34.2, 0.87], "... 17 total"], "mean_score": 0.71},
+ "latency_ms": {"face": 88.0, "pose": 1.5}}
 ```
 
-`status` is one of:
+`analyzers` defaults to `face,pose`; only requested analyzers appear as
+sub-objects, and one being unavailable never fails the other. `person_box` is
+the unpadded person rect in the crop's own pixels — the crop is framed for
+face detection (large headroom above the head), so pose re-frames tightly
+around this box; when absent, pose uses the whole crop.
+
+`face.status` is one of:
 
 | `status` | `identity` | Meaning |
 |----------|------------|---------|
@@ -363,10 +384,53 @@ curl -F "track_id=4" -F "image=@track_4.jpg" http://HUB_IP:8000/recognize
 | `no_face` | `"no_face"` | No face could be detected in the crop |
 | `unavailable` | `"unavailable"` | Face-ID isn't enabled or its models failed to load on this hub |
 
-The edge device (`edge/.../python/recognition_client.py` + `identity_map.py`)
-samples this per tracked person — see that app's README for the sampling
-policy and the known-is-sticky merge rule that keeps a name attached to a
-track once resolved.
+`pose.status` is `ok` (17 `[x, y, score]` keypoints in crop pixels),
+`no_pose` (heatmaps too weak — no usable person in the crop), or
+`unavailable` (non-ARM64 hub or model not exported).
+
+The pose backend (`framework/pose/`) runs HRNetPose w8a8 on the Hexagon NPU
+(~1.4 ms/inference; `python hub/framework/pose/pose_pipeline.py benchmark`
+to confirm) and is provisioned by `hub/framework/pose/setup/setup_pose.ps1`
+(AI Hub export + per-host HTP context binary; wired into `setup_hub.ps1`,
+skippable with `-SkipPose`). Every result is retained in
+`framework/track_store.py`'s per-track ring buffer
+(`QONCLAVE_TRACK_HISTORY_MAX`, default 150 ≈ 40 s at 4 Hz) — the time series
+fall-detection logic will read — and served via `GET /user/tracks`.
+
+### Watching pose live
+
+Every ok pose result publishes a skeleton-annotated frame. Two independent
+switches control what happens to it, because *watching* and *keeping* are
+different things:
+
+| Var | Default | Effect |
+|-----|---------|--------|
+| `QONCLAVE_TRACK_STREAM_ENABLED` | `1` | Draw the overlay and hold the latest frame **in memory**, serving `GET /user/tracks/<id>/stream.mjpg` and `<id>.jpg`. Nothing touches disk. |
+| `QONCLAVE_TRACK_FRAMES_ENABLED` | `1` | *Additionally* persist it to `hub/track_frames/track_<id>.jpg` (capped at `QONCLAVE_TRACK_FRAMES_MAX`, default 50). |
+| `QONCLAVE_TRACK_STREAM_IDLE_SEC` | `20` | Close a stream after this long with no new frame, so a tab left open on a departed person doesn't hold a worker thread. |
+
+Set `QONCLAVE_TRACK_FRAMES_ENABLED=0` for any non-demo deployment — otherwise
+imagery persists on the hub, which the privacy cascade avoids everywhere else.
+**Live viewing still works with it off**, since the stream serves from memory.
+
+The dashboard's "Live pose tracking" card renders one `<img>` per live track
+pointed at its MJPEG stream, so pose shows up there with no clicking. For a
+single track standalone:
+
+```
+http://HUB_IP:8000/user/tracks/1/stream.mjpg
+```
+
+Frame rate is the edge's pose sampling rate (`POSE_SAMPLE_INTERVAL_SEC`,
+default 4 Hz), not a fixed video rate — each `/track/analyze` call with an ok
+pose pushes one frame. Lower that interval on the edge for smoother video;
+the hub has enormous headroom (1.4 ms/inference), so the ceiling is edge CPU
+and upload, not hub inference.
+
+The edge device (`edge/.../python/analysis_client.py` + `identity_map.py`)
+samples this per tracked person — see that app's README for the per-analyzer
+sampling policy (face until known at 1 Hz, pose continuously at 4 Hz) and the
+upgrade-only merge rule that keeps a name attached to a track once resolved.
 
 ## Dashboard
 

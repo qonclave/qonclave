@@ -20,8 +20,9 @@ Endpoints:
                                /test/* pages)
     POST /edge/event          edge event JSON + frame -> policy-driven
                                verification response
-    POST /recognize            per-track-id face identification: a single
-                               cropped-person JPEG + track_id -> identity
+    POST /track/analyze       per-track-id analysis: a single cropped-person
+                               JPEG + track_id, fanned out to the requested
+                               analyzers (face identification, pose estimation)
     POST /sms                 Twilio inbound-reply webhook: runs policy
                                on_sms_reply(), optionally publishes MQTT command
 
@@ -35,8 +36,10 @@ Endpoints:
                                page — curl/API only)
     GET  /user/known_faces    names currently enrolled for face-ID
     POST /user/known_faces     enroll a known face (multipart 'image' + 'name')
-    GET  /user/recognize_activity        recent POST /recognize calls (JSON)
+    GET  /user/recognize_activity        recent face-analyzer calls (JSON)
     GET  /user/recognize_activity/<id>.jpg  the crop for one of those calls
+    GET  /user/tracks         per-track identity + latest pose + history length
+    GET  /user/tracks/<id>.jpg  latest skeleton-annotated frame for a track
 
 Design goals:
     * Runs on ANY laptop (regular x86 Windows/Linux included). Reasoning is
@@ -57,7 +60,7 @@ import uuid
 
 from flask import Flask, Response, jsonify, redirect, request, send_from_directory
 
-from . import discovery, events, icons, recognize_activity, transport
+from . import discovery, events, icons, recognize_activity, track_store, transport
 from .llm import LLMBackend
 from .mqtt_bus import MQTTBus
 from .policy import Policy
@@ -68,9 +71,71 @@ log = logging.getLogger("qonclave.hub")
 
 MAX_UPLOAD_MB = int(os.environ.get("QONCLAVE_MAX_UPLOAD_MB", "16"))
 
+# Per-track annotated pose frames.
+#
+# Two independent switches, because watching and keeping are different things:
+#   QONCLAVE_TRACK_STREAM_ENABLED  draw the skeleton overlay and hold the
+#       latest frame in memory, so /user/tracks/<id>/stream.mjpg can serve
+#       live pose video. Nothing touches disk.
+#   QONCLAVE_TRACK_FRAMES_ENABLED  additionally persist it as
+#       track_frames/track_<id>.jpg. Retention note: this is imagery living
+#       on the hub, which the privacy cascade otherwise avoids — capped and
+#       gitignored, but set it to 0 for any non-demo deployment. The live
+#       stream keeps working with it off.
+TRACK_FRAMES_DIR = os.path.normpath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "track_frames"))
+TRACK_FRAMES_ENABLED = os.environ.get("QONCLAVE_TRACK_FRAMES_ENABLED", "1") == "1"
+TRACK_FRAMES_MAX = int(os.environ.get("QONCLAVE_TRACK_FRAMES_MAX", "50"))
+TRACK_STREAM_ENABLED = os.environ.get("QONCLAVE_TRACK_STREAM_ENABLED", "1") == "1"
+# How long a stream waits on a silent track before closing. The edge samples
+# pose at ~4 Hz, so several seconds of silence means the track is gone.
+TRACK_STREAM_IDLE_TIMEOUT = float(os.environ.get("QONCLAVE_TRACK_STREAM_IDLE_SEC", "20"))
+
+
+def _publish_track_frame(track_id: int, crop_jpeg: bytes, keypoints, label: str) -> "str | None":
+    """Draw the skeleton overlay, publish it to the live stream, and (when
+    retention is on) write/overwrite track_<id>.jpg — one file per track,
+    always the latest sample, the edge's save_crop_locally convention.
+    Prunes oldest files beyond TRACK_FRAMES_MAX. Best-effort: returns the
+    on-disk filename or None, never raises."""
+    try:
+        from .pose.overlay import draw_pose_overlay
+
+        annotated = draw_pose_overlay(crop_jpeg, keypoints, label)
+        if annotated is None:
+            return None
+
+        if TRACK_STREAM_ENABLED:
+            track_store.record_frame(track_id, annotated)
+
+        if not TRACK_FRAMES_ENABLED:
+            return None
+
+        os.makedirs(TRACK_FRAMES_DIR, exist_ok=True)
+        name = f"track_{track_id}.jpg"
+        with open(os.path.join(TRACK_FRAMES_DIR, name), "wb") as f:
+            f.write(annotated)
+
+        # Cap total files: prune oldest-written beyond the limit so a long
+        # session with many short-lived tracks can't fill the disk.
+        entries = sorted(
+            (e for e in os.scandir(TRACK_FRAMES_DIR) if e.is_file()),
+            key=lambda e: e.stat().st_mtime,
+        )
+        for stale in entries[:-TRACK_FRAMES_MAX] if len(entries) > TRACK_FRAMES_MAX else []:
+            try:
+                os.remove(stale.path)
+            except OSError:
+                pass
+        return name
+    except Exception:
+        log.exception("failed to publish annotated track frame for track %s", track_id)
+        return None
+
 
 def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
-               static_dir: str, face_id=None, llm: LLMBackend | None = None) -> Flask:
+               static_dir: str, face_id=None, llm: LLMBackend | None = None,
+               pose=None) -> Flask:
     """
     Build the Qonclave hub Flask app for one Policy.
 
@@ -79,8 +144,10 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
     mqtt        shared MQTTBus; commands from command_for() are also
                 published here so a device can receive them without an
                 open HTTP request
-    face_id     optional FaceIdentityBackend, exposed via /health only —
-                actual identification happens inside the Policy, not here
+    face_id     optional FaceIdentityBackend, exposed via /health and used by
+                /track/analyze's face analyzer
+    pose        optional PoseBackend, exposed via /health and used by
+                /track/analyze's pose analyzer
     sms         shared SMSBus; sends an SMS when notify_for() returns a
                 Notification (trial mode: fixed template + fixed number)
     llm         optional LLMBackend (text-only Qwen3-4B); used by the Policy
@@ -109,6 +176,7 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
             "llm": llm.status() if llm else {"available": False},
             "mqtt": mqtt.status(),
             "face_id": face_id.status() if face_id else {"available": False},
+            "pose": pose.status() if pose else {"available": False},
             "sms": sms.status(),
         })
 
@@ -251,22 +319,34 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
             "permanent": entry.get("permanent", False)
         })
 
-    # --- /recognize: per-track-id face identification -----------------------
-    @app.post("/recognize")
-    def recognize():
-        """Device contract: identify the single cropped person in the
-        uploaded image, tagged with the edge's own track_id, against the
-        known_faces/ database.
+    # --- /track/analyze: per-track-id analysis (face + pose) ----------------
+    @app.post("/track/analyze")
+    def track_analyze():
+        """Device contract: run the requested analyzers on the single cropped
+        person in the uploaded image, tagged with the edge's own track_id.
+        One crop, one request — the hub fans it out to every analyzer asked
+        for, and one analyzer being unavailable never fails the other.
 
         Request:  multipart 'image' file (or raw image body) + 'track_id'
                    (form field, query param, or JSON field).
-        Response: {"track_id": int, "identity": str, "confidence": float,
-                    "status": "known"|"unknown"|"no_face"|"unavailable"}
-        The crop is deleted from disk right after inference, unlike
-        /edge/event's frames which are kept permanently for the dashboard —
-        a short-lived copy is kept in memory only, in recognize_activity's
-        capped ring buffer, so the dashboard can show recent activity without
-        persisting every sampled crop to disk.
+                  Optional 'analyzers': comma-separated subset of
+                   "face,pose" (default both).
+                  Optional 'person_box': "x1,y1,x2,y2" — the unpadded person
+                   rect in the crop's own pixels. The crop is framed for face
+                   detection (large headroom); pose re-frames around this
+                   tight box. Absent/invalid -> pose uses the whole crop.
+        Response: {"track_id": int,
+                   "face": {"identity": str, "confidence": float,
+                            "status": "known"|"unknown"|"no_face"|"unavailable"},
+                   "pose": {"status": "ok"|"no_pose"|"unavailable",
+                            "keypoints": [[x,y,score]x17]|None,
+                            "mean_score": float|None},
+                   "latency_ms": {"face": float, "pose": float}}
+                  Only requested analyzers appear as sub-objects.
+        The crop is deleted from disk right after inference, as /recognize
+        always did — short-lived copies live in memory (recognize_activity's
+        capped ring buffer) and, when QONCLAVE_TRACK_FRAMES_ENABLED=1, as the
+        single per-track annotated frame in track_frames/.
         """
         client = request.remote_addr
 
@@ -282,54 +362,119 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
         except (TypeError, ValueError):
             return jsonify({"ok": False, "error": "'track_id' must be an integer"}), 400
 
-        if face_id is None:
-            return jsonify({"track_id": track_id, "identity": "unavailable",
-                             "confidence": 0.0, "status": "unavailable"}), 503
+        raw_analyzers = request.form.get("analyzers") or request.args.get("analyzers") \
+            or "face,pose"
+        analyzers = {a.strip() for a in raw_analyzers.split(",") if a.strip()}
+        unknown = analyzers - {"face", "pose"}
+        if unknown or not analyzers:
+            return jsonify({"ok": False,
+                            "error": f"unknown analyzers: {sorted(unknown) or 'none requested'}"}), 400
+
+        # Malformed person_box degrades to whole-crop pose, never a 400 — a
+        # framing hint must not cost the sample.
+        person_box = None
+        raw_box = request.form.get("person_box") or request.args.get("person_box")
+        if raw_box:
+            try:
+                parts = [float(v) for v in raw_box.split(",")]
+                if len(parts) == 4:
+                    person_box = tuple(parts)
+            except ValueError:
+                pass
 
         path, err = transport.save_incoming_image()
         if err:
-            log.warning("POST /recognize rejected from %s (track_id=%s): %s",
+            log.warning("POST /track/analyze rejected from %s (track_id=%s): %s",
                         client, track_id, err)
             return jsonify({"ok": False, "error": err}), 400
 
-        t0 = time.monotonic()
+        face_result = None
+        pose_result = None
+        latency_ms: dict = {}
         try:
             with open(path, "rb") as f:
                 image_bytes = f.read()
-            result = face_id.identify(path)
+
+            if "face" in analyzers:
+                t0 = time.monotonic()
+                if face_id is None:
+                    result = {"available": False}
+                else:
+                    result = face_id.identify(path)
+                latency_ms["face"] = round((time.monotonic() - t0) * 1000, 1)
+
+                if not result.get("available"):
+                    identity, status, confidence = "unavailable", "unavailable", 0.0
+                elif not result.get("face_detected"):
+                    identity, status, confidence = "no_face", "no_face", 0.0
+                elif result.get("identified"):
+                    identity, status = result.get("name"), "known"
+                    confidence = result.get("confidence") or 0.0
+                else:
+                    identity, status = "unknown", "unknown"
+                    confidence = result.get("confidence") or 0.0
+                face_result = {"identity": identity,
+                               "confidence": round(float(confidence), 4),
+                               "status": status}
+
+            if "pose" in analyzers:
+                t0 = time.monotonic()
+                if pose is None:
+                    result = {"available": False, "status": "unavailable",
+                              "keypoints": None, "mean_score": None}
+                else:
+                    result = pose.estimate(path, person_box=person_box)
+                latency_ms["pose"] = round((time.monotonic() - t0) * 1000, 1)
+                pose_result = {"status": result.get("status", "unavailable"),
+                               "keypoints": result.get("keypoints"),
+                               "mean_score": result.get("mean_score")}
         finally:
             try:
                 os.remove(path)
             except OSError:
                 pass
-        latency_ms = (time.monotonic() - t0) * 1000
 
-        if not result.get("available"):
-            identity, status, confidence = "unavailable", "unavailable", 0.0
-        elif not result.get("face_detected"):
-            identity, status, confidence = "no_face", "no_face", 0.0
-        elif result.get("identified"):
-            identity, status = result.get("name"), "known"
-            confidence = result.get("confidence") or 0.0
-        else:
-            identity, status = "unknown", "unknown"
-            confidence = result.get("confidence") or 0.0
+        log.info("POST /track/analyze track_id=%s [%s] ->%s%s (%s) from %s",
+                 track_id, ",".join(sorted(analyzers)),
+                 f" face={face_result['status']}"
+                 + (f" ({face_result['identity']})" if face_result and face_result["status"] == "known" else "")
+                 if face_result else "",
+                 f" pose={pose_result['status']}" if pose_result else "",
+                 " ".join(f"{k}={v:.0f}ms" for k, v in latency_ms.items()), client)
 
-        log.info("POST /recognize track_id=%s -> %s%s (%.1f%%, %.0fms) from %s",
-                 track_id, status, f" ({identity})" if status == "known" else "",
-                 confidence * 100, latency_ms, client)
+        # The dashboard's live recognition feed predates /track/analyze and
+        # stays fed by the face analyzer's results.
+        if face_result is not None:
+            recognize_activity.record(
+                track_id, face_result["identity"], face_result["confidence"],
+                face_result["status"], latency_ms.get("face", 0.0),
+                image_bytes, source_ip=client,
+            )
 
-        recognize_activity.record(
-            track_id, identity, round(float(confidence), 4), status,
-            latency_ms, image_bytes, source_ip=client,
-        )
+        frame_name = None
+        if ((TRACK_FRAMES_ENABLED or TRACK_STREAM_ENABLED)
+                and pose_result is not None and pose_result["status"] == "ok"):
+            label = f"Track {track_id}"
+            identity = face_result["identity"] if (
+                face_result and face_result["status"] == "known") else None
+            if identity is None:
+                for sample in reversed(track_store.history(track_id)):
+                    if sample.get("status") == "known":
+                        identity = sample.get("identity")
+                        break
+            if identity:
+                label += f": {identity}"
+            frame_name = _publish_track_frame(
+                track_id, image_bytes, pose_result["keypoints"], label)
 
-        return jsonify({
-            "track_id": track_id,
-            "identity": identity,
-            "confidence": round(float(confidence), 4),
-            "status": status,
-        })
+        track_store.record(track_id, face_result, pose_result, frame_name)
+
+        response = {"track_id": track_id, "latency_ms": latency_ms}
+        if face_result is not None:
+            response["face"] = face_result
+        if pose_result is not None:
+            response["pose"] = pose_result
+        return jsonify(response)
 
     # --- /sms: Twilio inbound-reply webhook ---------------------------------
     @app.post("/sms")
@@ -397,6 +542,58 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
         if image is None:
             return jsonify({"error": "not found or already evicted"}), 404
         return Response(image, mimetype="image/jpeg")
+
+    @app.get("/user/tracks")
+    def user_tracks():
+        """Per-track latest identity + pose + retained history length — the
+        keypoint ring buffer /track/analyze feeds (see track_store.py)."""
+        tracks = track_store.snapshot()
+        return jsonify({"count": len(tracks), "tracks": tracks})
+
+    @app.get("/user/tracks/<int:track_id>.jpg")
+    def user_track_frame(track_id):
+        """Latest skeleton-annotated frame for one track — a single still.
+        Served from memory when the live stream is enabled, else from the
+        retained file. 404 until the track has produced an ok pose."""
+        image = track_store.latest_frame_bytes(track_id)
+        if image is not None:
+            return Response(image, mimetype="image/jpeg")
+        name = track_store.latest_frame(track_id)
+        if name is None or not os.path.exists(os.path.join(TRACK_FRAMES_DIR, name)):
+            return jsonify({"error": "no annotated frame for this track"}), 404
+        return send_from_directory(TRACK_FRAMES_DIR, name, mimetype="image/jpeg")
+
+    @app.get("/user/tracks/<int:track_id>/stream.mjpg")
+    def user_track_stream(track_id):
+        """Live pose video for one track, as multipart MJPEG — drop it
+        straight into an <img src>, no JavaScript required.
+
+        Frame rate is whatever the edge samples pose at (POSE_SAMPLE_INTERVAL_SEC,
+        default 4 Hz), not a fixed video rate: each /track/analyze result with
+        an ok pose publishes one frame. The stream closes itself once a track
+        goes silent for TRACK_STREAM_IDLE_TIMEOUT, so a browser tab left open
+        on a departed person doesn't hold a worker thread forever.
+        """
+        if not TRACK_STREAM_ENABLED:
+            return jsonify({"error": "track streaming disabled "
+                                     "(QONCLAVE_TRACK_STREAM_ENABLED=0)"}), 404
+
+        def generate():
+            last_seq = -1
+            idle = 0.0
+            while idle < TRACK_STREAM_IDLE_TIMEOUT:
+                frame, seq = track_store.wait_for_frame(track_id, last_seq, timeout=2.0)
+                if frame is None:
+                    idle += 2.0
+                    continue
+                idle = 0.0
+                last_seq = seq
+                yield (b"--frame\r\nContent-Type: image/jpeg\r\n"
+                       b"Content-Length: " + str(len(frame)).encode() + b"\r\n\r\n"
+                       + frame + b"\r\n")
+
+        return Response(generate(),
+                        mimetype="multipart/x-mixed-replace; boundary=frame")
 
     @app.post("/user/robot-command")
     def user_robot_command():
