@@ -1,0 +1,94 @@
+asyncapi: 3.0.0
+
+info:
+  title: Qonclave MQTT planes
+  version: '1.0'
+  description: |
+    COMMUNICATION.md §2 (lightweight telemetry) and §4 (actuation).
+
+    MQTT is the push path for devices that can hold a subscription. Devices that cannot — anything
+    on the `minimal` profile — never appear here: their commands accumulate in the hub mailbox and
+    are drained in the check-in downlink instead. A hub MUST support both, because the same fleet
+    routinely contains both kinds of device.
+
+servers:
+  broker:
+    host: '{host}:{port}'
+    protocol: mqtt
+    description: Local broker. Loopback-only and anonymous in the reference setup; mTLS-authenticated in any real deployment.
+    variables:
+      host:
+        default: 127.0.0.1
+      port:
+        default: '1883'
+
+channels:
+  commands:
+    address: 'qonclave/commands/{node_id}'
+    title: Hub to edge commands
+    parameters:
+      node_id:
+        description: Target node. One topic per device — never a shared topic, since subscription is the authorization boundary.
+    messages:
+      command:
+        $ref: '#/components/messages/Command'
+
+  events:
+    address: 'qonclave/events/inbound'
+    title: Lightweight telemetry ingestion
+    description: |
+      For continuous, low-bandwidth sensors — motion, door contacts, thresholds. Rich media goes
+      over HTTP instead; a multi-megabyte frame through a broker starves every other subscriber.
+    messages:
+      event:
+        $ref: '#/components/messages/EdgeEvent'
+
+  status:
+    address: 'qonclave/status/{node_id}'
+    title: Edge liveness and load
+    parameters:
+      node_id:
+        description: Reporting node.
+    messages:
+      manifest:
+        $ref: '#/components/messages/NodeManifest'
+
+operations:
+  sendCommand:
+    action: send
+    channel:
+      $ref: '#/channels/commands'
+    description: |
+      Published by the hub when a Policy's command_for() returns non-null. QoS 1 minimum: an
+      actuation command that silently vanishes is worse than one delivered twice, since commands
+      carry command_id and are required to be idempotent on the device side.
+
+  receiveEvent:
+    action: receive
+    channel:
+      $ref: '#/channels/events'
+    description: Consumed by the hub. Validated and tenant-checked before any Policy sees it.
+
+  receiveStatus:
+    action: receive
+    channel:
+      $ref: '#/channels/status'
+    description: Consumed by the hub to maintain peer liveness and placement candidate state.
+
+components:
+  messages:
+    Command:
+      name: Command
+      contentType: application/json
+      payload:
+        $ref: '../json-schema/command.schema.json'
+    EdgeEvent:
+      name: EdgeEvent
+      contentType: application/json
+      payload:
+        $ref: '../json-schema/edge-event.schema.json'
+    NodeManifest:
+      name: NodeManifest
+      contentType: application/json
+      payload:
+        $ref: '../json-schema/node-manifest.schema.json'

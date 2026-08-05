@@ -1,0 +1,5 @@
+{
+  "model": "EdgeEvent",
+  "expect": "roundtrip",
+  "why": "A fully populated event must survive encode/decode unchanged."
+}

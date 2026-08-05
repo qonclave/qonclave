@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qonclave.dev/spec/v1/archive-record.schema.json",
+  "title": "Qonclave archive record",
+  "description": "A finalized event committed to long-term storage. COMMUNICATION.md §7. Written via S3-compatible PutObject so a tenant can point at MinIO, AWS S3, or their own vetted backend. Archive nodes are per-tenant and never shared (SECURITY.md §2).",
+
+  "type": "object",
+  "properties": {
+    "schema_version": { "$ref": "common.schema.json#/$defs/schemaVersion" },
+    "event_id": { "$ref": "common.schema.json#/$defs/nodeId" },
+    "tenant_id": { "$ref": "common.schema.json#/$defs/tenantId" },
+    "timestamp": { "$ref": "common.schema.json#/$defs/timestamp" },
+
+    "event_data": {
+      "description": "The originating event, as accepted by the hub.",
+      "$ref": "edge-event.schema.json"
+    },
+
+    "decision": {
+      "description": "What the hub's Policy concluded and did about it.",
+      "type": "object",
+      "properties": {
+        "verified": { "type": "boolean" },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "policy": { "type": "string" },
+        "action_taken": { "type": "string" },
+        "analysis": { "type": "object", "additionalProperties": true }
+      },
+      "additionalProperties": true
+    },
+
+    "audit": {
+      "description": "Provenance for compliance. Records which nodes touched this event and where inference actually ran — placement means that is not knowable from the topology alone.",
+      "type": "object",
+      "properties": {
+        "handled_by_hub": { "$ref": "common.schema.json#/$defs/nodeId" },
+        "inference_tier": { "type": "string", "enum": ["edge", "hub", "compute"] },
+        "inference_node": { "$ref": "common.schema.json#/$defs/nodeId" },
+        "processing_time_ms": { "type": "number", "minimum": 0 },
+        "grant_id": {
+          "description": "Set when the event arrived via a capability grant rather than from a directly commissioned device.",
+          "$ref": "common.schema.json#/$defs/nodeId"
+        }
+      },
+      "additionalProperties": true
+    },
+
+    "retention": {
+      "type": "object",
+      "properties": {
+        "expires_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "key_id": {
+          "description": "Encryption key this record is sealed under. Cryptographic erasure (SECURITY.md §4) destroys the key rather than the objects, so every record sharing a key_id becomes unreadable at once.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+
+  "required": ["schema_version", "event_id", "tenant_id", "timestamp", "event_data"],
+  "additionalProperties": true
+}

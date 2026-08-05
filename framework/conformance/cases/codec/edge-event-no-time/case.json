@@ -1,0 +1,6 @@
+{
+  "model": "EdgeEvent",
+  "expect": "reject",
+  "reason": "no_time",
+  "why": "Neither timestamp nor relative_time. An event with no notion of when it happened cannot be ordered or archived."
+}

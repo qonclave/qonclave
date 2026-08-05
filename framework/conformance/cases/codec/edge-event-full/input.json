@@ -1,0 +1,29 @@
+{
+  "schema_version": "1.0",
+  "event_id": "evt-001",
+  "source_node_id": "cam-front-door",
+  "tenant_id": "tenant-xyz",
+  "timestamp": "2026-08-04T18:41:00+00:00",
+  "trigger": "motion_detected",
+  "confidence": 0.95,
+  "payload": {
+    "media_type": "image/jpeg",
+    "data_encoding": "base64",
+    "data": "/9j/4AAQSkZJRg=="
+  },
+  "task": {
+    "complexity": 4,
+    "urgency": 2,
+    "privacy": "unrestricted",
+    "use_case": "perimeter",
+    "deadline_ms": 2000,
+    "remaining_ms": 1850,
+    "hops": [
+      "edge"
+    ]
+  },
+  "metadata": {
+    "battery_level": 42,
+    "temperature_c": 22.5
+  }
+}

@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qonclave.dev/spec/v1/capability-grant.schema.json",
+  "title": "Qonclave capability grant",
+  "description": "A signed, scoped, time-boxed authorization issued by a hub allowing one node to talk to a specific target. Generalizes the Direct-Bind broker in ARCHITECTURE.md §3 and SECURITY.md §3 to three audience types: an external operator, a compute node, or a PEER HUB. The audience verifies the grant offline against the issuer's pinned CA root — a mesh that needs the issuing hub online to authorize failover has not failed over.",
+
+  "type": "object",
+  "properties": {
+    "schema_version": { "$ref": "common.schema.json#/$defs/schemaVersion" },
+    "grant_id": {
+      "description": "Unique id, also the handle used for revocation.",
+      "$ref": "common.schema.json#/$defs/nodeId"
+    },
+
+    "issuer": {
+      "description": "The hub that minted this grant, acting as local CA (SECURITY.md §3).",
+      "$ref": "common.schema.json#/$defs/nodeId"
+    },
+    "subject": {
+      "description": "The node being authorized — normally an edge device.",
+      "$ref": "common.schema.json#/$defs/nodeId"
+    },
+    "audience": {
+      "description": "The specific target the subject may talk to. A grant is valid for exactly one audience; presenting it elsewhere MUST fail.",
+      "type": "object",
+      "properties": {
+        "kind": { "type": "string", "enum": ["operator", "compute", "hub"] },
+        "node_id": { "$ref": "common.schema.json#/$defs/nodeId" }
+      },
+      "required": ["kind", "node_id"],
+      "additionalProperties": false
+    },
+
+    "tenant_id": {
+      "description": "Tenant this grant operates within. A verifier MUST reject a grant whose tenant_id differs from its own unless cross_tenant is explicitly true.",
+      "$ref": "common.schema.json#/$defs/tenantId"
+    },
+    "cross_tenant": {
+      "description": "Deny by default. Setting this true is the only way to authorize across the isolation boundary asserted in SECURITY.md §2, and is expected to be rare and audited.",
+      "type": "boolean",
+      "default": false
+    },
+
+    "scope": {
+      "description": "Operations the subject may perform against the audience. A verifier MUST reject any operation not listed.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["post_events", "checkin", "stream", "recognize", "infer", "subscribe_commands"]
+      },
+      "minItems": 1
+    },
+
+    "not_before": { "$ref": "common.schema.json#/$defs/timestamp" },
+    "expires_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+
+    "signature": { "$ref": "common.schema.json#/$defs/signature" }
+  },
+
+  "required": [
+    "schema_version", "grant_id", "issuer", "subject",
+    "audience", "tenant_id", "scope", "expires_at", "signature"
+  ],
+  "additionalProperties": true
+}

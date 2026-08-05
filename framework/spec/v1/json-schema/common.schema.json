@@ -1,0 +1,216 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qonclave.dev/spec/v1/common.schema.json",
+  "title": "Qonclave common definitions",
+  "description": "Shared types referenced by every other Qonclave v1 schema. See docs/COMMUNICATION.md for the prose and dictionary.md for the enumerated values.",
+
+  "$defs": {
+    "schemaVersion": {
+      "description": "Version of the Qonclave wire contract this document conforms to. A receiver MUST reject a major version it does not implement, and MUST tolerate unknown fields within a version it does.",
+      "type": "string",
+      "pattern": "^1\\.[0-9]+$"
+    },
+
+    "nodeId": {
+      "description": "Stable identifier for a node, assigned at commissioning. Unique within a tenant.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+
+    "tenantId": {
+      "description": "Isolation boundary. Nodes of different tenants MUST NOT exchange events, and a capability grant is denied across tenants unless explicitly scoped.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+
+    "nodeType": {
+      "description": "Role a node currently fills. A node may change role at runtime (hub election), so this is state, not identity.",
+      "type": "string",
+      "enum": ["edge", "hub", "compute", "archive"]
+    },
+
+    "profile": {
+      "description": "Conformance profile the node implements. See spec/v1/profiles/.",
+      "type": "string",
+      "enum": ["full", "constrained", "minimal"]
+    },
+
+    "timestamp": {
+      "description": "Absolute time, RFC 3339 / ISO 8601 with an explicit offset.",
+      "type": "string",
+      "format": "date-time"
+    },
+
+    "relativeTime": {
+      "description": "Time as reported by a device with no trustworthy clock. A duty-cycled device that deep-sleeps for a day cannot produce a reliable absolute timestamp, so it reports its own wake counter instead and the receiving hub stamps authoritative time. Devices on the `minimal` profile MAY use this in place of `timestamp`.",
+      "type": "object",
+      "properties": {
+        "wake_counter": {
+          "description": "Monotonic count of wake cycles since commissioning. Never resets except on re-commissioning.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "ms_since_wake": {
+          "description": "Milliseconds elapsed within the current wake window.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "uncertainty_s": {
+          "description": "Device's own estimate of clock drift, if it has one. Omit if unknown.",
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": ["wake_counter", "ms_since_wake"],
+      "additionalProperties": false
+    },
+
+    "mediaPayload": {
+      "description": "An attached sensor sample. OPTIONAL on every message: a temperature sensor has a reading, not a frame. On the `minimal` profile this is normally absent, since a LoRa frame cannot carry base64 media.",
+      "type": "object",
+      "properties": {
+        "media_type": {
+          "description": "IANA media type of the decoded payload.",
+          "type": "string",
+          "examples": ["image/jpeg", "audio/wav", "application/octet-stream"]
+        },
+        "data_encoding": {
+          "description": "How `data` is encoded. `base64` in JSON; `raw` when the container is CBOR and the value is a byte string.",
+          "type": "string",
+          "enum": ["base64", "raw"]
+        },
+        "data": {
+          "description": "The payload itself.",
+          "type": "string"
+        }
+      },
+      "required": ["media_type", "data_encoding", "data"],
+      "additionalProperties": false
+    },
+
+    "power": {
+      "description": "Measured power state, used by placement to decide whether this node should run inference locally. Reported by any node that can measure it; a mains-powered hub reports on_mains=true and omits battery_pct.",
+      "type": "object",
+      "properties": {
+        "battery_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "on_mains": {
+          "type": "boolean"
+        },
+        "thermal_headroom_c": {
+          "description": "Degrees C below the throttling threshold. Zero or negative means the node is throttling and should not be given heavy work.",
+          "type": "number"
+        },
+        "duty_cycle_s": {
+          "description": "For duty-cycled devices: nominal seconds between wakes. 86400 for a daily sensor. Absent for always-on nodes.",
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "load": {
+      "description": "Current utilization, broadcast in the discovery manifest so a hub can route work to the least busy compute node.",
+      "type": "object",
+      "properties": {
+        "cpu_percent": { "type": "number", "minimum": 0, "maximum": 100 },
+        "active_tasks": { "type": "integer", "minimum": 0 },
+        "queue_depth": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+
+    "capabilities": {
+      "description": "What this node can actually do. Placement filters candidate tiers against this before asking the developer's policy to choose.",
+      "type": "object",
+      "properties": {
+        "hardware": {
+          "type": "array",
+          "items": { "type": "string", "examples": ["npu", "gpu", "x86", "arm64", "mcu"] }
+        },
+        "supported_models": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "max_complexity": { "$ref": "#/$defs/complexity" },
+        "transports": {
+          "type": "array",
+          "items": { "type": "string", "examples": ["http", "mqtt", "coap", "grpc", "lora", "ble"] }
+        },
+        "encodings": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["json", "cbor"] }
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "complexity": {
+      "description": "Ordered class of model a task needs. Ordering is significant: a node advertising max_complexity=detect cannot serve a vlm_reason task.",
+      "type": "string",
+      "enum": ["heuristic", "detect", "classify", "embed", "vlm_reason", "llm_reason"]
+    },
+
+    "urgency": {
+      "type": "string",
+      "enum": ["background", "normal", "high", "critical"]
+    },
+
+    "privacy": {
+      "description": "Egress constraint the framework enforces regardless of what a placement policy returns. `no_egress` forbids a shared multi-tenant compute node; `local_only` forbids leaving the originating device at all.",
+      "type": "string",
+      "enum": ["unrestricted", "no_egress", "local_only"]
+    },
+
+    "taskDescriptor": {
+      "description": "What the application declares about an inference task, as opposed to what the framework measures about nodes. Travels with an escalated event so the receiving tier can re-plan against the same intent.",
+      "type": "object",
+      "properties": {
+        "complexity": { "$ref": "#/$defs/complexity" },
+        "urgency": { "$ref": "#/$defs/urgency" },
+        "privacy": { "$ref": "#/$defs/privacy" },
+        "use_case": {
+          "description": "Free-form application tag. The framework never interprets this; a placement policy may.",
+          "type": "string",
+          "maxLength": 64
+        },
+        "deadline_ms": {
+          "description": "Total budget for the task, set once by the originating node.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "remaining_ms": {
+          "description": "Budget left at the moment of sending. MUST be decremented by each tier before escalating. Without this every tier re-plans against the original deadline and the ladder silently blows its own SLA.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "hops": {
+          "description": "Tiers already visited, in order. Used to detect loops and to attribute latency.",
+          "type": "array",
+          "items": { "type": "string", "enum": ["edge", "hub", "compute"] }
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "signature": {
+      "description": "Detached signature over the canonical encoding of the enclosing document, excluding this field. Algorithm is determined by the issuer's key type, established at commissioning.",
+      "type": "object",
+      "properties": {
+        "alg": { "type": "string", "enum": ["ed25519", "es256", "hs256"] },
+        "key_id": { "type": "string", "maxLength": 64 },
+        "value": { "type": "string" }
+      },
+      "required": ["alg", "value"],
+      "additionalProperties": false
+    }
+  }
+}

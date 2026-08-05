@@ -1,0 +1,146 @@
+// Qonclave compute offload — v1
+//
+// COMMUNICATION.md §3. HTTP/JSON works and is the fallback, but passing multi-megabyte image
+// tensors through JSON parsing at frame rate is the wrong trade, so the compute plane is defined
+// in protobuf and served over gRPC.
+//
+// A compute node is STATELESS. Nothing survives between calls — not model context, not prompts,
+// not intermediate tensors — including across back-to-back calls from different tenants. That is
+// the zero-leakage guarantee in SECURITY.md §2, and it is a hard requirement of this service, not
+// an implementation detail.
+
+syntax = "proto3";
+
+package qonclave.v1;
+
+option go_package = "github.com/jogendar/qonclave/gen/go/qonclave/v1;qonclavev1";
+option java_package = "dev.qonclave.v1";
+
+service Compute {
+  // Run one inference. Returns when complete.
+  rpc Infer(InferRequest) returns (InferResponse);
+
+  // Run one inference, streaming partial results as they are produced. Useful for token-by-token
+  // LLM output where a hub wants to start acting before generation finishes.
+  rpc InferStream(InferRequest) returns (stream InferChunk);
+
+  // What this node can run, and how busy it is right now. A hub polls this to keep its placement
+  // candidate set fresh between discovery heartbeats.
+  rpc Capabilities(CapabilitiesRequest) returns (CapabilitiesResponse);
+}
+
+// ---------------------------------------------------------------------------
+
+message MediaPayload {
+  string media_type = 1;   // IANA type of the decoded bytes, e.g. "image/jpeg"
+  bytes  data       = 2;   // raw bytes — no base64 on this plane
+}
+
+// What the application declares about a task. Mirrors taskDescriptor in common.schema.json.
+// Sent so the compute node can reject work it cannot finish in time rather than starting it.
+message TaskDescriptor {
+  Complexity complexity   = 1;
+  Urgency    urgency      = 2;
+  Privacy    privacy      = 3;
+  string     use_case     = 4;
+  uint32     deadline_ms  = 5;
+  uint32     remaining_ms = 6;  // budget left NOW, already decremented by upstream tiers
+  repeated string hops    = 7;
+}
+
+enum Complexity {
+  COMPLEXITY_UNSPECIFIED = 0;
+  COMPLEXITY_HEURISTIC   = 1;
+  COMPLEXITY_DETECT      = 2;
+  COMPLEXITY_CLASSIFY    = 3;
+  COMPLEXITY_EMBED       = 4;
+  COMPLEXITY_VLM_REASON  = 5;
+  COMPLEXITY_LLM_REASON  = 6;
+}
+
+enum Urgency {
+  URGENCY_UNSPECIFIED = 0;
+  URGENCY_BACKGROUND  = 1;
+  URGENCY_NORMAL      = 2;
+  URGENCY_HIGH        = 3;
+  URGENCY_CRITICAL    = 4;
+}
+
+enum Privacy {
+  PRIVACY_UNSPECIFIED  = 0;
+  PRIVACY_UNRESTRICTED = 1;
+  PRIVACY_NO_EGRESS    = 2;  // a shared multi-tenant node MUST refuse this
+  PRIVACY_LOCAL_ONLY   = 3;  // MUST never reach a compute node at all
+}
+
+// ---------------------------------------------------------------------------
+
+message InferRequest {
+  string task_id   = 1;
+  string tenant_id = 2;   // used to enforce isolation and to scope audit, never to select a model
+  string model_id  = 3;
+  string prompt    = 4;
+
+  repeated MediaPayload payloads = 5;
+
+  uint32 max_tokens  = 6;
+  float  temperature = 7;
+  bool   json_mode   = 8;  // constrain output to parseable JSON
+
+  TaskDescriptor task = 9;
+
+  // Grant presented when the caller was not commissioned by this node's operator. Encoded as
+  // canonical JSON per capability-grant.schema.json; verified offline against a pinned CA root.
+  bytes capability_grant = 10;
+}
+
+message InferResponse {
+  string task_id         = 1;
+  Status status          = 2;
+  uint32 compute_time_ms = 3;
+
+  // Model output. Exactly one is set: `text` for free-form, `json` for json_mode.
+  string text = 4;
+  string json = 5;
+
+  string model_id  = 6;  // what actually ran — may differ from requested if degraded
+  string node_id   = 7;
+  string error     = 8;  // human-readable, set only when status != OK
+}
+
+message InferChunk {
+  string task_id = 1;
+  string delta   = 2;
+  bool   final   = 3;
+  InferResponse summary = 4;  // populated only on the final chunk
+}
+
+enum Status {
+  STATUS_UNSPECIFIED     = 0;
+  STATUS_OK              = 1;
+  STATUS_DEADLINE_EXCEEDED = 2;  // remaining_ms was already too small; nothing was run
+  STATUS_UNSUPPORTED_MODEL = 3;
+  STATUS_OVERLOADED      = 4;    // retry elsewhere; the hub should re-place
+  STATUS_DENIED          = 5;    // grant invalid, tenant mismatch, or privacy forbids this node
+  STATUS_ERROR           = 6;
+}
+
+// ---------------------------------------------------------------------------
+
+message CapabilitiesRequest {}
+
+message CapabilitiesResponse {
+  string node_id = 1;
+
+  repeated string hardware         = 2;  // "npu", "gpu", "x86", "arm64"
+  repeated string supported_models = 3;
+  Complexity      max_complexity   = 4;
+
+  float  cpu_percent  = 5;
+  uint32 active_tasks = 6;
+  uint32 queue_depth  = 7;
+
+  float thermal_headroom_c = 8;  // <= 0 means throttling; a hub should route elsewhere
+
+  bool multi_tenant = 9;  // false if this node serves a single tenant and can accept no_egress work
+}

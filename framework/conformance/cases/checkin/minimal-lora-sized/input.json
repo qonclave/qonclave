@@ -1,0 +1,24 @@
+{
+  "schema_version": "1.0",
+  "node_id": "s7",
+  "wake_counter": 412,
+  "events": [
+    {
+      "schema_version": "1.0",
+      "event_id": "e9",
+      "source_node_id": "s7",
+      "relative_time": {
+        "wake_counter": 412,
+        "ms_since_wake": 180
+      },
+      "trigger": "threshold_crossed",
+      "metadata": {
+        "m": 11
+      }
+    }
+  ],
+  "power": {
+    "battery_pct": 62,
+    "on_mains": false
+  }
+}
