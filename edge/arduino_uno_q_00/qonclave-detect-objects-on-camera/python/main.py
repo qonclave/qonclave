@@ -22,6 +22,7 @@ from arduino.app_peripherals.camera import IPCamera, V4LCamera
 import json
 from basic_auth import BasicAuthMiddleware
 from file_camera import FileCamera
+from hub_protocol import build_edge_event, command_expired, normalize_command
 from identity_map import IdentityMap
 from led_display import person_display_bitmap
 from mqtt_client import EdgeMQTTClient
@@ -36,6 +37,10 @@ load_dotenv()
 log = Logger("qonclave.edge")
 
 DEVICE_ID = os.environ.get("DEVICE_ID", "unoq-01")
+# Spec ingest path — the `servers` base path in spec/v1/openapi/hub.yaml plus
+# /events. The hub also still serves the pre-spec /edge/event, so this can be
+# pointed back if a hub in the field has not been updated yet.
+HUB_EVENTS_PATH = os.environ.get("HUB_EVENTS_PATH", "/api/v1/events")
 HUB_DISCOVERY_ENABLED = os.environ.get("HUB_DISCOVERY_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
 HUB_MDNS_NAME = os.environ.get("HUB_MDNS_NAME", "qonclave-hub.local").strip()
 HUB_IP = os.environ.get("HUB_IP", "192.168.18.62").strip()
@@ -484,18 +489,19 @@ def _save_escalation_frame(confidence: float, frame: bytes, timestamp: str):
 
 
 def _post_person_event(confidence: float, frame: bytes):
-  url = f"{get_hub_base_url()}/edge/event"
-  params = {
-    "device_id": DEVICE_ID,
-    "event_id": f"{DEVICE_ID}-{uuid.uuid4().hex[:8]}",
-    "event_type": "person_detected",
-    "edge_model": "video_object_detection",
-    "edge_confidence": confidence,
-  }
+  url = f"{get_hub_base_url()}{HUB_EVENTS_PATH}"
+  event = build_edge_event(
+    node_id=DEVICE_ID,
+    trigger="person_detected",
+    confidence=confidence,
+    frame=frame,
+    metadata={
+      "edge_model": "video_object_detection",
+      "threshold": PERSON_CONFIDENCE_THRESHOLD,
+    },
+  )
   try:
-    resp = requests.post(url, params=params, data=frame,
-                         headers={"Content-Type": "image/jpeg"},
-                         timeout=HUB_EVENT_TIMEOUT_SEC)
+    resp = requests.post(url, json=event, timeout=HUB_EVENT_TIMEOUT_SEC)
     log.info(f"Hub event sent (person, confidence={confidence:.2f}) -> {resp.status_code} {resp.text[:200]}")
   except requests.RequestException as e:
     log.error(f"Failed to send hub event to {url}: {e}")
@@ -655,12 +661,18 @@ detection_stream.on_detect_all(send_detections_to_ui)
 # commands the hub pushes to this device.
 def _handle_hub_command(command: dict):
   log.info(f"Received hub command: {command}")
-  if not isinstance(command, dict) or command.get("type") != "robot_move":
+
+  if command_expired(command):
+    log.warning(f"Dropping expired hub command: {command}")
+    return
+
+  normalized = normalize_command(command)
+  if normalized is None or normalized.get("action") != "robot_move":
     log.warning(f"Ignoring unsupported hub command: {command}")
     return
 
   try:
-    status = _execute_robot_command(command)
+    status = _execute_robot_command(normalized)
     log.info(f"Executed hub robot command: {status}")
     ui.send_message("robot_move_status", message=status)
   except (TypeError, ValueError) as e:

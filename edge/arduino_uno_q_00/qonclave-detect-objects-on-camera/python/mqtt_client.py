@@ -6,10 +6,10 @@
 mqtt_client.py — edge-side receiver for the hub->edge push channel.
 
 The hub (framework/mqtt_bus.py) publishes commands to
-    qonclave/<device_id>/command
+    qonclave/commands/<node_id>
 This module is the other end of that channel: it connects to the same MQTT
 broker and subscribes to this device's command topic so the hub can push a
-command at any time, independent of the /edge/event request cycle.
+command at any time, independent of the event-ingest request cycle.
 
 Scope for now: just a basic, resilient connection + subscription. Received
 commands are handed to an optional callback (and always logged). Acting on a
@@ -36,12 +36,16 @@ import json
 import threading
 
 
-def command_topic(device_id: str) -> str:
-    return f"qonclave/{device_id}/command"
+# Spec topics — spec/v1/asyncapi/commands.yaml. The hub publishes to both these
+# and the pre-spec qonclave/<id>/command during the migration, so this device
+# must subscribe to EXACTLY ONE of them. Subscribing to both would deliver every
+# command twice, and a doubled robot_move turns 60 degrees instead of 30.
+def command_topic(node_id: str) -> str:
+    return f"qonclave/commands/{node_id}"
 
 
-def status_topic(device_id: str) -> str:
-    return f"qonclave/{device_id}/status"
+def status_topic(node_id: str) -> str:
+    return f"qonclave/status/{node_id}"
 
 
 class EdgeMQTTClient:

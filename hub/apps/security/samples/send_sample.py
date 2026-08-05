@@ -12,6 +12,7 @@ Args: [sample] [mode: event|reason] [base_url]
 Requires: pip install requests   (or use the curl commands in hub/README.md)
 """
 
+import json
 import os
 import sys
 
@@ -38,9 +39,18 @@ def main():
         files = {"image": open(path, "rb")}
         data = {"prompt": "Describe the scene. Is there a person?"}
     else:
-        url = f"{base}/edge/event"
+        # spec/v1 vocabulary in the "event" blob, with the frame as a normal
+        # multipart upload. Exercises a combination neither the device (JSON
+        # body + base64) nor the unit tests cover.
+        url = f"{base}/api/v1/events"
         files = {"image": open(path, "rb")}
-        data = {"event": '{"device_id":"sample-sender","event_id":"%s","edge_confidence":0.85}' % sample}
+        data = {"event": json.dumps({
+            "schema_version": "1.0",
+            "source_node_id": "sample-sender",
+            "event_id": sample,
+            "trigger": "person_detected",
+            "confidence": 0.85,
+        })}
 
     print(f"POST {url}  <-  {sample}")
     r = requests.post(url, files=files, data=data, timeout=120)

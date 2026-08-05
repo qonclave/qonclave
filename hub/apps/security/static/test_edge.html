@@ -68,7 +68,7 @@
   <span class="devicebadge">Test — device simulator</span>
   <h1>Qonclave — Edge Device Simulator</h1>
   <div class="sub">Stands in for an Arduino UNO Q: posts a frame + edge metadata to
-    <code>/edge/event</code>, the same contract a real device uses. This <b>does</b>
+    <code>/api/v1/events</code>, the same contract a real device uses. This <b>does</b>
     record to the operator dashboard, but this page itself has no links to it.</div>
 
   <div class="card">
@@ -101,7 +101,7 @@
     </div>
 
     <div class="row">
-      <button id="send" disabled>Post to /edge/event</button>
+      <button id="send" disabled>Post to /api/v1/events</button>
       <div class="spinner" id="spin"></div>
       <span id="statusPill"></span>
     </div>
@@ -127,7 +127,7 @@
   <div class="grid">
     <div class="card">
       <label for="pubTopic">Publish topic</label>
-      <input type="text" id="pubTopic" value="qonclave/unoq-01/status" />
+      <input type="text" id="pubTopic" value="qonclave/status/unoq-01" />
       <div style="margin-top:10px;">
         <label for="pubPayload">Payload (JSON)</label>
         <textarea id="pubPayload">{"battery": 0.91, "state": "idle"}</textarea>
@@ -139,7 +139,7 @@
     </div>
     <div class="card">
       <label for="subTopic">Receive topic filter</label>
-      <input type="text" id="subTopic" value="qonclave/unoq-01/command" />
+      <input type="text" id="subTopic" value="qonclave/commands/unoq-01" />
       <div class="meta" id="mqttStatus" style="margin-top:8px;"></div>
       <div class="msglog" id="msglog" style="margin-top:10px;">
         <div class="empty">No messages yet.</div>
@@ -184,13 +184,16 @@ sendEl.addEventListener("click", async () => {
   spin.style.display = "inline-block";
   statusPill.textContent = "";
   verdict.textContent = "…";
-  out.textContent = "…posting to /edge/event…";
+  out.textContent = "…posting to /api/v1/events…";
   outMeta.textContent = "";
 
-  // Build the edge event metadata blob (same shape the UNO Q would send).
-  const ev = { device_id: $("deviceId").value.trim() || "unoq-01",
-               event_type: "person_detected",
-               edge_confidence: parseFloat($("edgeConf").value) || undefined };
+  // spec/v1 edge-event vocabulary — the same names the UNO Q now sends.
+  // See spec/v1/json-schema/edge-event.schema.json.
+  const ev = { schema_version: "1.0",
+               source_node_id: $("deviceId").value.trim() || "unoq-01",
+               trigger: "person_detected",
+               timestamp: new Date().toISOString(),
+               confidence: parseFloat($("edgeConf").value) || undefined };
   const eid = $("eventId").value.trim();
   if (eid) ev.event_id = eid;
 
@@ -201,7 +204,7 @@ sendEl.addEventListener("click", async () => {
 
   const t0 = performance.now();
   try {
-    const r = await fetch("/edge/event", { method: "POST", body: fd });
+    const r = await fetch("/api/v1/events", { method: "POST", body: fd });
     const j = await r.json();
     const dt = ((performance.now() - t0) / 1000).toFixed(2);
 
