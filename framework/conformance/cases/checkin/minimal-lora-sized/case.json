@@ -1,0 +1,9 @@
+{
+  "model": "CheckinRequest",
+  "expect": "size_bound",
+  "encoding": "cbor",
+  "int_keys": true,
+  "max_bytes": 242,
+  "should_fit_bytes": 51,
+  "why": "A LoRaWAN payload is 51-242 bytes. This single number decides whether the minimal profile is real or merely described."
+}

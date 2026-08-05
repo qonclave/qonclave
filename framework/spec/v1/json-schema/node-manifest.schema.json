@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qonclave.dev/spec/v1/node-manifest.schema.json",
+  "title": "Qonclave node manifest",
+  "description": "What a node advertises about itself. COMMUNICATION.md §1. Carried in mDNS TXT records, UDP discovery broadcasts, and check-in uplinks. Nodes on the `minimal` profile never broadcast this — they are commissioned out-of-band and known to their hub already.",
+
+  "type": "object",
+  "properties": {
+    "schema_version": { "$ref": "common.schema.json#/$defs/schemaVersion" },
+    "service": { "type": "string", "const": "qonclave-node" },
+    "node_id": { "$ref": "common.schema.json#/$defs/nodeId" },
+    "node_type": { "$ref": "common.schema.json#/$defs/nodeType" },
+    "tenant_id": { "$ref": "common.schema.json#/$defs/tenantId" },
+    "profile": { "$ref": "common.schema.json#/$defs/profile" },
+
+    "endpoints": {
+      "description": "How to reach this node, keyed by transport scheme. A node behind a non-IP link (LoRa, BLE) may advertise no endpoints at all and be reachable only via its commissioning hub.",
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "examples": [{ "http": "http://192.168.1.50:8000", "mqtt": "tcp://192.168.1.50:1883" }]
+    },
+
+    "capabilities": { "$ref": "common.schema.json#/$defs/capabilities" },
+    "load": { "$ref": "common.schema.json#/$defs/load" },
+    "power": { "$ref": "common.schema.json#/$defs/power" },
+
+    "accepts_foreign_edges": {
+      "description": "Hubs only. True if this hub will accept events from an edge node commissioned by a different hub, provided it presents a valid capability grant naming this hub as audience.",
+      "type": "boolean",
+      "default": false
+    },
+    "trusted_issuers": {
+      "description": "Hubs only. node_ids of peer hubs whose CA roots this hub has pinned during federation, and whose grants it will therefore verify offline.",
+      "type": "array",
+      "items": { "$ref": "common.schema.json#/$defs/nodeId" }
+    },
+
+    "last_seen": { "$ref": "common.schema.json#/$defs/timestamp" }
+  },
+
+  "required": ["schema_version", "service", "node_id", "node_type"],
+  "additionalProperties": true
+}

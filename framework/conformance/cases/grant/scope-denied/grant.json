@@ -1,0 +1,16 @@
+{
+  "schema_version": "1.0",
+  "grant_id": "grant-001",
+  "issuer": "hub-alpha",
+  "subject": "cam-front-door",
+  "audience": {
+    "kind": "hub",
+    "node_id": "hub-beta"
+  },
+  "tenant_id": "tenant-xyz",
+  "scope": [
+    "stream"
+  ],
+  "not_before": "2026-08-04T00:00:00+00:00",
+  "expires_at": "2026-08-05T00:00:00+00:00"
+}

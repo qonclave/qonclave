@@ -1,0 +1,5 @@
+{
+  "model": "Command",
+  "expect": "roundtrip",
+  "why": "expires_at must survive the wire. A mailbox that loses it will deliver a day-old unlock command to a device that just woke up."
+}

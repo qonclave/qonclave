@@ -1,0 +1,6 @@
+{
+  "model": "EdgeEvent",
+  "expect": "json_cbor_equivalent",
+  "int_keys": true,
+  "why": "Nested objects must map through the integer key table too, not just top-level fields."
+}

@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qonclave.dev/spec/v1/command.schema.json",
+  "title": "Qonclave command",
+  "description": "An instruction from a hub to an edge node. COMMUNICATION.md §4. Delivered by MQTT publish to qonclave/commands/<node_id> for always-on devices, or drained from the hub mailbox in a check-in response for duty-cycled ones.",
+
+  "type": "object",
+  "properties": {
+    "schema_version": { "$ref": "common.schema.json#/$defs/schemaVersion" },
+    "command_id": { "$ref": "common.schema.json#/$defs/nodeId" },
+    "issuer_id": { "$ref": "common.schema.json#/$defs/nodeId" },
+    "target_id": { "$ref": "common.schema.json#/$defs/nodeId" },
+    "tenant_id": { "$ref": "common.schema.json#/$defs/tenantId" },
+
+    "action": {
+      "description": "Application-defined action name. The framework routes it; the device interprets it.",
+      "type": "string",
+      "maxLength": 64
+    },
+    "parameters": {
+      "type": "object",
+      "additionalProperties": true
+    },
+
+    "issued_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+    "expires_at": {
+      "description": "After this instant the command MUST NOT be delivered or executed. This is what makes a mailbox safe for a device that sleeps for a day: a stale 'unlock the door' must expire rather than fire on wake.",
+      "$ref": "common.schema.json#/$defs/timestamp"
+    },
+
+    "signature": { "$ref": "common.schema.json#/$defs/signature" }
+  },
+
+  "required": ["schema_version", "command_id", "issuer_id", "action"],
+  "additionalProperties": true
+}

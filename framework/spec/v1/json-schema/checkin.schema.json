@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qonclave.dev/spec/v1/checkin.schema.json",
+  "title": "Qonclave check-in exchange",
+  "description": "The single round trip a duty-cycled device performs per wake. A device that wakes for 200 ms cannot afford separate calls to post events, fetch commands, sync config, and sync time — radio-on time is the battery budget, so round trips are the metric that matters, not bytes. The uplink carries everything the device has to say; the downlink carries everything the hub has been holding for it since the last contact. MANDATORY for the `minimal` profile, RECOMMENDED for `constrained`, unused by `full`.",
+
+  "$defs": {
+
+    "request": {
+      "title": "Check-in uplink (device -> hub)",
+      "type": "object",
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schemaVersion" },
+        "node_id": { "$ref": "common.schema.json#/$defs/nodeId" },
+        "tenant_id": { "$ref": "common.schema.json#/$defs/tenantId" },
+
+        "wake_counter": {
+          "description": "Monotonic wake count. Doubles as a replay guard: a hub MUST reject a check-in whose wake_counter is not greater than the last one it accepted from this node.",
+          "type": "integer",
+          "minimum": 0
+        },
+
+        "events": {
+          "description": "Observations accumulated since last contact — normally one, but a device that failed to reach the hub on previous wakes drains its spool here.",
+          "type": "array",
+          "items": { "$ref": "edge-event.schema.json" }
+        },
+
+        "power": { "$ref": "common.schema.json#/$defs/power" },
+
+        "config_version": {
+          "description": "Version of the config the device currently holds. The hub returns a delta only when this is stale, so an unchanged config costs zero downlink bytes.",
+          "type": "integer",
+          "minimum": 0
+        },
+
+        "ack": {
+          "description": "command_ids delivered in a previous check-in that the device has now executed. Until a command is acked the hub MUST keep it in the mailbox, so a device that dies mid-wake retries next cycle.",
+          "type": "array",
+          "items": { "$ref": "common.schema.json#/$defs/nodeId" }
+        },
+
+        "grant": {
+          "description": "Present only when checking in with a hub that did not commission this device. Omitted in the normal home-hub case.",
+          "$ref": "capability-grant.schema.json"
+        },
+
+        "signature": { "$ref": "common.schema.json#/$defs/signature" }
+      },
+      "required": ["schema_version", "node_id", "wake_counter"],
+      "additionalProperties": true
+    },
+
+    "response": {
+      "title": "Check-in downlink (hub -> device)",
+      "type": "object",
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schemaVersion" },
+
+        "server_time": {
+          "description": "Authoritative time. This is how a device with a drifted or unset RTC learns what time it is, and how relative_time on its events gets anchored.",
+          "$ref": "common.schema.json#/$defs/timestamp"
+        },
+
+        "accepted": {
+          "description": "event_ids the hub durably accepted. Anything absent MUST be retained in the device spool and retried next wake.",
+          "type": "array",
+          "items": { "$ref": "common.schema.json#/$defs/nodeId" }
+        },
+
+        "commands": {
+          "description": "Mailbox drain: commands queued since last contact, expired ones already removed. VISION.md's asynchronous sleep-queue.",
+          "type": "array",
+          "items": { "$ref": "command.schema.json" }
+        },
+
+        "config": {
+          "description": "Config delta, present only if the device's config_version was stale.",
+          "type": "object",
+          "properties": {
+            "version": { "type": "integer", "minimum": 0 },
+            "values": { "type": "object", "additionalProperties": true }
+          },
+          "required": ["version", "values"],
+          "additionalProperties": false
+        },
+
+        "next_checkin_s": {
+          "description": "How long the hub would like the device to sleep before checking in again. Advisory — the device owns its own power budget and MAY ignore it. This is how a hub applies backpressure to a fleet without an always-on control channel.",
+          "type": "integer",
+          "minimum": 1
+        },
+
+        "signature": { "$ref": "common.schema.json#/$defs/signature" }
+      },
+      "required": ["schema_version", "server_time"],
+      "additionalProperties": true
+    }
+  },
+
+  "oneOf": [
+    { "$ref": "#/$defs/request" },
+    { "$ref": "#/$defs/response" }
+  ]
+}

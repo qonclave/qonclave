@@ -1,0 +1,88 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qonclave"
+version = "0.1.0"
+description = "Privacy-first, autonomous distributed intelligence — Python binding of the Qonclave v1 wire spec"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Qonclave contributors" }]
+keywords = ["edge-ai", "iot", "privacy", "mesh", "vlm"]
+
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: System :: Distributed Computing",
+]
+
+# Base install is deliberately tiny. This binding targets the `full` profile — `constrained` and
+# `minimal` devices use sdk/c/ or implement the spec directly — but a Linux edge should still not
+# have to carry a hub's dependencies, so everything past validation is an extra.
+dependencies = [
+  "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+# Per-role extras exist so the layering rule in CONVENTIONS.md has teeth. `qonclave[edge]` must
+# never pull Flask — tests/test_layering.py and CI both check this.
+#
+# cbor2 is included here, not left to `qonclave[cbor]`: an edge is the node most likely to talk to
+# a constrained peer or a CBOR-speaking gateway, and discovering the codec is missing at the point
+# of encoding is a poor trade for one small pure-Python dependency.
+edge = [
+  "requests>=2.31",
+  "cbor2>=5.6",
+]
+hub = [
+  "flask>=3.0",
+  "requests>=2.31",
+  "paho-mqtt>=2.0",
+  "python-dotenv>=1.0",
+]
+compute = [
+  "grpcio>=1.60",
+  "protobuf>=4.25",
+]
+archive = [
+  "boto3>=1.34",
+]
+cbor = [
+  "cbor2>=5.6",
+]
+sms = [
+  "twilio>=9.0",
+]
+dev = [
+  "pytest>=8.0",
+  "jsonschema>=4.21",
+  "cbor2>=5.6",
+  "ruff>=0.4",
+]
+all = ["qonclave[edge,hub,compute,archive,cbor,sms]"]
+
+[project.scripts]
+qonclave = "qonclave.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/jogendar/Qonclave"
+Specification = "https://github.com/jogendar/Qonclave/tree/main/framework/spec/v1"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+qonclave = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
