@@ -1,0 +1,6 @@
+name: Qonclave Edge Assistant
+description: Friendly AI voice assistant — offline STT/TTS on UNO Q, LLM on Snapdragon X hub.
+ports: []
+bricks:
+- arduino:web_ui: {}
+icon: 🎙️

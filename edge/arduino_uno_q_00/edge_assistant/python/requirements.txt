@@ -1,0 +1,7 @@
+requests
+python-dotenv
+vosk
+sounddevice
+numpy
+scipy
+piper-tts>=1.2.0
