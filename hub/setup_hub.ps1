@@ -46,8 +46,9 @@
       -HrnetPoseJobId   reuse an already-completed AI Hub compile job for the
                         pose model instead of recompiling.
       -AiHubToken       Qualcomm AI Hub token for the ARM64 NPU model export.
-                        Omitted on ARM64, framework/face_id/setup/setup_npu.ps1 prompts for it
-                        interactively. Free at https://workbench.aihub.qualcomm.com
+                        When omitted, this script prompts once and reuses the
+                        token for both face-ID and pose setup. Free at
+                        https://workbench.aihub.qualcomm.com
                         (Account -> Settings -> API Token).
       -MediaPipeFaceJobId / -CavaFaceJobId
                         reuse already-completed AI Hub compile jobs instead of
@@ -114,6 +115,17 @@ $PipIndexArgs = if ($Internal) {
 function Write-Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
 function Write-Ok($msg)   { Write-Host "    [ok] $msg" -ForegroundColor Green }
 function Write-Warn($msg) { Write-Host "    [!]  $msg" -ForegroundColor Yellow }
+
+function Request-AiHubToken([string]$CurrentToken) {
+    if ($CurrentToken) { return $CurrentToken }
+
+    Write-Host ""
+    Write-Host "Qualcomm AI Hub token required for model export/download." -ForegroundColor Cyan
+    Write-Host "Get your token: https://workbench.aihub.qualcomm.com (Account -> Settings -> API Token)" -ForegroundColor Cyan
+    $token = Read-Host "Enter your AI Hub API token"
+    if (-not $token) { throw "No AI Hub token provided." }
+    return $token
+}
 
 # --- 0. Sanity: this must be an ARM64 machine, running from inside a checkout
 Write-Step "Checking machine architecture"
@@ -441,6 +453,11 @@ if ($SkipFaceId) {
         Write-Ok "face ID already installed in this venv, skipping"
         Write-Host "        (re-run hub\framework\face_id\setup\setup.ps1 -PythonPath `"$VenvPython`" to force)"
     } else {
+        # Prompt in the parent so the same token can be forwarded to pose
+        # setup later in this run instead of each child script prompting.
+        if ($osArch -match 'ARM64') {
+            $AiHubToken = Request-AiHubToken $AiHubToken
+        }
         $faceArgs = @{ PythonPath = $VenvPython }
         if ($AiHubToken)         { $faceArgs.Token              = $AiHubToken }
         if ($MediaPipeFaceJobId) { $faceArgs.MediaPipeFaceJobId = $MediaPipeFaceJobId }
@@ -489,6 +506,7 @@ if ($SkipPose) {
         Write-Ok "pose model already present, skipping"
         Write-Host "        (re-run hub\framework\pose\setup\setup_pose.ps1 -PythonPath `"$VenvPython`" to force)"
     } else {
+        $AiHubToken = Request-AiHubToken $AiHubToken
         $poseArgs = @{ PythonPath = $VenvPython }
         if ($AiHubToken)     { $poseArgs.Token          = $AiHubToken }
         if ($HrnetPoseJobId) { $poseArgs.HrnetPoseJobId = $HrnetPoseJobId }

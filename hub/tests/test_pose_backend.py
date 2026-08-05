@@ -14,6 +14,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import numpy as np
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 HUB_DIR = os.path.dirname(HERE)
 sys.path.insert(0, HUB_DIR)
@@ -90,6 +92,28 @@ def test_sanitize_box_clamps_and_rejects_degenerate():
     assert sanitize((200, 200, 300, 300), 100, 100) is None  # fully outside
     assert sanitize(("a", 0, 10, 10), 100, 100) is None      # malformed
     assert sanitize((1, 2, 3), 100, 100) is None             # wrong arity
+
+
+def test_preprocess_matches_declared_model_input_type():
+    image = np.full((32, 24, 3), 128, dtype=np.uint8)
+    crop = (0, 0, 24, 32)
+    float_input = pp.preprocess(image, crop, "tensor(float)")
+    uint8_input = pp.preprocess(image, crop, "tensor(uint8)")
+    assert float_input.shape == uint8_input.shape == (1, 3, pp.IN_H, pp.IN_W)
+    assert float_input.dtype == np.float32
+    assert uint8_input.dtype == np.uint8
+    assert 0.0 <= float_input.min() <= float_input.max() <= 1.0
+
+
+def test_decode_heatmaps_accepts_float_and_quantized_boundaries():
+    hm_u8 = np.full((1, 17, pp.HM_H, pp.HM_W), pp.OUT_ZP, dtype=np.uint8)
+    hm_u8[:, :, 10, 12] = pp.OUT_ZP + 20
+    hm_float = (hm_u8.astype(np.float32) - pp.OUT_ZP) * pp.OUT_SCALE
+    crop = (0, 0, pp.IN_W, pp.IN_H)
+    np.testing.assert_allclose(
+        pp.decode_heatmaps(hm_u8, crop),
+        pp.decode_heatmaps(hm_float, crop),
+    )
 
 
 def run_all():

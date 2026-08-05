@@ -160,8 +160,14 @@ def box_to_input_crop(box_xyxy, pad: float = BOX_PADDING):
     return cx - bw / 2, cy - bh / 2, bw, bh
 
 
-def preprocess(image_bgr: np.ndarray, crop_rect) -> np.ndarray:
-    """Affine-crop crop_rect to 192x256, then quantize. -> [1,3,256,192] uint8"""
+def preprocess(image_bgr: np.ndarray, crop_rect,
+               input_type: str = "tensor(uint8)") -> np.ndarray:
+    """Affine-crop crop_rect to 192x256 and match the ONNX input dtype.
+
+    AI Hub exports have used both a uint8 quantized boundary and a float32
+    boundary for the same w8a8 model. The float graph performs its own
+    normalization and expects RGB values in [0, 1].
+    """
     import cv2
 
     rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
@@ -170,15 +176,25 @@ def preprocess(image_bgr: np.ndarray, crop_rect) -> np.ndarray:
                   [0, IN_H / h, -y * IN_H / h]], dtype=np.float32)
     patch = cv2.warpAffine(rgb, M, (IN_W, IN_H), flags=cv2.INTER_LINEAR,
                            borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
-    q = np.rint((patch.astype(np.float32) / 255.0) / IN_SCALE) + IN_ZP
+    normalized = patch.astype(np.float32) / 255.0
+    if input_type == "tensor(float)":
+        return np.ascontiguousarray(normalized.transpose(2, 0, 1)[None])
+    if input_type != "tensor(uint8)":
+        raise ValueError(f"unsupported HRNetPose input type: {input_type}")
+    q = np.rint(normalized / IN_SCALE) + IN_ZP
     q = np.clip(q, 0, 255).astype(np.uint8)
     return np.ascontiguousarray(q.transpose(2, 0, 1)[None])
 
 
-def decode_heatmaps(hm_u8: np.ndarray, crop_rect) -> np.ndarray:
+def decode_heatmaps(heatmaps: np.ndarray, crop_rect) -> np.ndarray:
     """argmax + quarter-offset sub-pixel refinement, mapped back to
     source-image coordinates. -> (17, 3) array of x, y, score."""
-    hm = (hm_u8[0].astype(np.float32) - OUT_ZP) * OUT_SCALE  # 17,64,48
+    if heatmaps.dtype == np.uint8:
+        hm = (heatmaps[0].astype(np.float32) - OUT_ZP) * OUT_SCALE
+    elif np.issubdtype(heatmaps.dtype, np.floating):
+        hm = heatmaps[0].astype(np.float32, copy=False)
+    else:
+        raise ValueError(f"unsupported HRNetPose output dtype: {heatmaps.dtype}")
     k = hm.shape[0]
     flat = hm.reshape(k, -1)
     idx = flat.argmax(1)
@@ -207,7 +223,8 @@ def estimate(session, input_name: str, image_bgr: np.ndarray,
     h, w = image_bgr.shape[:2]
     box = person_box if person_box is not None else (0, 0, w, h)
     crop_rect = box_to_input_crop(box)
-    x = preprocess(image_bgr, crop_rect)
+    input_type = session.get_inputs()[0].type
+    x = preprocess(image_bgr, crop_rect, input_type)
     hm = session.run(None, {input_name: x})[0]
     return decode_heatmaps(hm, crop_rect)
 

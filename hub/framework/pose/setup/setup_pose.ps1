@@ -44,7 +44,9 @@ $ErrorActionPreference = "Stop"
 # package one level up.
 $ScriptDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
 $PkgDir      = Split-Path -Parent $ScriptDir
+$FrameworkDir = Split-Path -Parent $PkgDir
 $ModelsDir   = Join-Path $PkgDir "models"
+$OpenCvWheelsDir = Join-Path $FrameworkDir "face_id\wheels"
 $DownloadDir = Join-Path $env:TEMP "qonclave_npu_export"
 $python      = if ($PythonPath) { $PythonPath } else { (Get-Command python).Source }
 $PipIndexArgs = if ($Internal) {
@@ -187,6 +189,22 @@ if (-not $Token) {
 
 # Step 2: Install and configure
 
+# Pose and its OpenMMLab export dependencies import cv2. PyPI does not provide
+# an opencv-python wheel for Windows ARM64, so install the repository's
+# matching opencv-python-headless wheel explicitly. Both distributions expose
+# the same cv2 module; mmcv-lite is installed with --no-deps below so pip does
+# not try to replace this wheel with an opencv-python source build.
+Info "Installing repository OpenCV wheel for pose..."
+$pyTag = (& $python -c "import sys; print(f'cp{sys.version_info[0]}{sys.version_info[1]}')").Trim()
+$openCvWheel = Get-ChildItem $OpenCvWheelsDir -Filter "opencv_python_headless-*-$pyTag-$pyTag-win_arm64.whl" |
+               Sort-Object Name -Descending | Select-Object -First 1
+if (-not $openCvWheel) {
+    Fail "Missing ARM64 OpenCV wheel for $pyTag under $OpenCvWheelsDir."
+}
+& $python -m pip install $openCvWheel.FullName @PipIndexArgs
+if ($LASTEXITCODE -ne 0) { Fail "pip install failed for local OpenCV wheel: $($openCvWheel.Name)" }
+Ok "OpenCV ready from local wheel: $($openCvWheel.Name)"
+
 if ($HrnetPoseJobId) {
     # Model pulled from an existing job — only the thin qai_hub client (plus
     # onnx, to fix up the external-data reference) is needed.
@@ -196,7 +214,11 @@ if ($HrnetPoseJobId) {
 } else {
     Info "Installing qai-hub-models (hrnet_pose fresh export)..."
     # Same split-install as face_id/setup/setup_npu.ps1 (win_arm64 wheel
-    # availability); hrnet_pose's extra deps are covered by the base stack.
+    # availability). Keep hrnet_pose's model-specific extras explicit because
+    # qai-hub-models itself is installed with --no-deps below. Do not let
+    # mmcv-lite resolve its `opencv-python` dependency: PyPI has no compatible
+    # Windows ARM64 wheel and would try a blocked native build. The local
+    # opencv-python-headless wheel installed above provides the same cv2 module.
     & $python -m pip install `
         "huggingface_hub<2.0,>=0.34.0" `
         "numpy<=2.4.4" "onnx<=1.18.0,>=1.17" `
@@ -205,15 +227,40 @@ if ($HrnetPoseJobId) {
         "qai_hub>=0.51.0" "filelock<=3.29.0,>=3.16.1" `
         inputimeout "pydantic<=2.13.3,>=2" pydantic_yaml `
         "packaging<=26.2.0,>24.2" platformdirs "qai_hub_models_cli==0.58.0" `
-        yacs gitpython pillow schema requests_toolbelt "httpx<=0.28.1,>=0.27" `
+        yacs addict yapf termcolor rich regex json-tricks `
+        pycocotools terminaltables `
+        gitpython pillow schema requests_toolbelt "httpx<=0.28.1,>=0.27" `
         gdown boto3 "boto3-stubs[s3]" numpydoc pandas `
         tabulate ipython scipy coverage `
         --extra-index-url https://download.pytorch.org/whl/cpu @PipIndexArgs
     if ($LASTEXITCODE -ne 0) { Fail "pip install failed." }
+    # chumpy is pure Python but its legacy setup.py imports pip while resolving
+    # build requirements. Modern pip's isolated build environment omits pip,
+    # so install it separately without build isolation.
+    & $python -m pip install chumpy --no-build-isolation @PipIndexArgs
+    if ($LASTEXITCODE -ne 0) { Fail "pip install failed for chumpy." }
+    # These OpenMMLab packages declare `opencv-python` by distribution name.
+    # Install them together without dependency resolution so they use the
+    # repository's already-installed opencv-python-headless/cv2 instead.
+    # mmpose is a pre-build requirement documented in qai-hub-models' bundled
+    # HRNet Pose README but is not represented by its hrnet-pose extra metadata.
+    & $python -m pip install `
+        "mmengine==0.10.7" "mmdet==3.3.0" "mmcv-lite==2.1.0" "mmpose==1.2.0" `
+        --no-deps @PipIndexArgs
+    if ($LASTEXITCODE -ne 0) { Fail "pip install failed for HRNet Pose OpenMMLab dependencies." }
     & $python -m pip install "qai-hub-models==0.58.0" --no-deps @PipIndexArgs
     if ($LASTEXITCODE -ne 0) { Fail "pip install failed." }
 }
 Ok "Packages ready"
+
+# Import exactly what the CLI imports before configuring AI Hub or submitting
+# a cloud job. This turns missing exporter dependencies into an immediate,
+# local setup error instead of discovering them after authentication.
+if (-not $HrnetPoseJobId) {
+    Info "Verifying HRNet Pose exporter imports..."
+    & $python -c "import qai_hub_models.models.hrnet_pose.export; print('  HRNet Pose exporter import OK')"
+    if ($LASTEXITCODE -ne 0) { Fail "HRNet Pose exporter dependency check failed." }
+}
 
 Info "Configuring AI Hub..."
 & $qaiHub configure --api_token $Token
