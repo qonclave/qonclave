@@ -57,7 +57,7 @@ import uuid
 
 from flask import Flask, Response, jsonify, redirect, request, send_from_directory
 
-from . import discovery, events, icons, recognize_activity, transport
+from . import adapter, discovery, events, icons, recognize_activity, transport
 from .llm import LLMBackend
 from .mqtt_bus import MQTTBus
 from .policy import Policy
@@ -210,25 +210,29 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
         log.info("POST /edge/event from %s (content-type=%s, len=%s)",
                  client, request.headers.get("Content-Type"), request.content_length)
 
+        # One validated model from here down, whichever vocabulary arrived.
+        # adapter.to_legacy_dict renders it back for the Policy, which still
+        # takes a dict; phase 3 retires that call.
         event = transport.parse_edge_event()
+        legacy_event = adapter.to_legacy_dict(event)
 
-        path, err = transport.save_incoming_image()
+        path, err = transport.save_incoming_image(event)
         if err:
             log.warning("POST /edge/event rejected from %s: %s", client, err)
             return jsonify({"received": False, "error": err}), 400
 
-        event_id = event.get("event_id") or f"{transport.timestamp()}-{uuid.uuid4().hex[:8]}"
+        event_id = event.event_id
         frame_name = os.path.basename(path)
         log.info("Edge event %s | device=%s | edge_conf=%s | frame=%s",
-                 event_id, event.get("device_id"), event.get("edge_confidence"), frame_name)
+                 event_id, event.source_node_id, event.confidence, frame_name)
 
-        verdict = policy.evaluate(path, event)
-        command = policy.command_for(verdict, event)
-        device_id = event.get("device_id")
+        verdict = policy.evaluate(path, legacy_event)
+        command = policy.command_for(verdict, legacy_event)
+        device_id = event.source_node_id
         if command is not None and device_id:
             mqtt.publish_command(device_id, command)
 
-        notification = policy.notify_for(verdict, event)
+        notification = policy.notify_for(verdict, legacy_event)
         if notification is not None:
             sms.send(notification)
 
@@ -251,9 +255,9 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
         # record for the dashboard (includes reasoning text + edge context)
         record = {
             **response,
-            "device_id": event.get("device_id"),
-            "edge_confidence": event.get("edge_confidence"),
-            "edge_model": event.get("edge_model"),
+            "device_id": event.source_node_id,
+            "edge_confidence": event.confidence,
+            "edge_model": (event.metadata or {}).get("edge_model"),
             "frame": frame_name,
             "reasoning_text": verdict.reasoning_text,
             "reasoning_available": verdict.reasoning_available,

@@ -128,6 +128,72 @@ def test_partial_publish_failure_is_not_reported_as_success(monkeypatch):
     assert bus.publish_command("unoq-01", {"type": "robot_move"}) is False
 
 
+# --- both wire formats produce the same result ------------------------------
+
+LEGACY_QUERY = ("device_id=unoq-01&event_id=evt-1&event_type=person_detected"
+                "&edge_model=video_object_detection&edge_confidence=0.87")
+FRAME = b"\xff\xd8\xff\xe0 pretend jpeg"
+
+
+def _spec_body(event_id="evt-1"):
+    import base64
+    return {
+        "schema_version": "1.0",
+        "event_id": event_id,
+        "source_node_id": "unoq-01",
+        "trigger": "person_detected",
+        "confidence": 0.87,
+        "timestamp": "2026-08-05T12:00:00+00:00",
+        "metadata": {"edge_model": "video_object_detection"},
+        "payload": {"media_type": "image/jpeg", "data_encoding": "base64",
+                    "data": base64.b64encode(FRAME).decode()},
+    }
+
+
+def test_legacy_response_envelope_is_unchanged(client):
+    """The exact keys today's edge device and dashboard read back."""
+    resp = client.post(f"/edge/event?{LEGACY_QUERY}", data=FRAME,
+                       content_type="image/jpeg")
+    body = resp.get_json()
+    assert resp.status_code == 200
+    assert set(body) >= {"schema_version", "event_id", "received", "hub_verified",
+                         "hub_confidence", "alert", "command"}
+    assert body["event_id"] == "evt-1"
+    assert body["received"] is True
+
+
+def test_spec_and_legacy_requests_agree(client):
+    """Same observation, two vocabularies, one answer."""
+    legacy = client.post(f"/edge/event?{LEGACY_QUERY}", data=FRAME,
+                         content_type="image/jpeg").get_json()
+    spec = client.post(f"{API_PREFIX}/events", json=_spec_body()).get_json()
+    assert legacy == spec
+
+
+def test_spec_payload_is_decoded_to_the_same_bytes(client):
+    """A base64 payload and a raw body must land as identical frames, or the
+    dashboard shows two different images for one migration."""
+    from framework import transport
+
+    client.post(f"/edge/event?{LEGACY_QUERY}", data=FRAME, content_type="image/jpeg")
+    client.post(f"{API_PREFIX}/events", json=_spec_body("evt-2"))
+
+    frames = sorted(
+        (f for f in os.listdir(transport.UPLOAD_DIR) if not f.endswith(".json")),
+        key=lambda f: os.path.getmtime(os.path.join(transport.UPLOAD_DIR, f)),
+    )[-2:]
+    blobs = [open(os.path.join(transport.UPLOAD_DIR, f), "rb").read() for f in frames]
+    assert blobs[0] == blobs[1] == FRAME
+
+
+def test_event_without_a_frame_is_still_rejected(client):
+    """Phase 2 changes vocabulary, not behaviour. Payload-free events become
+    legal in phase 3, when Policy.evaluate stops requiring an image."""
+    resp = client.post(f"/edge/event?{LEGACY_QUERY}")
+    assert resp.status_code == 400
+    assert resp.get_json()["received"] is False
+
+
 def test_spec_and_legacy_topics_are_distinct_shapes():
     """Guards the migration invariant: an edge subscribing to one layout can
     never also match the other, so dual-publish cannot double-deliver."""
