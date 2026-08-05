@@ -68,6 +68,22 @@ log = logging.getLogger("qonclave.hub")
 
 MAX_UPLOAD_MB = int(os.environ.get("QONCLAVE_MAX_UPLOAD_MB", "16"))
 
+# Base path for the spec surface, from `servers` in spec/v1/openapi/hub.yaml.
+# Pre-spec routes (/edge/event, /health, /recognize, /user/*, /test/*) keep
+# their unprefixed names; because the spec surface is prefixed, the two sets
+# are disjoint and can coexist without ambiguity.
+API_PREFIX = "/api/v1"
+
+# Spec endpoints this hub does not implement yet. Each answers 501 naming the
+# reason rather than 404, because "not built here" and "no such endpoint in the
+# protocol" are different answers and a client probing for capabilities should
+# be able to tell them apart.
+NOT_IMPLEMENTED = {
+    "checkin": "duty-cycle check-in; no duty-cycled device exists in this deployment",
+    "capabilities": "node manifest; discovery still uses the UDP broadcaster",
+    "grants": "capability grants; this deployment is single-hub, single-tenant",
+}
+
 
 def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
                static_dir: str, face_id=None, llm: LLMBackend | None = None) -> Flask:
@@ -96,6 +112,11 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
     discovery.start_broadcaster(http_port=http_port)
 
     # --- /health, / --------------------------------------------------------
+    # Every spec route is mounted under /api/v1 (the `servers` base path in
+    # spec/v1/openapi/hub.yaml) and every pre-spec route keeps its unprefixed
+    # name. The two never collide, so both can be served for as long as the
+    # fleet needs — this is a second name for one handler, not a fork.
+    @app.get(f"{API_PREFIX}/health")
     @app.get("/health")
     def health():
         # debug-level: the test pages poll this every 15s; don't spam the console
@@ -120,6 +141,27 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
     def too_large(_e):
         return jsonify({"ok": False,
                         "error": f"upload exceeds {MAX_UPLOAD_MB} MB limit"}), 413
+
+    # --- spec endpoints not implemented in this deployment ------------------
+    def _not_implemented(name: str):
+        return jsonify({
+            "error": "not_implemented",
+            "endpoint": f"{API_PREFIX}/{name}",
+            "reason": NOT_IMPLEMENTED[name],
+            "spec": "spec/v1/openapi/hub.yaml",
+        }), 501
+
+    @app.get(f"{API_PREFIX}/capabilities")
+    def api_capabilities():
+        return _not_implemented("capabilities")
+
+    @app.post(f"{API_PREFIX}/checkin")
+    def api_checkin():
+        return _not_implemented("checkin")
+
+    @app.post(f"{API_PREFIX}/grants")
+    def api_grants():
+        return _not_implemented("grants")
 
     # --- /test/*: standalone device simulator + MQTT console ---------------
     @app.get("/test/")
@@ -160,6 +202,7 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
             messages = [m for m in messages if regex.match(m["topic"])]
         return jsonify({"mqtt_available": mqtt.is_available(), "messages": messages})
 
+    @app.post(f"{API_PREFIX}/events")
     @app.post("/edge/event")
     def edge_event():
         """Device contract: ingest frame + event, run policy, record, respond."""

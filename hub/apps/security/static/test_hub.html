@@ -58,7 +58,7 @@
   <div class="grid">
     <div class="card">
       <label for="pubTopic">Publish topic</label>
-      <input type="text" id="pubTopic" value="qonclave/unoq-01/command" />
+      <input type="text" id="pubTopic" value="qonclave/commands/unoq-01" />
       <div style="margin-top:10px;">
         <label for="pubPayload">Payload (JSON)</label>
         <textarea id="pubPayload">{"type": "navigate_to", "target": "living_room"}</textarea>
@@ -70,7 +70,7 @@
     </div>
     <div class="card">
       <label for="subTopic">Receive topic filter</label>
-      <input type="text" id="subTopic" value="qonclave/+/status" />
+      <input type="text" id="subTopic" value="qonclave/#" />
       <div class="meta" id="mqttStatus" style="margin-top:8px;"></div>
       <div class="msglog" id="msglog" style="margin-top:10px;">
         <div class="empty">No messages yet.</div>

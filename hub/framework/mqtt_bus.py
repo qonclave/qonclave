@@ -10,9 +10,14 @@ Use-case agnostic: this module knows nothing about what a "command" means
 (navigate_to, capture_now, ...) — it just publishes whatever JSON dict a
 Policy hands it, namespaced by device_id.
 
-Topics:
-    qonclave/<device_id>/command   hub -> edge   (JSON)
-    qonclave/<device_id>/status    edge -> hub   (reserved, not consumed yet)
+Topics (spec/v1/asyncapi/commands.yaml):
+    qonclave/commands/<node_id>    hub -> edge   (JSON)
+    qonclave/status/<node_id>      edge -> hub   (reserved, not consumed yet)
+
+Pre-spec topics, still published during the migration — see the topic block
+below for why, and how to turn them off:
+    qonclave/<device_id>/command
+    qonclave/<device_id>/status
 
 Public API:
     bus = MQTTBus(host, port)         # cheap; does not connect yet
@@ -34,10 +39,16 @@ from __future__ import annotations
 import collections
 import json
 import logging
+import os
 import threading
 import datetime as _dt
 
 log = logging.getLogger("qonclave.mqtt")
+
+# Publish commands to the pre-spec device-scoped topic as well as the spec one.
+# Set to 0 once every edge device in the fleet subscribes to the spec topic;
+# see the topic block below for why this is a switch rather than a code edit.
+LEGACY_TOPICS = os.environ.get("QONCLAVE_MQTT_LEGACY_TOPICS", "1") == "1"
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 1883
@@ -50,11 +61,45 @@ MESSAGES_MAX = 100
 RECONNECT_COOLDOWN_S = 5
 
 
-def command_topic(device_id: str) -> str:
+# --- Topics -----------------------------------------------------------------
+# Two layouts exist during the migration to spec/v1.
+#
+# The spec (spec/v1/asyncapi/commands.yaml) groups by FUNCTION:
+#     qonclave/commands/<node_id>
+# The original demo grouped by DEVICE:
+#     qonclave/<device_id>/command
+#
+# The spec is the standard, so the demo moves. But an edge device is flashed
+# firmware and cannot be updated in lockstep with this laptop, so the hub
+# publishes to BOTH for one release. Order matters and the obvious order is
+# wrong: switching the hub first makes an un-reflashed device silently deaf,
+# because nothing errors when you publish to a topic nobody subscribes to.
+#
+#   1. hub dual-publishes          <- we are here
+#   2. edge flashes, moving its single subscription to the spec topic
+#   3. QONCLAVE_MQTT_LEGACY_TOPICS=0, then this code is deleted
+#
+# The device must never subscribe to both while the hub publishes to both: it
+# would receive every command twice, and a doubled robot_move turns 60 degrees
+# instead of 30. Single subscription throughout; dual publication only here.
+
+def command_topic(node_id: str) -> str:
+    """Spec topic — spec/v1/asyncapi/commands.yaml."""
+    return f"qonclave/commands/{node_id}"
+
+
+def status_topic(node_id: str) -> str:
+    """Spec topic — spec/v1/asyncapi/commands.yaml."""
+    return f"qonclave/status/{node_id}"
+
+
+def legacy_command_topic(device_id: str) -> str:
+    """Pre-spec device-scoped topic. Remove once every device is reflashed."""
     return f"qonclave/{device_id}/command"
 
 
-def status_topic(device_id: str) -> str:
+def legacy_status_topic(device_id: str) -> str:
+    """Pre-spec device-scoped topic. Remove once every device is reflashed."""
     return f"qonclave/{device_id}/status"
 
 
@@ -169,8 +214,18 @@ class MQTTBus:
             return False
 
     def publish_command(self, device_id: str, command: dict) -> bool:
-        """Publish a command dict to qonclave/<device_id>/command."""
-        return self.publish(command_topic(device_id), command)
+        """Publish a command to this device, on every enabled topic layout.
+
+        Returns True only if EVERY enabled publish succeeded. Both go to the
+        same broker so in practice they succeed or fail together, but a partial
+        success is a device that may not have been reached — reporting that as
+        True would let /user/robot-command answer 200 for a command that never
+        arrived.
+        """
+        results = [self.publish(command_topic(device_id), command)]
+        if LEGACY_TOPICS:
+            results.append(self.publish(legacy_command_topic(device_id), command))
+        return all(results)
 
     # --- subscribe / receive ---------------------------------------------------
     def subscribe(self, topic_filter: str) -> bool:
