@@ -1,5 +1,5 @@
 """
-test_adapter.py — the two wire vocabularies map onto one model, losslessly.
+test_ingest.py — the two wire vocabularies map onto one model, losslessly.
 
 The regression these guard against is subtle: a rename that silently drops a
 field looks exactly like a working migration until someone notices the dashboard
@@ -9,16 +9,11 @@ lost a column, or a Policy stops seeing the threshold it branches on.
 from __future__ import annotations
 
 import base64
-import os
-import sys
 
 import pytest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from qonclave.core.models import Command, EdgeEvent  # noqa: E402
-
-from framework import adapter  # noqa: E402
+from qonclave.core.models import Command, EdgeEvent
+from qonclave.hub import ingest as adapter
 
 LEGACY = {
     "device_id": "unoq-01",

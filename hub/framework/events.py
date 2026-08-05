@@ -1,47 +1,36 @@
 """
-events.py — generic event store for the Qonclave framework.
+events.py — event ring buffer, now supplied by the qonclave SDK.
 
-An in-memory ring buffer of recent hub-verified events, used by any app's
-dashboard/monitoring UI. Use-case agnostic: callers decide what goes into
-each event dict.
+The buffer itself moved to `qonclave.hub.events.EventStore`; this module keeps
+the module-level function API that `server.py` and the dashboard routes already
+use, backed by the SDK's default store.
+
+SCHEMA_VERSION stays here. It versions the hub's own RESPONSE envelope — the
+`{received, hub_verified, alert, ...}` body an edge device reads back — which is
+this deployment's contract, not the wire spec's. spec/v1 versions the documents
+that cross between nodes; those carry their own `schema_version` of "1.0".
 """
 
 from __future__ import annotations
 
-import collections
-import os
-import threading
+from qonclave.hub.events import EventStore, default_store  # noqa: F401
 
 SCHEMA_VERSION = "0.1"
 
-EVENTS_MAX = int(os.environ.get("QONCLAVE_EVENTS_MAX", "50"))
-_events: "collections.deque[dict]" = collections.deque(maxlen=EVENTS_MAX)
-_events_lock = threading.Lock()
-_latest_frame: dict = {"name": None}
-_latest_device: dict = {"id": None}
+EVENTS_MAX = default_store.maxlen
 
 
 def record_event(event: dict, frame_name: str | None):
-    with _events_lock:
-        _events.appendleft(event)
-        if frame_name:
-            _latest_frame["name"] = frame_name
-        device_id = event.get("device_id")
-        if device_id:
-            _latest_device["id"] = device_id
+    default_store.record(event, frame_name)
 
 
 def recent_events(limit: int | None = None) -> tuple[list[dict], str | None]:
-    with _events_lock:
-        items = list(_events)[: (limit or EVENTS_MAX)]
-        return items, _latest_frame["name"]
+    return default_store.recent(limit)
 
 
 def latest_frame_name() -> str | None:
-    with _events_lock:
-        return _latest_frame["name"]
+    return default_store.latest_frame_name()
 
 
 def latest_device_id() -> str | None:
-    with _events_lock:
-        return _latest_device["id"]
+    return default_store.latest_node_id()
