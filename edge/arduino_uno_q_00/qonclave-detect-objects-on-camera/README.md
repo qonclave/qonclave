@@ -79,13 +79,14 @@ without any camera attached. The file must be reachable inside the app container
 place it somewhere under the app folder (e.g. `media/`, next to `python/`), which
 is bind-mounted to `/app`, and point `VIDEO_FILE_PATH` at its in-container path.
 
-A sample clip is bundled at `media/sample.mp4` (stock footage from Pexels, free
-license) — set `VIDEO_FILE_PATH=/app/media/sample.mp4` to try this mode out of
-the box.
+A sample clip is bundled at `media/walking_front_view.mp4` (stock footage from
+Pexels, free license) — a single person walking toward the camera at changing
+scale, which exercises per-track analysis and the crop-rejection thresholds.
+It is the default, so this mode works out of the box.
 
 | Var | Default | Meaning |
 |-----|---------|---------|
-| `VIDEO_FILE_PATH` | `/app/media/sample.mp4` | Path to the video file, as seen inside the container |
+| `VIDEO_FILE_PATH` | `/app/media/walking_front_view.mp4` | Path to the video file, as seen inside the container |
 | `VIDEO_FILE_LOOP` | `true` | Rewind and replay the file once it ends, so detection keeps running continuously |
 | `VIDEO_FILE_FPS` | `10` | Frames per second to read from the file |
 

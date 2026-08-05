@@ -59,7 +59,7 @@ Follows this app's existing convention for standalone test scripts (see `test_ed
 ## Verification
 
 - Run `python test_person_tracker.py` (or `pytest test_person_tracker.py` if available) — all assertions pass.
-- Manual smoke test: run the app with `CAMERA_SOURCE=file` (bundled `media/sample.mp4`, no hardware needed) and confirm `qonclave.edge` logs show `Person tracks: [...]` with a stable `id` and a `direction` field while a person is in frame across multiple log lines.
+- Manual smoke test: run the app with `CAMERA_SOURCE=file` (bundled `media/walking_front_view.mp4`, no hardware needed) and confirm `qonclave.edge` logs show `Person tracks: [...]` with a stable `id` and a `direction` field while a person is in frame across multiple log lines.
 
 ---
 
@@ -111,7 +111,7 @@ Same plain-`assert` style as `test_person_tracker.py`/`test_edge_mqtt_e2e.py`:
 - Run `python test_led_display.py` — all assertions pass.
 - Run `python test_person_tracker.py` — still passes (untouched).
 - `python -m py_compile python/main.py python/led_display.py` — syntax check.
-- Manual smoke test: run the app with `CAMERA_SOURCE=file` (bundled `media/sample.mp4`, no hardware) and confirm via added debug logging (or just code reading) that `person_position_bitmap` is invoked with sane in-bounds coordinates while a person is in frame; on actual Uno Q hardware, confirm the lit dot visibly moves on the physical matrix as a person walks across the camera's view, and confirm it reverts to the normal object icon within one frame of the person leaving view.
+- Manual smoke test: run the app with `CAMERA_SOURCE=file` (bundled `media/walking_front_view.mp4`, no hardware) and confirm via added debug logging (or just code reading) that `person_position_bitmap` is invoked with sane in-bounds coordinates while a person is in frame; on actual Uno Q hardware, confirm the lit dot visibly moves on the physical matrix as a person walks across the camera's view, and confirm it reverts to the normal object icon within one frame of the person leaving view.
 
 ---
 

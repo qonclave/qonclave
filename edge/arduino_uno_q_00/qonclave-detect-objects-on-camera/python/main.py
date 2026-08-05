@@ -207,7 +207,7 @@ if CAMERA_SOURCE == "ip":
   camera = IPCamera(url=IP_CAMERA_URL, username=IP_CAMERA_USERNAME,
                     password=IP_CAMERA_PASSWORD, fps=IP_CAMERA_FPS)
 elif CAMERA_SOURCE == "file":
-  VIDEO_FILE_PATH = os.environ.get("VIDEO_FILE_PATH", "/app/media/sample.mp4")
+  VIDEO_FILE_PATH = os.environ.get("VIDEO_FILE_PATH", "/app/media/walking_front_view.mp4")
   if not VIDEO_FILE_PATH:
     raise RuntimeError("CAMERA_SOURCE=file requires VIDEO_FILE_PATH to be set")
   VIDEO_FILE_LOOP = os.environ.get("VIDEO_FILE_LOOP", "true").strip().lower() not in ("0", "false", "no")
