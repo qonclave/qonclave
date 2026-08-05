@@ -22,9 +22,16 @@ Spec: spec/v1/json-schema/
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    PlainSerializer,
+    model_validator,
+)
 
 from .enums import (
     AudienceKind,
@@ -39,6 +46,48 @@ from .enums import (
 )
 
 SCHEMA_VERSION = "1.0"
+
+
+# --------------------------------------------------------------------------- wire enums
+#
+# `Complexity` and `Urgency` are IntEnums because their ORDERING is normative —
+# placement prunes candidates with `node.max_complexity >= task.complexity`. But the schema
+# defines them as STRINGS ("vlm_reason", not 4), and `spec/v1/` is normative, so the wire form
+# wins and the int is an implementation detail of comparison.
+#
+# The enums have carried `.wire` / `.from_wire` since they were written; what was missing was
+# wiring them into pydantic, so every document this SDK produced serialized the raw int and
+# failed its own schema. Nothing caught it because the conformance suite validates against these
+# models rather than against the schemas — see tests/test_schema_validation.py, added with this
+# fix, which closes that gap.
+
+
+def _complexity_in(value: Any) -> Any:
+    if isinstance(value, str):
+        return Complexity.from_wire(value)
+    return value
+
+
+def _urgency_in(value: Any) -> Any:
+    if isinstance(value, str):
+        return Urgency.from_wire(value)
+    return value
+
+
+# Ints are still ACCEPTED on input, deliberately. A peer that already emits the old form should
+# not become unreadable — forward compatibility is the reason `extra="allow"` exists three lines
+# down, and the same argument applies here.
+WireComplexity = Annotated[
+    Complexity,
+    BeforeValidator(_complexity_in),
+    PlainSerializer(lambda c: Complexity(c).wire, return_type=str, when_used="json"),
+]
+
+WireUrgency = Annotated[
+    Urgency,
+    BeforeValidator(_urgency_in),
+    PlainSerializer(lambda u: Urgency(u).wire, return_type=str, when_used="json"),
+]
 
 
 class _Doc(BaseModel):
@@ -110,7 +159,7 @@ class Load(_Doc):
 class Capabilities(_Doc):
     hardware: list[str] = Field(default_factory=list)
     supported_models: list[str] = Field(default_factory=list)
-    max_complexity: Complexity | None = None
+    max_complexity: WireComplexity | None = None
     transports: list[str] = Field(default_factory=list)
     encodings: list[Literal["json", "cbor"]] = Field(default_factory=list)
 
@@ -140,8 +189,8 @@ class TaskDescriptor(_Doc):
     nodes. That split is the whole discipline of placement: a developer states intent, the
     framework supplies facts."""
 
-    complexity: Complexity = Complexity.HEURISTIC
-    urgency: Urgency = Urgency.NORMAL
+    complexity: WireComplexity = Complexity.HEURISTIC
+    urgency: WireUrgency = Urgency.NORMAL
     privacy: Privacy = Privacy.UNRESTRICTED
     use_case: str | None = None
     deadline_ms: int | None = Field(default=None, ge=0)
