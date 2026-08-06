@@ -169,7 +169,6 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
     app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
 
     icons.load_cache()
-    icons.start_boot_warming(vlm)
     http_port = int(os.environ.get("QONCLAVE_PORT", "8000"))
     discovery.start_broadcaster(http_port=http_port)
 
@@ -310,18 +309,16 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
 
     @app.route("/edge/icon", methods=["GET", "POST"])
     def edge_icon():
-        """Device contract: retrieve or synthesize Level 2 cached 12x8 icon bitmap."""
+        """Device contract: retrieve or render the Level 2 cached 12x8 icon
+        bitmap. Rendered locally and deterministically -- no VLM, so an icon
+        request can never delay a posture investigation. POST is still
+        accepted for compatibility, but any uploaded frame is ignored: it only
+        ever existed as visual context for the removed VLM prompt."""
         label = request.args.get("label", "clear").lower().strip()
         client = request.remote_addr
         log.info("%s /edge/icon?label=%s from %s", request.method, label, client)
 
-        image_path = None
-        if request.method == "POST" and request.content_length and request.content_length > 0:
-            path, err = transport.save_incoming_image()
-            if not err and path:
-                image_path = path
-
-        entry = icons.get_or_generate_icon(label, vlm, image_path)
+        entry = icons.get_or_generate_icon(label)
         return jsonify({
             "ok": True,
             "label": label,
