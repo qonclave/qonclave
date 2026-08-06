@@ -28,6 +28,8 @@ Endpoints:
 
     GET  /user/dashboard      live dashboard page (app-provided static/);
                                also the default landing page (/, /user/)
+    GET  /user/network        network page: this hub + devices seen on the LAN
+    GET  /user/devices        devices seen on the network (JSON)
     GET  /user/events         recent events + results (JSON)
     POST /user/robot-command  validate and publish a robot command over MQTT
     GET  /user/latest.jpg     most recent frame
@@ -60,7 +62,7 @@ import uuid
 
 from flask import Flask, Response, jsonify, redirect, request, send_from_directory
 
-from . import adapter, discovery, events, icons, recognize_activity, track_store, transport
+from . import adapter, device_registry, discovery, events, icons, recognize_activity, track_store, transport
 from .pose import overlay as pose_overlay
 from .llm import LLMBackend
 from .mqtt_bus import MQTTBus
@@ -207,6 +209,7 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
     icons.start_boot_warming(vlm)
     http_port = int(os.environ.get("QONCLAVE_PORT", "8000"))
     discovery.start_broadcaster(http_port=http_port)
+    device_registry.start_rtt_prober()
 
     # --- /health, / --------------------------------------------------------
     # Every spec route is mounted under /api/v1 (the `servers` base path in
@@ -318,6 +321,9 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
         if err:
             log.warning("POST /edge/event rejected from %s: %s", client, err)
             return jsonify({"received": False, "error": err}), 400
+
+        device_registry.record(device_id=event.source_node_id, ip=client,
+                               source="event")
 
         event_id = event.event_id
         frame_name = os.path.basename(path) if path else None
@@ -444,6 +450,11 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
         person_box = _parse_person_box(
             request.form.get("person_box") or request.args.get("person_box"))
 
+        # No device id on this endpoint — the crop is tagged with a track_id,
+        # not a node id — so the sighting is anonymous until an /edge/event
+        # from the same IP names it.
+        device_registry.record(ip=client, source="track")
+
         path, err = transport.save_incoming_image()
         # `not path` is separate from `err`: since payload-free events became
         # legal, save_incoming_image returns (None, None) when nothing was
@@ -513,6 +524,30 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
             )
 
         return jsonify(response)
+
+    @app.get("/user/devices")
+    def user_devices():
+        """Devices seen on the network, most recent first. Subscribing to the
+        status topics here (idempotent, like /test/mqtt/messages) means MQTT
+        sightings start flowing once a broker is up, however late that is."""
+        mqtt.subscribe("qonclave/status/+")
+        mqtt.subscribe("qonclave/+/status")
+        devices = device_registry.snapshot()
+        return jsonify({
+            "hub": {
+                "app": policy.name,
+                "hostname": discovery.MDNS_NAME,
+                "ip": discovery.lan_ip(),
+                "port": http_port,
+                "time": transport.now_iso(),
+            },
+            "count": len(devices),
+            "devices": devices,
+        })
+
+    @app.get("/user/network")
+    def user_network():
+        return send_from_directory(static_dir, "network.html")
 
     @app.get("/user/tracks")
     def user_tracks():

@@ -112,6 +112,7 @@ def main():
     log.info("Edge  : POST /api/v1/events (or /edge/event) | POST /track/analyze")
     log.info("SMS   : POST /sms  (Twilio inbound-reply webhook)")
     log.info("User  : GET /user/dashboard | GET /user/events | GET /user/latest.jpg")
+    log.info("        GET /user/network | GET /user/devices")
     log.info("        GET /user/tracks | GET /user/tracks/<id>.jpg")
     log.info("        GET /user/frames/<name> | POST /user/reason | GET /user/")
     log.info("Other : GET /health | GET / (-> /user/)")

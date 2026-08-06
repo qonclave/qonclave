@@ -43,6 +43,8 @@ import os
 import threading
 import datetime as _dt
 
+from . import device_registry
+
 log = logging.getLogger("qonclave.mqtt")
 
 # Publish commands to the pre-spec device-scoped topic as well as the spec one.
@@ -190,6 +192,9 @@ class MQTTBus:
         }
         with self._lock:
             self._messages.appendleft(entry)
+        # A status message carries the node id in its topic; feed the network
+        # page's registry. No-op for topics that aren't status topics.
+        device_registry.record_mqtt_topic(msg.topic)
         log.info("MQTT received on %s: %s", msg.topic, payload)
 
     # --- publish --------------------------------------------------------------

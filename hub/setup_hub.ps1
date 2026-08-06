@@ -497,12 +497,12 @@ Write-Step "Exporting the pose model"
 if ($SkipPose) {
     Write-Ok "-SkipPose set - skipping (hub will report pose as unavailable)"
 } else {
-    $PoseSetup  = Join-Path $RepoDir 'hubramework\pose\setup\setup_pose.ps1'
-    $PoseModels = Join-Path $RepoDir 'hubramework\pose\models'
+    $PoseSetup  = Join-Path $RepoDir 'hub\framework\pose\setup\setup_pose.ps1'
+    $PoseModels = Join-Path $RepoDir 'hub\framework\pose\models'
 
     if (Test-Path (Join-Path $PoseModels 'hrnet_pose.onnx')) {
         Write-Ok "pose model already present, skipping"
-        Write-Host "        (re-run hubramework\pose\setup\setup_pose.ps1 -PythonPath `"$VenvPython`" to force)"
+        Write-Host "        (re-run hub\framework\pose\setup\setup_pose.ps1 -PythonPath `"$VenvPython`" to force)"
     } else {
         $poseArgs = @{ PythonPath = $VenvPython }
         if ($AiHubToken) { $poseArgs.Token = $AiHubToken }
@@ -516,7 +516,7 @@ if ($SkipPose) {
             }
         } catch {
             Write-Warn "pose setup failed ($($_.Exception.Message)) - hub will report pose as unavailable."
-            Write-Warn "Re-run it directly: hubramework\pose\setup\setup_pose.ps1 -PythonPath `"$VenvPython`""
+            Write-Warn "Re-run it directly: hub\framework\pose\setup\setup_pose.ps1 -PythonPath `"$VenvPython`""
         }
     }
 }

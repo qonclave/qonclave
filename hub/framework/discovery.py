@@ -13,13 +13,28 @@ import socket
 import threading
 import time
 
+from . import device_registry
+
 log = logging.getLogger("qonclave.discovery")
 
 DISCOVERY_PORT = 8888
 BROADCAST_INTERVAL_SEC = 3.0
+MDNS_NAME = "qonclave-hub.local"
 
 
-def start_broadcaster(http_port: int = 8000, mdns_name: str = "qonclave-hub.local") -> None:
+def lan_ip() -> str | None:
+    """Best-effort LAN address of this hub — the IP a device on the subnet
+    would reach us at. The UDP connect never sends a packet; it only asks the
+    OS which interface would route out."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+    except OSError:
+        return None
+
+
+def start_broadcaster(http_port: int = 8000, mdns_name: str = MDNS_NAME) -> None:
     """Starts background UDP broadcast heartbeat and probe responder thread."""
     def _run():
         time.sleep(1.0)  # Allow server to bind HTTP first
@@ -66,6 +81,11 @@ def start_broadcaster(http_port: int = 8000, mdns_name: str = "qonclave-hub.loca
                         msg = json.loads(data.decode("utf-8", errors="ignore"))
                         if isinstance(msg, dict) and msg.get("probe") in ("qonclave-hub", "any"):
                             log.debug("Received discovery probe from %s; responding with Hub info.", addr)
+                            # A probe is a device announcing itself — record it
+                            # (with its node id, if the probe carries one).
+                            device_registry.record(
+                                device_id=msg.get("node_id") or msg.get("device_id"),
+                                ip=addr[0], source="discovery")
                             listen_sock.sendto(payload, addr)
                     except Exception:
                         pass
