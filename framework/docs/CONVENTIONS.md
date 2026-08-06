@@ -165,7 +165,7 @@ merge on either side of the framework/`hub/` split can tell what it's actually c
 | `recognize_activity.py` | `hub/events.py` | ⬜ not started |
 | `policy.py` | `hub/policy.py` | ✅ done — lifted, reverted, redone; see below |
 | `server.py` | `hub/app.py` | ⬜ not started |
-| `mqtt_bus.py` | **stays put** — it is the demo's chosen pipe, wrapped in `PubSubTransport` | ⬜ not started |
+| `mqtt_bus.py` | **stays put**, now wrapping `transport/mqtt.py`'s `MQTTTransport` (`PubSubTransport`) | ✅ done — JSON encoding, ring buffer, dual-topic publish, registry wiring all stay hub-side |
 | `sms_bus.py` | `apps/<name>/egress/twilio_sms.py` — **leaves the framework** | ⬜ not started |
 | `server.py`'s `POST /sms` route | `apps/<name>/` — it reads Twilio's own form fields | ⬜ not started |
 | `discovery.py` | `discovery/announce.py` + `discovery/backends/udp.py` | ✅ done — payload not yet spec-compliant, `browse.py` not touched; see below |
@@ -177,8 +177,9 @@ merge on either side of the framework/`hub/` split can tell what it's actually c
 | `icons.py` | **stays app-level** | n/a — correctly not lifted |
 
 `hub/` is no longer untouched: `adapter.py`, `events.py`, `transport.py`, `policy.py`,
-`device_registry.py`, and now `discovery.py` are thin shims over the SDK today, proved by
-`hub/tests/` running against all six. Everything else in the table above is still the
+`device_registry.py`, `discovery.py`, and now `mqtt_bus.py` build on the SDK today, proved by
+`hub/tests/` running against all seven (`mqtt_bus.py` is a wrapper rather than a pure re-export
+shim like the others — see below for why). Everything else in the table above is still the
 pre-convergence, framework-agnostic implementation.
 
 ### `policy.py` was lifted, then reverted, then redone (2026-08-06)
@@ -253,6 +254,31 @@ socket-level send/receive/reply mechanics moved to `discovery/backends/udp.py` (
    and records the prober as a sighting (now `discovery.registry`, not a peer-manifest cache).
    There was nothing in the old file to port into `browse.py`; it remains a placeholder until
    something actually needs to browse for peers.
+
+### `mqtt_bus.py` is a wrapper, not a re-export shim (2026-08-06)
+
+Every earlier migration in this table produced a thin re-export shim — `hub/framework/x.py`
+becomes a handful of lines pointing at the real implementation in `qonclave`, same shape as
+`adapter.py`. `mqtt_bus.py` doesn't, because `transport/base.py`'s `PubSubTransport` ABC and
+`MQTTBus`'s existing public surface are contracts at different altitudes on purpose:
+
+* `PubSubTransport.publish(topic, body: bytes, ...)` / `.subscribe(topic, handler)` — bytes in,
+  bytes out, one handler per topic filter. Generic enough that HTTP, CoAP, and gRPC transports
+  implement the same shape's request/response cousin.
+* `MQTTBus` — JSON dict in/out, a received-message ring buffer (`/test/hub`'s console), dual-topic
+  legacy publishing during the spec migration (`command_topic`/`legacy_command_topic`), and
+  feeding `discovery.registry` from status-topic sightings.
+
+None of that second list belongs in a generic transport — a CoAP transport has no ring buffer to
+speak of, and "legacy topic" is meaningless outside this specific migration. So
+`qonclave.transport.mqtt.MQTTTransport` implements only the first list (paho-mqtt underneath,
+lazy-connect with a reconnect cooldown, idempotent-by-topic subscribe), and
+`hub/framework/mqtt_bus.py`'s `MQTTBus` keeps its existing name, existing public methods, and
+existing callers unchanged, now composing `MQTTTransport` internally instead of holding a raw
+paho client. One small, deliberate behavior delta: the original `MQTTBus.subscribe()` could return
+`False` if a connected broker's own `client.subscribe()` call raised; `MQTTTransport.subscribe()`
+logs that case and no-ops rather than surfacing it, so the wrapper's `subscribe()` now returns
+`True` whenever the broker was reachable at all. No test exercised the old failure path.
 
 Three more of the table's rows are worth explaining.
 
