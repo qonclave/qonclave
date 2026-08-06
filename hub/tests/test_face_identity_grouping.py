@@ -43,6 +43,17 @@ def test_single_underscore_stays_part_of_the_name(tmp_path):
     assert fp.identity_for_path(tmp_path / "bob_smith.jpg", tmp_path) == "bob_smith"
 
 
+def test_case_does_not_split_one_person_in_two(tmp_path):
+    # Grouping exists so hand-named files land on one person; a capital letter
+    # must not undo that. Matches _slugify_name, which lowercases, so a
+    # hand-dropped file and a dashboard enrollment agree on the name.
+    for name in ("Jogendra__1.jpg", "jogendra__2.jpg", "JOGENDRA__3.png",
+                 "Jogendra.jpg"):
+        assert fp.identity_for_path(tmp_path / name, tmp_path) == "jogendra"
+    assert fp.identity_for_path(tmp_path / "JOGENDRA" / "side.jpg",
+                                tmp_path) == "jogendra"
+
+
 def test_subdirectory_name_is_the_identity(tmp_path):
     p = tmp_path / "jogendra" / "side.jpg"
     assert fp.identity_for_path(p, tmp_path) == "jogendra"

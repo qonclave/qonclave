@@ -67,14 +67,20 @@ def identity_for_path(path: Path, db_dir: Path) -> str:
     otherwise the filename stem up to PHOTO_SEPARATOR. This is the single
     definition of the layout -- _load_db enrolls by it and known_names()
     reports by it, so the two can't drift apart.
+
+    Lowercased, because the point of grouping is that files a human names by
+    hand end up as one person: "Jogendra__1.jpg" and "jogendra__2.jpg" are the
+    same man, and a case difference splitting them back into two identities
+    would defeat the whole mechanism. This also matches _slugify_name, so a
+    hand-dropped file and a dashboard enrollment agree on the name.
     """
     try:
         parts = path.relative_to(db_dir).parts
     except ValueError:
         parts = (path.name,)
     if len(parts) > 1:
-        return parts[0]
-    return path.stem.split(PHOTO_SEPARATOR, 1)[0]
+        return parts[0].lower()
+    return path.stem.split(PHOTO_SEPARATOR, 1)[0].lower()
 
 
 def match_scores(known: dict, embedding) -> dict:
