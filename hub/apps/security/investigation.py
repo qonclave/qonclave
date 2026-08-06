@@ -279,6 +279,10 @@ class InvestigationManager:
             "command": "capture_investigation_image",
             "event_id": event_id,
             "track_id": track_id,
+            # Posture flagged this person: let the edge close some distance
+            # first so the VLM reasons about a close-up rather than a distant
+            # smudge. The edge bounds this well inside our capture timeout.
+            "approach": True,
         }
         published = bool(device_id) and self.mqtt.publish_command(device_id, command)
         if not published:
@@ -346,6 +350,10 @@ class InvestigationManager:
                 "command": "capture_investigation_image",
                 "event_id": event_id,
                 "track_id": None,
+                # An operator asked to see the scene as it is. Driving the
+                # robot on every dashboard click would be a surprise, and a
+                # manual check has no flagged person to approach.
+                "approach": False,
             }
             published = bool(device_id) and self.mqtt.publish_command(device_id, command)
             if not published:

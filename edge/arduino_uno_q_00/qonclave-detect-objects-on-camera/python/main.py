@@ -24,6 +24,7 @@ from basic_auth import BasicAuthMiddleware
 from file_camera import FileCamera
 from follow_target_selector import FollowTargetSelector
 from identity_map import IdentityMap
+from investigation_approach import describe as describe_approach, plan_approach
 from led_display import person_display_bitmap
 from mqtt_client import EdgeMQTTClient
 from analysis_client import AnalysisClient
@@ -494,11 +495,18 @@ if green_bmp:
 # escalations runs the hub's VLM, so this is effectively "send images for the
 # hub's model every N seconds while a person is visible".
 #
-# HUB_EVENT_INTERVAL_SEC is the one knob: 0 (default) disables auto-sending
-# entirely -- the VLM then runs only event-driven (posture investigation,
-# dashboard button, CAPTURE SMS). Any value > 0 sends at most one frame per
-# that many seconds. When unset, the legacy pair still works for backward
-# compatibility: HUB_EVENT_ENABLED=1 -> send every HUB_EVENT_HYSTERESIS_SEC.
+# PERIODIC REASONING IS OFF. The VLM now runs only event-driven: a posture
+# investigation, the dashboard button, or a CAPTURE SMS. Interval-driven
+# frames competed with those for the same single-threaded VLM, so a real
+# collapse could queue behind a routine "person is visible" frame -- and the
+# routine frame carried no posture context to reason about anyway.
+#
+# HUB_PERIODIC_REASONING_ENABLED is the authoritative switch and defaults to
+# off. It overrides the interval knobs below, so a stale .env on the board
+# cannot silently re-enable the periodic path; set it to 1 (and give
+# HUB_EVENT_INTERVAL_SEC a positive value) to bring it back.
+HUB_PERIODIC_REASONING_ENABLED = os.environ.get(
+  "HUB_PERIODIC_REASONING_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
 HUB_EVENT_ENABLED = os.environ.get("HUB_EVENT_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
 PERSON_CONFIDENCE_THRESHOLD = float(os.environ.get("PERSON_CONFIDENCE_THRESHOLD", "0.7"))
 HUB_EVENT_HYSTERESIS_SEC = float(os.environ.get("HUB_EVENT_HYSTERESIS_SEC", "10"))
@@ -507,6 +515,8 @@ if _raw_interval:
   HUB_EVENT_INTERVAL_SEC = max(0.0, float(_raw_interval))
 else:
   HUB_EVENT_INTERVAL_SEC = HUB_EVENT_HYSTERESIS_SEC if HUB_EVENT_ENABLED else 0.0
+if not HUB_PERIODIC_REASONING_ENABLED:
+  HUB_EVENT_INTERVAL_SEC = 0.0
 HUB_EVENT_TIMEOUT_SEC = float(os.environ.get("HUB_EVENT_TIMEOUT_SEC", "5"))
 ESCALATION_DIR = os.environ.get("ESCALATION_DIR", "/app/escalations")
 ESCALATION_MAX_FILES = int(os.environ.get("ESCALATION_MAX_FILES", "100"))
@@ -533,6 +543,33 @@ person_centering = PersonCenteringController(
   post_motion_blank_seconds=float(os.environ.get("PERSON_CENTER_POST_MOTION_BLANK_SEC", "1.5")),
   turn_gain=float(os.environ.get("PERSON_CENTER_TURN_GAIN", "0.7")),
 )
+
+# --- Investigation approach: when the hub opens an investigation (posture
+# SUSPICIOUS/DANGER) it asks this device for one frame. Before capturing, the
+# robot turns to face the target and drives forward briefly so the VLM gets a
+# close-up instead of a distant smudge. See python/investigation_approach.py.
+#
+# The whole approach must finish inside the hub's capture timeout
+# (QONCLAVE_INVESTIGATION_CAPTURE_TIMEOUT_SEC, 10s) or the hub gives up and
+# uses a buffered crop -- discarding the very frame this exists to produce.
+# The budget is deliberately well under it to leave room for the upload.
+INVESTIGATION_APPROACH_ENABLED = os.environ.get(
+  "INVESTIGATION_APPROACH_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
+INVESTIGATION_APPROACH_FORWARD_SEC = int(
+  os.environ.get("INVESTIGATION_APPROACH_FORWARD_SEC", "1"))
+INVESTIGATION_APPROACH_TOLERANCE_DEGREES = float(
+  os.environ.get("INVESTIGATION_APPROACH_TOLERANCE_DEGREES", "8"))
+INVESTIGATION_APPROACH_MAX_TURN_DEGREES = float(
+  os.environ.get("INVESTIGATION_APPROACH_MAX_TURN_DEGREES", "45"))
+INVESTIGATION_APPROACH_SETTLE_SEC = float(
+  os.environ.get("INVESTIGATION_APPROACH_SETTLE_SEC", "0.6"))
+INVESTIGATION_APPROACH_BUDGET_SEC = float(
+  os.environ.get("INVESTIGATION_APPROACH_BUDGET_SEC", "6"))
+# A bearing older than this is not trusted to aim a turn. Detection runs at
+# ~1.5 Hz, so anything past a couple of frames may describe where the person
+# WAS; the approach then skips the turn rather than turning the wrong way.
+INVESTIGATION_APPROACH_BEARING_MAX_AGE_SEC = float(
+  os.environ.get("INVESTIGATION_APPROACH_BEARING_MAX_AGE_SEC", "3"))
 
 # --- Known-person priority following: prefer recognized people (lowest hub
 # priority number wins), hold a missing known target for a grace period
@@ -703,6 +740,30 @@ def _log_follow_state_if_changed(selection: dict):
 _hub_event_lock = threading.Lock()
 _last_hub_event_at = 0.0
 
+# Newest bearing to the follow target, published by the detection callback and
+# read by the investigation-capture thread (which has no frame of its own to
+# measure from). (track_id, angle_degrees, monotonic timestamp) or None.
+_follow_bearing_lock = threading.Lock()
+_follow_bearing: tuple[int, float, float] | None = None
+
+
+def _note_follow_bearing(track_id: int, angle_degrees: float):
+  global _follow_bearing
+  with _follow_bearing_lock:
+    _follow_bearing = (track_id, angle_degrees, time.monotonic())
+
+
+def _recent_follow_bearing(max_age_seconds: float) -> tuple[int, float] | None:
+  """(track_id, bearing) if fresh enough to aim a turn at, else None."""
+  with _follow_bearing_lock:
+    snapshot = _follow_bearing
+  if snapshot is None:
+    return None
+  track_id, angle, measured_at = snapshot
+  if time.monotonic() - measured_at > max_age_seconds:
+    return None
+  return track_id, angle
+
 
 def _prune_escalation_frames():
   # Filenames are ISO-8601 timestamps (colons swapped for dashes), so a
@@ -760,6 +821,8 @@ def _post_person_event(confidence: float, frame: bytes):
 
 
 def maybe_notify_hub(detections: dict, frame: bytes | None):
+  # HUB_EVENT_INTERVAL_SEC is forced to 0 unless periodic reasoning is
+  # explicitly enabled, so this is the disabled path by default.
   if HUB_EVENT_INTERVAL_SEC <= 0 or not frame:
     return
 
@@ -873,6 +936,9 @@ def send_detections_to_ui(detections: dict, frame: bytes | None = None):
       dual_lens_fov_degrees=CAMERA_DUAL_LENS_FOV_DEGREES,
     )
     target_track["angle_to_center_degrees"] = angle_to_center
+    # Publish for the investigation-capture thread, which needs to know which
+    # way to turn before its close-up but never sees a frame itself.
+    _note_follow_bearing(target_track["track_id"], angle_to_center)
     log.debug(
       f"Tracking person {target_track['track_id']}: angle_to_center={angle_to_center:.2f}°, "
       f"motion={target_track['direction']}"
@@ -955,14 +1021,99 @@ detection_stream.on_detect_all(send_detections_to_ui)
 # --- Hub->edge command channel: connect to the MQTT broker and listen for
 # commands the hub pushes to this device.
 
+def _wait_for_motion_idle(deadline: float) -> bool:
+  """Block until the MCU reports motion finished, or the deadline passes.
+
+  Returns True if motion actually ended in time. The MCU runs turns
+  closed-loop on the IMU with its own deadline, so a commanded duration is an
+  estimate, not a promise -- polling is what makes the following capture
+  reliably sharp instead of hopefully sharp."""
+  while time.monotonic() < deadline:
+    try:
+      if not Bridge.call("robot_motion_active"):
+        return True
+    except Exception as e:
+      # No motion feedback available: fall back to the commanded timing
+      # rather than spinning here until the deadline.
+      log.warning(f"robot_motion_active unavailable while approaching: {e}")
+      return False
+    time.sleep(0.05)
+  return False
+
+
+def _approach_target_before_capture(event_id: str, requested: bool):
+  """Turn to face the tracked person and drive forward briefly, so the
+  investigation frame is a close-up rather than a distant smudge.
+
+  ``requested`` is the hub's ``approach`` flag: true for posture-triggered
+  events, false for operator-requested checks (which want the scene as it is
+  and have no flagged person to approach).
+
+  Every failure here is non-fatal: the capture still happens from wherever
+  the robot ended up. A worse photo is recoverable, a skipped investigation
+  is not."""
+  if not INVESTIGATION_APPROACH_ENABLED or not requested:
+    return
+
+  recent = _recent_follow_bearing(INVESTIGATION_APPROACH_BEARING_MAX_AGE_SEC)
+  bearing = recent[1] if recent else None
+  steps = plan_approach(
+    bearing,
+    forward_seconds=INVESTIGATION_APPROACH_FORWARD_SEC,
+    tolerance_degrees=INVESTIGATION_APPROACH_TOLERANCE_DEGREES,
+    max_turn_degrees=INVESTIGATION_APPROACH_MAX_TURN_DEGREES,
+    ms_per_degree=person_centering.estimated_ms_per_degree,
+    settle_seconds=INVESTIGATION_APPROACH_SETTLE_SEC,
+    budget_seconds=INVESTIGATION_APPROACH_BUDGET_SEC,
+  )
+  log.info(
+    f"Investigation {event_id}: approaching "
+    f"{'track ' + str(recent[0]) if recent else 'target (no recent bearing)'} "
+    f"-> {describe_approach(steps)}"
+  )
+
+  budget_ends = time.monotonic() + INVESTIGATION_APPROACH_BUDGET_SEC
+  for step in steps:
+    try:
+      _execute_robot_command({
+        "direction": step.direction,
+        "magnitude": step.magnitude,
+      })
+    except Exception as e:
+      log.error(f"Investigation {event_id}: approach step "
+                f"{step.direction} {step.magnitude} failed: {e}")
+      break
+    # Each step's own estimate, never past the overall budget: a turn whose
+    # closed-loop correction runs long must not eat the forward step's time.
+    step_deadline = min(budget_ends, time.monotonic() + step.estimated_seconds
+                        + INVESTIGATION_APPROACH_SETTLE_SEC)
+    if not _wait_for_motion_idle(step_deadline):
+      # Either no feedback or the step overran; sleep out whatever budget
+      # this step was owed so the capture isn't taken mid-move.
+      time.sleep(max(0.0, min(step_deadline, budget_ends) - time.monotonic()))
+
+  if steps:
+    # Guarantee the wheels are stopped (a step may have overrun its estimate),
+    # THEN let the chassis stop rocking and the camera pipeline emit a frame
+    # from the new position -- only after that is _camera_frame worth reading.
+    try:
+      Bridge.call("stop_robot")
+    except Exception as e:
+      log.warning(f"Investigation {event_id}: stop_robot after approach "
+                  f"failed: {e}")
+    time.sleep(INVESTIGATION_APPROACH_SETTLE_SEC)
+
+
 def _capture_investigation_image(command: dict):
-  """Answer a capture_investigation_image command: grab the freshest raw
-  camera frame (full resolution, not a person crop) and POST it back to the
-  hub's /edge/investigation with the event_id. For now this is a simple
-  fresh capture; aligning/approaching the person and tilting a servo before
-  capturing slots in here later. Failures are logged only -- the hub falls
-  back to its buffered evidence frames after its capture timeout."""
+  """Answer a capture_investigation_image command: approach the person, then
+  grab the freshest raw camera frame (full resolution, not a person crop) and
+  POST it back to the hub's /edge/investigation with the event_id. Failures
+  are logged only -- the hub falls back to its buffered evidence frames after
+  its capture timeout."""
   event_id = str(command.get("event_id") or "")
+  # Absent flag defaults to approaching: the command's normal source is a
+  # posture event, and an older hub sends no flag at all.
+  _approach_target_before_capture(event_id, bool(command.get("approach", True)))
   with _camera_frame_cond:
     frame = _camera_frame
   jpeg = encode_jpeg(frame) if frame is not None else None
@@ -1014,6 +1165,20 @@ def _handle_hub_command(command: dict):
     log.warning(f"Rejected hub robot command: {e}")
   except Exception as e:
     log.error(f"Hub robot command failed: {e}")
+
+if HUB_EVENT_INTERVAL_SEC > 0:
+  log.info(f"Periodic hub reasoning ENABLED: one frame per "
+           f"{HUB_EVENT_INTERVAL_SEC}s while a person is visible")
+else:
+  log.info("Periodic hub reasoning disabled -- the VLM runs event-driven only "
+           "(posture investigation, dashboard button, CAPTURE SMS)")
+log.info(
+  f"Investigation approach: "
+  + (f"forward {INVESTIGATION_APPROACH_FORWARD_SEC}s after facing the target "
+     f"(within {INVESTIGATION_APPROACH_MAX_TURN_DEGREES:.0f} deg), "
+     f"{INVESTIGATION_APPROACH_BUDGET_SEC}s budget"
+     if INVESTIGATION_APPROACH_ENABLED else "disabled (capture in place)")
+)
 
 mqtt_client = EdgeMQTTClient(
   device_id=DEVICE_ID,

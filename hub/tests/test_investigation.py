@@ -121,6 +121,9 @@ def test_one_event_one_capture_one_vlm_call_one_sms(tmp_path, monkeypatch):
     assert command["command"] == "capture_investigation_image"
     assert command["event_id"] == "event_001"
     assert command["track_id"] == 4
+    # Posture flagged this person: the edge closes distance before capturing
+    # so the VLM gets a close-up instead of a distant smudge.
+    assert command["approach"] is True
 
     # Further DANGER samples while waiting must not open a second event.
     clock.now += 1.0
@@ -297,6 +300,8 @@ def test_dashboard_manual_trigger_presents_result_without_sms(tmp_path, monkeypa
     assert result["event_id"] == "event_001"
     assert result["capture_requested"] is True
     assert mqtt.published[0][1]["command"] == "capture_investigation_image"
+    # An operator wants the scene as it is; clicking must not drive the robot.
+    assert mqtt.published[0][1]["approach"] is False
 
     manager.on_capture("event_001", b"fresh-frame")
     assert len(vlm.calls) == 1
