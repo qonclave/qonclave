@@ -235,6 +235,10 @@ def _build_camera():
 
 try:
   camera = _build_camera()
+  # BaseCamera.capture() requires the Python camera object to be started.
+  # VideoObjectDetection normally does this during App startup, but this
+  # health probe runs before the Brick is constructed.
+  camera.start()
   for attempt in range(1, CAMERA_PROBE_ATTEMPTS + 1):
     try:
       if camera.capture() is not None:
@@ -378,6 +382,14 @@ def _preview_publisher():
 threading.Thread(target=_preview_publisher, name="PreviewPublisher", daemon=True).start()
 
 def _camera_preview_page(_request):
+  if camera is None:
+    return HTMLResponse(
+      '<!doctype html><html><head><style>'
+      'html,body{margin:0;width:100%;height:100%;background:#111;color:#eee;'
+      'display:grid;place-items:center;font-family:sans-serif}'
+      '</style></head><body>Camera unavailable</body></html>',
+      status_code=503,
+    )
   return HTMLResponse(
     '<!doctype html><html><head><style>'
     'html,body{margin:0;width:100%;height:100%;background:#111;overflow:hidden}'
@@ -402,6 +414,11 @@ def _track_preview_mjpeg():
       yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
 
 def _track_preview_stream(_request):
+  # Do not leave a sync generator waiting forever when startup disabled the
+  # camera. Repeated browser loads would otherwise consume every Starlette
+  # worker thread and make even the static index page stop responding.
+  if camera is None:
+    return HTMLResponse("Camera unavailable", status_code=503)
   return StreamingResponse(_track_preview_mjpeg(), media_type="multipart/x-mixed-replace; boundary=frame")
 
 ui.app.add_route("/camera-preview", _camera_preview_page, methods=["GET"])
