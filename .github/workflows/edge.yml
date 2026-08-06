@@ -1,0 +1,46 @@
+name: edge
+
+on:
+  push:
+    paths: ['edge/arduino_uno_q_00/qonclave-detect-objects-on-camera/**', '.github/workflows/edge.yml']
+  pull_request:
+    paths: ['edge/arduino_uno_q_00/qonclave-detect-objects-on-camera/**', '.github/workflows/edge.yml']
+
+# Only qonclave-detect-objects-on-camera is covered: it's the one edge app with
+# a real pytest suite (154 tests) that runs on synthetic fixtures, no hardware
+# or model assets required. The other apps under edge/arduino_uno_q_00/ don't
+# have an equivalent yet:
+#   edge_assistant's test_roundtrip.py is a standalone STT->TTS->STT script
+#     (no pytest functions) that needs real downloaded VOSK/piper models and
+#     an audio file — a manual verification tool, not a CI-suitable suite.
+#   bno08x-sensor-test and qonclave-person-emotions have no tests at all yet.
+
+jobs:
+  tests:
+    name: qonclave-detect-objects-on-camera tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: edge/arduino_uno_q_00/qonclave-detect-objects-on-camera
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # python/requirements.txt covers the app's own deps (requests,
+      # python-dotenv, paho-mqtt) but not cv2/numpy/jsonschema -- those are
+      # test-only here (the sketch-side board provides its own camera/vision
+      # pipeline; nothing in this app's runtime path decodes JPEGs on a
+      # dev machine). Without jsonschema, test_hub_protocol.py's schema
+      # tests silently skip rather than fail, so it's added here to make
+      # sure they actually run.
+      - run: |
+          pip install -r python/requirements.txt
+          pip install pytest numpy opencv-python-headless jsonschema
+
+      - name: app compiles
+        run: python -m compileall -q .
+
+      - name: test suite
+        run: python -m pytest . -v

@@ -1,0 +1,42 @@
+name: hub
+
+on:
+  push:
+    paths: ['hub/**', 'framework/sdk/python/**', '.github/workflows/hub.yml']
+  pull_request:
+    paths: ['hub/**', 'framework/sdk/python/**', '.github/workflows/hub.yml']
+
+jobs:
+  tests:
+    name: hub tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # hub/framework/{adapter,events,transport}.py are thin shims over this
+      # package (see framework/docs/CONVENTIONS.md's "Where existing code
+      # lands"), so a change on either side of that boundary can break the
+      # other -- this workflow is path-triggered on both directories for
+      # exactly that reason.
+      - run: pip install -e framework/sdk/python
+
+      # requirements.txt deliberately omits geniex (Snapdragon-only) and
+      # opencv/numpy (arrive with the ARM64 face-ID/pose setup) -- see the
+      # NOTEs in hub/requirements.txt. Installed here so pose/face-ID modules
+      # still import cleanly in CI; PoseBackend/FaceIdentityBackend degrade to
+      # "unavailable" without a GPU/NPU regardless, which is what the tests
+      # that exercise them expect.
+      - run: |
+          pip install -r hub/requirements.txt
+          pip install pytest numpy opencv-python-headless
+
+      - name: hub package compiles
+        run: python -m compileall -q hub
+
+      - name: hub test suite
+        run: python -m pytest hub/tests -v
+        env:
+          QONCLAVE_RTT_PROBE_ENABLED: "0"
