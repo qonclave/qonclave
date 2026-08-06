@@ -463,14 +463,22 @@ if green_bmp:
 # --- Hub event forwarding: notify the Qonclave hub when a person is detected ---
 
 # Periodic person-detected escalation to POST /edge/event. Each of those
-# escalations ran the hub's VLM, so with a person in frame the VLM ran every
-# HUB_EVENT_HYSTERESIS_SEC forever. Default OFF: the VLM is now event-driven --
-# the hub opens an investigation (capture_investigation_image command -> one
-# VLM call) only when the posture pipeline reports persistent
-# SUSPICIOUS/DANGER. Set HUB_EVENT_ENABLED=1 to restore the old behaviour.
+# escalations runs the hub's VLM, so this is effectively "send images for the
+# hub's model every N seconds while a person is visible".
+#
+# HUB_EVENT_INTERVAL_SEC is the one knob: 0 (default) disables auto-sending
+# entirely -- the VLM then runs only event-driven (posture investigation,
+# dashboard button, CAPTURE SMS). Any value > 0 sends at most one frame per
+# that many seconds. When unset, the legacy pair still works for backward
+# compatibility: HUB_EVENT_ENABLED=1 -> send every HUB_EVENT_HYSTERESIS_SEC.
 HUB_EVENT_ENABLED = os.environ.get("HUB_EVENT_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
 PERSON_CONFIDENCE_THRESHOLD = float(os.environ.get("PERSON_CONFIDENCE_THRESHOLD", "0.7"))
 HUB_EVENT_HYSTERESIS_SEC = float(os.environ.get("HUB_EVENT_HYSTERESIS_SEC", "10"))
+_raw_interval = os.environ.get("HUB_EVENT_INTERVAL_SEC", "").strip()
+if _raw_interval:
+  HUB_EVENT_INTERVAL_SEC = max(0.0, float(_raw_interval))
+else:
+  HUB_EVENT_INTERVAL_SEC = HUB_EVENT_HYSTERESIS_SEC if HUB_EVENT_ENABLED else 0.0
 HUB_EVENT_TIMEOUT_SEC = float(os.environ.get("HUB_EVENT_TIMEOUT_SEC", "5"))
 ESCALATION_DIR = os.environ.get("ESCALATION_DIR", "/app/escalations")
 ESCALATION_MAX_FILES = int(os.environ.get("ESCALATION_MAX_FILES", "100"))
@@ -664,7 +672,7 @@ def _post_person_event(confidence: float, frame: bytes):
 
 
 def maybe_notify_hub(detections: dict, frame: bytes | None):
-  if not HUB_EVENT_ENABLED or not frame:
+  if HUB_EVENT_INTERVAL_SEC <= 0 or not frame:
     return
 
   person_detections = detections.get("person", [])
@@ -678,7 +686,7 @@ def maybe_notify_hub(detections: dict, frame: bytes | None):
   global _last_hub_event_at
   with _hub_event_lock:
     now = time.monotonic()
-    if now - _last_hub_event_at < HUB_EVENT_HYSTERESIS_SEC:
+    if now - _last_hub_event_at < HUB_EVENT_INTERVAL_SEC:
       return
     _last_hub_event_at = now
 
