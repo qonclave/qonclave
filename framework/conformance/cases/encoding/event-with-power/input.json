@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "event_id": "evt-005",
+  "source_node_id": "esp32-lab",
+  "timestamp": "2026-08-04T18:41:00+00:00",
+  "trigger": "heartbeat",
+  "power": {
+    "battery_pct": 18.5,
+    "on_mains": false,
+    "thermal_headroom_c": 12.0
+  }
+}

@@ -1,0 +1,187 @@
+openapi: 3.1.0
+
+info:
+  title: Qonclave Hub API
+  version: '1.0'
+  description: |
+    The hub's HTTP surface. COMMUNICATION.md §2 and §6.
+
+    Note the two ingestion paths. `/api/v1/events` is for devices that can afford a request per
+    observation; `/api/v1/checkin` collapses events, command delivery, config, and time into one
+    round trip for devices that wake briefly and sleep. A hub MUST implement both — a real fleet
+    contains both kinds of device.
+
+servers:
+  - url: 'http://{host}:{port}/api/v1'
+    variables:
+      host: { default: 'localhost' }
+      port: { default: '8000' }
+
+security:
+  - mutualTLS: []
+  - pskSignature: []
+
+paths:
+  /events:
+    post:
+      summary: Ingest an edge event
+      description: |
+        Accepts JSON or CBOR. Rich media belongs here rather than on the MQTT plane.
+
+        The hub stamps `hub_received_at` and, for events carrying `relative_time` instead of an
+        absolute `timestamp`, that stamp is the only authoritative time the event has.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '../json-schema/edge-event.schema.json' }
+          application/cbor:
+            schema: { $ref: '../json-schema/edge-event.schema.json' }
+      responses:
+        '202':
+          description: Accepted and durably recorded.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EventAck' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/TenantDenied' }
+        '413': { description: Payload exceeds the hub's configured limit. }
+
+  /checkin:
+    post:
+      summary: Duty-cycle exchange — one round trip per wake
+      description: |
+        The entire network interaction of a `minimal`-profile device. Uplink carries accumulated
+        events, power state, and acks for previously delivered commands; downlink carries
+        authoritative time, the drained mailbox, any config delta, and a suggested sleep interval.
+
+        A hub MUST NOT require more than this one exchange from such a device.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '../json-schema/checkin.schema.json#/$defs/request' }
+          application/cbor:
+            schema: { $ref: '../json-schema/checkin.schema.json#/$defs/request' }
+      responses:
+        '200':
+          description: Check-in accepted.
+          content:
+            application/json:
+              schema: { $ref: '../json-schema/checkin.schema.json#/$defs/response' }
+            application/cbor:
+              schema: { $ref: '../json-schema/checkin.schema.json#/$defs/response' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/TenantDenied' }
+        '409':
+          description: |
+            `wake_counter` was not greater than the last accepted value — a replay, or a device
+            whose non-volatile counter was reset. Requires re-commissioning to resolve.
+
+  /capabilities:
+    get:
+      summary: What this node can run
+      description: |
+        Hardware introspection plus the resolved model list. Lets an orchestrating node discover
+        what a hub can do without hardcoded assumptions — the gap called out in
+        DEVELOPER_GUIDE.md's roadmap.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '../json-schema/node-manifest.schema.json' }
+
+  /grants:
+    post:
+      summary: Mint a capability grant
+      description: |
+        Issued by a hub acting as local CA, authorizing one of its edges to talk to a specific
+        target — an operator, a compute node, or a peer hub. The audience verifies it offline
+        against this hub's pinned CA root.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GrantRequest' }
+      responses:
+        '201':
+          description: Grant minted.
+          content:
+            application/json:
+              schema: { $ref: '../json-schema/capability-grant.schema.json' }
+        '403':
+          description: |
+            Refused. Most commonly a cross-tenant request without explicit `cross_tenant`, which is
+            denied by default per SECURITY.md §2.
+
+  /health:
+    get:
+      summary: Liveness and subsystem status
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+
+components:
+  securitySchemes:
+    mutualTLS:
+      type: mutualTLS
+      description: Required by the `full` profile. Certificates provisioned by the hub as local CA.
+    pskSignature:
+      type: apiKey
+      in: header
+      name: X-Qonclave-Signature
+      description: |
+        Constrained path. Detached signature over the canonical request body using a key derived
+        from the PSK established at out-of-band commissioning. Used where a full TLS handshake
+        costs more energy than the request it protects.
+
+  schemas:
+    EventAck:
+      type: object
+      properties:
+        schema_version: { type: string }
+        event_id: { type: string }
+        received: { type: boolean }
+        hub_received_at: { type: string, format: date-time }
+        verified: { type: boolean }
+        confidence: { type: number }
+        alert: { type: string }
+        command:
+          description: Inline command, when the Policy returned one. Also queued to the mailbox so a device not holding this connection still receives it.
+          oneOf:
+            - { $ref: '../json-schema/command.schema.json' }
+            - { type: 'null' }
+      required: [schema_version, event_id, received]
+      additionalProperties: true
+
+    GrantRequest:
+      type: object
+      properties:
+        subject: { type: string }
+        audience:
+          type: object
+          properties:
+            kind: { type: string, enum: [operator, compute, hub] }
+            node_id: { type: string }
+          required: [kind, node_id]
+        scope:
+          type: array
+          items: { type: string }
+        ttl_seconds: { type: integer, minimum: 1 }
+        cross_tenant: { type: boolean, default: false }
+      required: [subject, audience, scope]
+
+  responses:
+    BadRequest:
+      description: Schema validation failed, or an unsupported major `schema_version`.
+    Unauthorized:
+      description: Missing or invalid mTLS certificate or payload signature.
+    TenantDenied:
+      description: Tenant mismatch, or a capability grant that does not authorize this operation.

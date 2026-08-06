@@ -51,6 +51,12 @@ Endpoints:
     GET  /user/investigation  current investigation state machine snapshot
     POST /user/investigate    dashboard trigger: fresh capture + one VLM check
 
+    POST /assistant/query      edge voice assistant: transcribed command ->
+                               LLM (or canned template) reply
+    GET  /user/assistant_activity  LLM status + recent assistant exchanges,
+                               for the dashboard's assistant card
+    (both live in apps/assistant/routes.py, registered below)
+
 Design goals:
     * Runs on ANY laptop (regular x86 Windows/Linux included). Reasoning is
       conditional — see framework/vlm.py — so only that piece is
@@ -77,6 +83,11 @@ from .mqtt_bus import MQTTBus
 from .policy import Policy
 from .sms_bus import SMSBus
 from .vlm import VLMBackend
+
+# "apps" is a sibling top-level package (hub/ is on sys.path, it is not itself a
+# package), so this must be absolute — same style as hub/server.py's
+# "from apps.security.policy import SecurityPolicy".
+from apps.assistant.routes import create_assistant_blueprint
 
 log = logging.getLogger("qonclave.hub")
 
@@ -146,7 +157,8 @@ def _publish_track_frame(track_id: int, crop_jpeg: bytes, keypoints, label: str)
 
 def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
                static_dir: str, face_id=None, llm: LLMBackend | None = None,
-               pose=None) -> Flask:
+               pose=None,
+               assistant_llm: LLMBackend | None = None) -> Flask:
     """
     Build the Qonclave hub Flask app for one Policy.
 
@@ -163,6 +175,12 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
                 Notification (trial mode: fixed template + fixed number)
     llm         optional LLMBackend (text-only Qwen3-4B); used by the Policy
                 for on_sms_reply() reasoning; exposed via /health
+    assistant_llm
+                LLMBackend the /assistant/query route generates with, or None
+                to make it serve canned template replies instead. Separate
+                from llm so the assistant can be switched off (see
+                ASSISTANT_LLM_ENABLED in hub/server.py) without disabling
+                /health reporting or the Policy's own LLM use.
     static_dir  directory holding the app's dashboard.html, test_*.html
     """
     app = Flask(__name__, static_folder=None)
@@ -751,6 +769,51 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
         log.info("Dashboard robot command %s -> device %s", command, device_id)
         return jsonify({"ok": True, "device_id": device_id, "command": command})
 
+    @app.post("/user/buzzer-command")
+    def user_buzzer_command():
+        """Publish a validated dashboard buzzer command to one edge device."""
+        body = request.get_json(silent=True) or {}
+        device_id = str(body.get("device_id") or events.latest_device_id() or "buzzer-01").strip()
+        action = str(body.get("action") or "").strip().lower()
+
+        if not device_id:
+            return jsonify({"ok": False, "error": "no edge device selected"}), 400
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]+", device_id):
+            return jsonify({"ok": False, "error": "invalid device_id"}), 400
+        if action not in {"start", "stop", "tone", "believer", "song"}:
+            return jsonify({"ok": False, "error": "action must be 'start', 'stop', 'tone', 'believer', or 'song'"}), 400
+
+        try:
+            frequency = int(body.get("frequency", 440))
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "frequency must be an integer"}), 400
+        if not 20 <= frequency <= 20000:
+            return jsonify({"ok": False, "error": "frequency must be between 20 and 20000 Hz"}), 400
+
+        try:
+            duration = int(body.get("duration", 0))
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "duration must be an integer"}), 400
+        if duration < 0:
+            return jsonify({"ok": False, "error": "duration must be >= 0 ms"}), 400
+
+        command = {
+            "type": "buzzer",
+            "action": action,
+            "frequency": frequency,
+            "duration": duration,
+        }
+        ok = mqtt.publish_command(device_id, command)
+        if not ok:
+            return jsonify({
+                "ok": False,
+                "error": "MQTT broker unavailable or publish failed",
+                "device_id": device_id,
+            }), 503
+
+        log.info("Dashboard buzzer command %s -> device %s", command, device_id)
+        return jsonify({"ok": True, "device_id": device_id, "command": command})
+
     @app.get("/user/frames/<path:name>")
     def user_frame(name):
         return send_from_directory(transport.UPLOAD_DIR, name)
@@ -903,5 +966,7 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
     def user_index():
         # default landing = dashboard
         return send_from_directory(static_dir, "dashboard.html")
+
+    app.register_blueprint(create_assistant_blueprint(assistant_llm))
 
     return app

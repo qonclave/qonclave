@@ -470,6 +470,42 @@ def handle_robot_move(sid, message):
 
 ui.on_message("robot_move", handle_robot_move)
 
+def _execute_buzzer_command(message):
+  if not isinstance(message, dict):
+    raise ValueError("Buzzer command must be an object")
+
+  action = str(message.get("action", "")).strip().lower()
+  frequency = int(message.get("frequency", 440))
+  duration = int(message.get("duration", 0))
+
+  if action in ("believer", "song"):
+    Bridge.call("play_believer")
+    return {"ok": True, "action": "believer", "song": "Believer - Imagine Dragons"}
+  elif action in ("start", "tone"):
+    if "frequency" in message:
+      Bridge.call("trigger_buzzer", frequency, duration)
+    else:
+      Bridge.call("play_believer")
+    return {"ok": True, "action": action, "frequency": frequency, "duration": duration}
+  elif action in ("stop", "notone"):
+    Bridge.call("stop_buzzer")
+    return {"ok": True, "action": action}
+  else:
+    raise ValueError(f"Unsupported buzzer action: {action or '(empty)'}")
+
+def handle_buzzer(sid, message):
+  try:
+    status = _execute_buzzer_command(message)
+    ui.send_message("buzzer_status", message=status)
+  except (TypeError, ValueError) as e:
+    log.warning(f"Rejected buzzer command from UI client {sid}: {e}")
+    ui.send_message("buzzer_status", message={"ok": False, "error": str(e)})
+  except Exception as e:
+    log.error(f"Buzzer command failed: {e}")
+    ui.send_message("buzzer_status", message={"ok": False, "error": "MCU buzzer command failed"})
+
+ui.on_message("buzzer", handle_buzzer)
+
 # 1. Listen for Potentiometer Knob adjustments from MCU (sketch.ino)
 def handle_knob_change(percentage_str):
   try:
@@ -1141,30 +1177,43 @@ def _capture_investigation_image(command: dict):
 def _handle_hub_command(command: dict):
   log.info(f"Received hub command: {command}")
   if not isinstance(command, dict):
-    log.warning(f"Ignoring unsupported hub command: {command}")
+    log.warning(f"Ignoring invalid hub command format: {command}")
     return
 
-  command_type = command.get("type") or command.get("command")
-  if command_type == "capture_investigation_image":
-    # Off-thread: the MQTT callback must not block on camera + HTTP work.
+  # The hub sends the same value under both "type" and "command"; accept either
+  # so an older hub build still reaches the right branch.
+  cmd_type = str(command.get("type") or command.get("command") or "").strip().lower()
+  action = str(command.get("action", "")).strip().lower()
+
+  if cmd_type == "capture_investigation_image":
+    # Off-thread: the MQTT callback must not block on the approach (which
+    # drives the robot for ~1s) plus camera + HTTP work.
     threading.Thread(
       target=_capture_investigation_image, args=(command,),
       name="InvestigationCapture", daemon=True,
     ).start()
     return
 
-  if command_type != "robot_move":
+  if cmd_type == "robot_move":
+    try:
+      status = _execute_robot_command(command)
+      log.info(f"Executed hub robot command: {status}")
+      ui.send_message("robot_move_status", message=status)
+    except (TypeError, ValueError) as e:
+      log.warning(f"Rejected hub robot command: {e}")
+    except Exception as e:
+      log.error(f"Hub robot command failed: {e}")
+  elif cmd_type == "buzzer" or action in ("start", "stop", "tone", "notone", "believer", "song"):
+    try:
+      status = _execute_buzzer_command(command)
+      log.info(f"Executed hub buzzer command: {status}")
+      ui.send_message("buzzer_status", message=status)
+    except (TypeError, ValueError) as e:
+      log.warning(f"Rejected hub buzzer command: {e}")
+    except Exception as e:
+      log.error(f"Hub buzzer command failed: {e}")
+  else:
     log.warning(f"Ignoring unsupported hub command: {command}")
-    return
-
-  try:
-    status = _execute_robot_command(command)
-    log.info(f"Executed hub robot command: {status}")
-    ui.send_message("robot_move_status", message=status)
-  except (TypeError, ValueError) as e:
-    log.warning(f"Rejected hub robot command: {e}")
-  except Exception as e:
-    log.error(f"Hub robot command failed: {e}")
 
 if HUB_EVENT_INTERVAL_SEC > 0:
   log.info(f"Periodic hub reasoning ENABLED: one frame per "

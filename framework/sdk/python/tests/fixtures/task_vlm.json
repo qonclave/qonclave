@@ -1,0 +1,11 @@
+{
+  "task_id": "task-vlm",
+  "task": {
+    "complexity": 4,
+    "urgency": 2,
+    "privacy": "unrestricted",
+    "use_case": "perimeter",
+    "deadline_ms": 2000,
+    "remaining_ms": 2000
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "schema_version": "1.0",
+  "event_id": "evt-004",
+  "source_node_id": "cam-03",
+  "trigger": "motion_detected"
+}

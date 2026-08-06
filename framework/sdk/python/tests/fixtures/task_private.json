@@ -1,0 +1,11 @@
+{
+  "task_id": "task-private",
+  "task": {
+    "complexity": 3,
+    "urgency": 2,
+    "privacy": "no_egress",
+    "use_case": "ward_monitoring",
+    "deadline_ms": 5000,
+    "remaining_ms": 5000
+  }
+}

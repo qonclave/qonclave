@@ -1,0 +1,15 @@
+{
+  "schema_version": "1.7",
+  "event_id": "evt-003",
+  "source_node_id": "cam-02",
+  "timestamp": "2026-08-04T18:41:00+00:00",
+  "trigger": "person_detected",
+  "future_field": {
+    "added": "in a later 1.x"
+  },
+  "another_unknown": [
+    1,
+    2,
+    3
+  ]
+}

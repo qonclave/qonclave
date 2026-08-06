@@ -1,0 +1,9 @@
+{
+  "model": "EdgeEvent",
+  "expect": "roundtrip",
+  "preserve_unknown": [
+    "future_field",
+    "another_unknown"
+  ],
+  "why": "Forward compatibility. A v1.0 node MUST preserve fields added in v1.7 rather than dropping them, or a document loses data merely by transiting an older hop."
+}

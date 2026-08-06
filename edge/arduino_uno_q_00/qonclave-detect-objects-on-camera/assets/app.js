@@ -149,10 +149,30 @@ ui.on_message('robot_move_status', async status => {
   }
 });
 
+ui.on_message('buzzer_status', async status => {
+  const statusElement = document.getElementById('edgeBuzzerStatus');
+  if (!statusElement || !status) return;
+
+  if (!status.ok) {
+    statusElement.textContent = status.error || 'Buzzer command failed';
+    statusElement.className = 'robot-status error';
+  } else if (status.action === 'stop' || status.action === 'notone') {
+    statusElement.textContent = 'Buzzer Stopped';
+    statusElement.className = 'robot-status stopped';
+  } else if (status.action === 'believer') {
+    statusElement.textContent = 'Playing "Believer" Melody 🎵';
+    statusElement.className = 'robot-status active';
+  } else {
+    statusElement.textContent = `Tone: ${status.frequency || 440} Hz (${status.duration || 0} ms)`;
+    statusElement.className = 'robot-status active';
+  }
+});
+
 // Start the application
 initVirtualMatrix();
 initializeConfidenceSlider();
 initializeRobotConsole();
+initializeBuzzerConsole();
 updateFeedback(null);
 renderDetections();
 ui.send_message('request_icons', {});
@@ -374,4 +394,32 @@ function initializeRobotConsole() {
   stopButton.addEventListener('click', () => {
     ui.send_message('robot_move', { direction: 'STOP', magnitude: 1 });
   });
+}
+
+function initializeBuzzerConsole() {
+  const freqInput = document.getElementById('edgeBuzzerFreq');
+  const durInput = document.getElementById('edgeBuzzerDur');
+  const toneBtn = document.getElementById('btnEdgeBuzzerTone');
+  const believerBtn = document.getElementById('btnEdgeBuzzerBeliever');
+  const stopBtn = document.getElementById('btnEdgeBuzzerStop');
+
+  if (toneBtn) {
+    toneBtn.addEventListener('click', () => {
+      const frequency = Number.parseInt(freqInput.value, 10) || 440;
+      const duration = Number.parseInt(durInput.value, 10) || 0;
+      ui.send_message('buzzer', { action: 'start', frequency, duration });
+    });
+  }
+
+  if (believerBtn) {
+    believerBtn.addEventListener('click', () => {
+      ui.send_message('buzzer', { action: 'believer' });
+    });
+  }
+
+  if (stopBtn) {
+    stopBtn.addEventListener('click', () => {
+      ui.send_message('buzzer', { action: 'stop' });
+    });
+  }
 }

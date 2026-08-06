@@ -1,0 +1,6 @@
+{
+  "model": "CheckinRequest",
+  "expect": "json_cbor_equivalent",
+  "int_keys": true,
+  "why": "decode(cbor) == decode(json). This is what lets a C sensor and a Python hub disagree about serialization without disagreeing about meaning."
+}

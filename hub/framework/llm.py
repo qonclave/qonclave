@@ -19,6 +19,7 @@ Public API:
     result = backend.generate(          # with optional system prompt
         prompt, system="You are ...",
         max_new_tokens=256,
+        thinking=False,                 # suppress Qwen3's <think> block
     )
     backend.close()                     # release model memory
 
@@ -62,6 +63,9 @@ class LLMBackend:
         self._load_error: str | None = None
         self._load_attempted = False
         self._lock = threading.Lock()  # generation is serialized; model isn't reentrant
+        # None until the first thinking=False call tells us whether this
+        # tokenizer's chat template accepts enable_thinking.
+        self._thinking_kwarg_ok: bool | None = None
 
     # --- capability probe ---------------------------------------------------
 
@@ -139,11 +143,44 @@ class LLMBackend:
 
     # --- inference ----------------------------------------------------------
 
+    def _apply_chat_template(self, messages: list[dict], thinking: bool) -> str:
+        """
+        Render the chat template, suppressing Qwen3's <think> block when
+        thinking is False.
+
+        enable_thinking is a Qwen3 chat-template kwarg; tokenizers that predate
+        it raise TypeError. We probe once, then remember the answer so a hot
+        path doesn't retry (or re-warn) on every call.
+        """
+        tokenizer = self._model.tokenizer
+        kwargs = {"tokenize": False, "add_generation_prompt": True}
+
+        if not thinking and self._thinking_kwarg_ok is not False:
+            try:
+                chat_prompt = tokenizer.apply_chat_template(
+                    messages, enable_thinking=False, **kwargs,
+                )
+                self._thinking_kwarg_ok = True
+                return chat_prompt
+            except TypeError as e:
+                self._thinking_kwarg_ok = False
+                log.warning(
+                    "tokenizer does not accept enable_thinking (%s); replies may "
+                    "contain a <think> block", e,
+                )
+
+        return tokenizer.apply_chat_template(messages, **kwargs)
+
     def generate(self, prompt: str, system: str | None = None,
-                 max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS) -> dict:
+                 max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS,
+                 thinking: bool = True) -> dict:
         """
         Text-in, text-out generation. The optional system prompt sets the
         model's role / persona for the conversation.
+
+        thinking=False asks a hybrid-reasoning model (Qwen3) to skip its
+        <think> block — worth it when the reply is spoken aloud or shown
+        verbatim. Defaults to True so existing callers are unaffected.
 
         Always returns a dict and never raises for the caller; on an
         unsupported machine returns {"available": False, ...}.
@@ -165,9 +202,7 @@ class LLMBackend:
                     messages.append({"role": "system", "content": system})
                 messages.append({"role": "user", "content": prompt})
 
-                chat_prompt = self._model.tokenizer.apply_chat_template(
-                    messages, tokenize=False, add_generation_prompt=True,
-                )
+                chat_prompt = self._apply_chat_template(messages, thinking)
 
                 t0 = time.time()
                 output = self._model.generate(chat_prompt, max_new_tokens=max_new_tokens)

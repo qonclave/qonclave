@@ -1,0 +1,5 @@
+{
+  "model": "EdgeEvent",
+  "expect": "roundtrip",
+  "why": "A duty-cycled device has no trustworthy clock. An event with relative_time and no absolute timestamp MUST be accepted -- requiring absolute time would exclude the entire minimal profile."
+}

@@ -1,0 +1,17 @@
+{
+  "context": {
+    "audience_id": "hub-beta",
+    "audience_kind": "hub",
+    "tenant_id": "tenant-xyz",
+    "required_scope": "post_events",
+    "trusted_issuers": [
+      "hub-alpha"
+    ],
+    "now": "2026-08-04T12:00:00+00:00"
+  },
+  "expect": {
+    "valid": true,
+    "reason": "ok"
+  },
+  "why": "The core cross-hub case: an edge commissioned by hub-alpha posting events to hub-beta."
+}

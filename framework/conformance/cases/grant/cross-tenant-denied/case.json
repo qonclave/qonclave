@@ -1,0 +1,17 @@
+{
+  "context": {
+    "audience_id": "hub-beta",
+    "audience_kind": "hub",
+    "tenant_id": "tenant-other",
+    "required_scope": "post_events",
+    "trusted_issuers": [
+      "hub-alpha"
+    ],
+    "now": "2026-08-04T12:00:00+00:00"
+  },
+  "expect": {
+    "valid": false,
+    "reason": "cross_tenant_denied"
+  },
+  "why": "Deny by default. This is where SECURITY.md section 2 isolation is actually enforced, rather than being a property of network layout."
+}

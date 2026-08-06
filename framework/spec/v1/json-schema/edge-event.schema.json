@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qonclave.dev/spec/v1/edge-event.schema.json",
+  "title": "Qonclave edge event",
+  "description": "An observation escalated from a sensing node. COMMUNICATION.md §2. Sent over HTTP (POST /api/v1/events), MQTT (qonclave/events/inbound), or CoAP, in JSON or CBOR.",
+
+  "type": "object",
+  "properties": {
+    "schema_version": { "$ref": "common.schema.json#/$defs/schemaVersion" },
+    "event_id": { "$ref": "common.schema.json#/$defs/nodeId" },
+    "source_node_id": { "$ref": "common.schema.json#/$defs/nodeId" },
+    "tenant_id": { "$ref": "common.schema.json#/$defs/tenantId" },
+
+    "timestamp": { "$ref": "common.schema.json#/$defs/timestamp" },
+    "relative_time": { "$ref": "common.schema.json#/$defs/relativeTime" },
+    "hub_received_at": {
+      "description": "Stamped by the receiving hub, never by the sender. For a device reporting relative_time this is the only authoritative time the event has.",
+      "$ref": "common.schema.json#/$defs/timestamp"
+    },
+
+    "trigger": {
+      "description": "What caused the node to escalate. Values are application-defined; the framework does not interpret them. See dictionary.md for conventional ones.",
+      "type": "string",
+      "maxLength": 64
+    },
+    "confidence": {
+      "description": "The sending node's own confidence in its local (Tier 1) determination.",
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+
+    "payload": { "$ref": "common.schema.json#/$defs/mediaPayload" },
+
+    "task": {
+      "description": "Present when this event is an escalation that expects inference at a higher tier. Absent for pure telemetry.",
+      "$ref": "common.schema.json#/$defs/taskDescriptor"
+    },
+
+    "metadata": {
+      "description": "Arbitrary sensor readings and device state. A minimal-profile device with no media payload carries its whole observation here.",
+      "type": "object",
+      "additionalProperties": true
+    },
+
+    "power": { "$ref": "common.schema.json#/$defs/power" },
+    "signature": { "$ref": "common.schema.json#/$defs/signature" }
+  },
+
+  "required": ["schema_version", "event_id", "source_node_id", "trigger"],
+
+  "anyOf": [
+    { "required": ["timestamp"] },
+    { "required": ["relative_time"] }
+  ],
+
+  "$comment": "anyOf enforces that an event carries SOME notion of when it happened. Profiles full and constrained MUST send `timestamp`; minimal MAY send `relative_time` instead. additionalProperties is true by design: forward compatibility requires receivers to tolerate fields added in later 1.x versions.",
+  "additionalProperties": true
+}
