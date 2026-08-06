@@ -172,13 +172,14 @@ merge on either side of the framework/`hub/` split can tell what it's actually c
 | `vlm.py`, `llm.py` | `inference/local/geniex.py` | ⬜ not started |
 | `face_id/` | `inference/local/face_id/` | ⬜ not started |
 | `pose/`, `qnn_session.py` | `inference/local/` — didn't exist when this table was first written | ⬜ not started |
-| `device_registry.py` | `discovery/` — didn't exist when this table was first written | ⬜ not started |
+| `device_registry.py` | `discovery/registry.py` — new module; `peers.py`/`health.py` turned out to be placement-scoped (federation candidates, heartbeat liveness), not a general sighting ledger | ✅ done — RTT probing stays hub-local, see below |
 | edge-side `edge_confidence` threshold | a `PlacementPolicy` — no longer hardcoded | ⬜ not started; `edge/` imports nothing from `qonclave.*` yet |
 | `icons.py` | **stays app-level** | n/a — correctly not lifted |
 
-`hub/` is no longer untouched: `adapter.py`, `events.py`, `transport.py`, and now `policy.py` are
-thin shims over the SDK today, proved by `hub/tests/` running against all four. Everything else in
-the table above is still the pre-convergence, framework-agnostic implementation.
+`hub/` is no longer untouched: `adapter.py`, `events.py`, `transport.py`, `policy.py`, and now
+`device_registry.py` are thin shims over the SDK today, proved by `hub/tests/` running against all
+five. Everything else in the table above is still the pre-convergence, framework-agnostic
+implementation.
 
 ### `policy.py` was lifted, then reverted, then redone (2026-08-06)
 
@@ -209,6 +210,27 @@ track hooks, `hub/framework/policy.py` is now a re-export shim (same shape as `a
 return is converted to a wire dict via `adapter.command_to_wire()` before it reaches MQTT or the
 HTTP response — the one place a `qonclave.core.models.Command` object would otherwise leak past
 the framework boundary.
+
+### `device_registry.py`'s assumed destination didn't exist (2026-08-06)
+
+The migration plan for this file assumed `discovery/peers.py` and `discovery/health.py` were its
+SDK destination — a reasonable guess from their location, wrong on inspection. Both are scoped to
+placement: `peers.py` is "the peer registry, **including grants held for each**... the entirety of
+what federation adds to placement," and `health.py` is heartbeat liveness that "feeds placement: a
+peer whose heartbeat has lapsed stops being a candidate tier." Neither carried an `Origin:` comment
+pointing at `device_registry.py`, unlike `discovery/announce.py`/`browse.py` (confirmed real
+targets for `discovery.py`, a later migration) or `inference/local/geniex.py` (confirmed for
+`vlm.py`/`llm.py`).
+
+`device_registry.py` answers a plainer, placement-independent question — "what has this deployment
+ever heard from" — for an operator-facing view (`/user/network`), not placement candidate
+selection. Rather than stretch `peers.py` past its documented scope, it got a new module:
+`qonclave.discovery.registry`. `hub/framework/device_registry.py` is now a re-export shim over it
+(same shape as `adapter.py`), translating that module's spec-consistent `node_id` back to this
+file's historical `device_id` field name, since `/user/devices` and `network.html` already speak
+it. RTT probing (`_ping_once`/`start_rtt_prober`) stayed hub-local — deployment-specific (a
+subprocess `ping` call needs OS privileges that don't make sense on every binding) — reading the
+new module's `probe_targets()`/`record_rtt()` seam instead of touching its internals directly.
 
 Three more of the table's rows are worth explaining.
 
