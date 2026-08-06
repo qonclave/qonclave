@@ -131,6 +131,25 @@ def history(track_id: int) -> list:
         return list(buf) if buf else []
 
 
+def known_identity(track_id: int) -> "str | None":
+    """The established name for one track, or None if it was never identified.
+
+    Sticky, by the same rule snapshot() documents: once a track matched a known
+    face, later weak crops reporting unknown/no_face must not erase the name --
+    and a person turning away or collapsing is exactly when those weak crops
+    arrive. Investigations use this to name the person in an alert when the
+    posture sample that triggered them carried no face result.
+    """
+    with _lock:
+        buf = _tracks.get(track_id)
+        if not buf:
+            return None
+        for sample in reversed(buf):
+            if sample.get("status") == "known" and sample.get("identity"):
+                return sample["identity"]
+    return None
+
+
 def latest_frame(track_id: int) -> "str | None":
     """Filename of the track's latest annotated frame on disk, if retention
     is enabled and one was written."""

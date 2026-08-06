@@ -28,10 +28,13 @@ class Clock:
 
 class FakeVLM:
     def __init__(self, parsed=None, available=True):
+        # Shaped like a compliant reply: exactly two short sentences, the first
+        # naming the person, no numbers or sensor terms.
         self.parsed = parsed if parsed is not None else {
             "classification": "EMERGENCY_LIKELY",
             "confidence": 0.9,
-            "observations": ["person on the floor"],
+            "observations": ["Jogendra is lying on the floor by the sofa.",
+                             "The room is otherwise empty."],
             "recommended_action": "Check on them now.",
         }
         self.available = available
@@ -133,8 +136,19 @@ def test_one_event_one_capture_one_vlm_call_one_sms(tmp_path, monkeypatch):
     result = manager.on_capture("event_001", b"fresh-hd-frame")
     assert result["ok"] is True
     assert len(vlm.calls) == 1
-    assert "Jogendra" in vlm.calls[0]["prompt"]
-    assert "DANGER" in vlm.calls[0]["prompt"]
+
+    prompt = vlm.calls[0]["prompt"]
+    # The prompt must name the person and forbid the generic fallbacks, or the
+    # reply comes back as "A person appears to be..." with no name in it.
+    assert "Jogendra" in prompt
+    assert '"a person"' in prompt
+    # ...and it must NOT hand over telemetry to parrot back. The model was
+    # reporting "The torso angle is 12.0 degrees from vertical" in alerts meant
+    # for a relative, because the prompt fed it exactly that.
+    assert "torso" not in prompt.lower()
+    assert "DANGER" not in prompt
+    assert "80.0" not in prompt  # the analysis() fixture's torso_angle
+
     assert len(sms.sent) == 1
     assert "EMERGENCY" in sms.sent[0].message
     assert "Jogendra" in sms.sent[0].message
@@ -244,6 +258,98 @@ def test_safe_likely_sends_no_sms(tmp_path, monkeypatch):
     assert manager.snapshot()["state"] == "COOLDOWN"
 
 
+def test_alert_is_two_plain_sentences_with_no_telemetry(tmp_path, monkeypatch):
+    # The complaint that prompted this: alerts read like sensor dumps --
+    # "The torso angle is 12.0 degrees from vertical, which may indicate a
+    # fall.; ..." -- four clauses of engineering, semicolon-joined.
+    manager, clock, vlm, sms, _ = make_manager(tmp_path, monkeypatch)
+    manager.observe(4, b"jpeg", analysis())
+    manager.on_capture("event_001", b"frame")
+
+    outcome = manager.snapshot()["last_result"]
+    assert len(outcome["observations"]) == 2  # capped, not merely requested
+    message = sms.sent[0].message
+    assert ";" not in message
+    assert "torso" not in message.lower()
+    assert "degree" not in message.lower()
+    assert message == ("EMERGENCY: Jogendra is lying on the floor by the sofa. "
+                       "Check on them now.")
+
+
+def test_extra_observations_are_truncated_to_two(tmp_path, monkeypatch):
+    # A model that ignores "exactly two" must not produce a wall of text.
+    vlm = FakeVLM(parsed={
+        "classification": "EMERGENCY_LIKELY", "confidence": 0.9,
+        "observations": ["One.", "Two.", "Three.", "Four."],
+        "recommended_action": "Go now.",
+    })
+    manager, _, _, sms, _ = make_manager(tmp_path, monkeypatch, vlm=vlm)
+    manager.observe(4, b"jpeg", analysis())
+    manager.on_capture("event_001", b"frame")
+
+    assert manager.snapshot()["last_result"]["observations"] == ["One.", "Two."]
+    assert "Three." not in sms.sent[0].message
+
+
+def test_name_is_added_when_the_model_omits_it(tmp_path, monkeypatch):
+    # The prompt demands the name, but an emergency text that never says WHO is
+    # useless, so the name is guaranteed rather than trusted.
+    vlm = FakeVLM(parsed={
+        "classification": "EMERGENCY_LIKELY", "confidence": 0.9,
+        "observations": ["A person is slumped on the floor.", "The room is dim."],
+        "recommended_action": "Check now.",
+    })
+    manager, _, _, sms, _ = make_manager(tmp_path, monkeypatch, vlm=vlm)
+    manager.observe(4, b"jpeg", analysis())
+    manager.on_capture("event_001", b"frame")
+    assert sms.sent[0].message.startswith("EMERGENCY: Jogendra: ")
+
+
+def test_name_is_not_duplicated_when_the_model_complies(tmp_path, monkeypatch):
+    manager, _, _, sms, _ = make_manager(tmp_path, monkeypatch)
+    manager.observe(4, b"jpeg", analysis())
+    manager.on_capture("event_001", b"frame")
+    assert sms.sent[0].message.count("Jogendra") == 1
+
+
+def test_unidentified_person_is_never_called_unknown(tmp_path, monkeypatch):
+    # posture.py reports the literal string "Unknown" with no face match. An
+    # alert reading "Unknown may need help" is worse than saying nothing about
+    # who, so the placeholder must not leak into the prompt or the SMS.
+    vlm = FakeVLM(parsed={
+        "classification": "EMERGENCY_LIKELY", "confidence": 0.9,
+        "observations": ["An unidentified person is on the floor.", "Lights on."],
+        "recommended_action": "Check now.",
+    })
+    manager, _, _, sms, _ = make_manager(tmp_path, monkeypatch, vlm=vlm)
+    manager.observe(4, b"jpeg", analysis(identity="Unknown"))
+    manager.on_capture("event_001", b"frame")
+
+    prompt = vlm.calls[0]["prompt"]
+    assert "could not identify" in prompt
+    assert "flagged Unknown" not in prompt
+    assert "Unknown" not in sms.sent[0].message
+
+
+def test_name_is_recovered_from_the_track_when_the_sample_has_none(tmp_path,
+                                                                  monkeypatch):
+    # A collapsing person stops being face-recognizable, so the triggering
+    # sample often carries no identity -- but the hub knew them seconds ago.
+    from framework import track_store
+
+    track_store.clear()
+    track_store.record(4, {"identity": "Jogendra", "status": "known"}, None)
+    try:
+        manager, _, vlm, sms, _ = make_manager(tmp_path, monkeypatch)
+        manager.observe(4, b"jpeg", analysis(identity="Unknown"))
+        manager.on_capture("event_001", b"frame")
+
+        assert manager.snapshot()["last_result"]["identity"] == "Jogendra"
+        assert "Jogendra" in vlm.calls[0]["prompt"]
+    finally:
+        track_store.clear()
+
+
 def test_low_confidence_safe_likely_still_asks_for_a_check(tmp_path, monkeypatch):
     # A hedged "looks fine" is not evidence that someone is fine. Posture
     # already saw a persistent DANGER, so an unconvinced SAFE_LIKELY must
@@ -305,7 +411,7 @@ def test_dashboard_manual_trigger_presents_result_without_sms(tmp_path, monkeypa
 
     manager.on_capture("event_001", b"fresh-frame")
     assert len(vlm.calls) == 1
-    assert "operator" in vlm.calls[0]["prompt"]
+    assert "on-demand check" in vlm.calls[0]["prompt"]
 
     snap = manager.snapshot()
     # Manual checks present on the dashboard, don't SMS, and skip cooldown.
@@ -340,9 +446,13 @@ def test_sms_capture_texts_vlm_reasoning_to_sender(tmp_path, monkeypatch):
     assert len(sms.sent) == 1
     reply = sms.sent[0]
     assert reply.recipient == "+15551234567"
-    assert "EMERGENCY_LIKELY" in reply.message
-    assert "person on the floor" in reply.message
+    # Plain prose a relative can read, not the raw classification token -- but
+    # the severity still has to survive, or an emergency reads as an all-clear.
+    assert reply.message.startswith("EMERGENCY: ")
+    assert "EMERGENCY_LIKELY" not in reply.message
+    assert "Jogendra is lying on the floor by the sofa." in reply.message
     assert "Check on them now." in reply.message
+    assert ";" not in reply.message  # the old "; ".join formatting is gone
 
 
 def test_manual_trigger_during_cooldown_resumes_cooldown(tmp_path, monkeypatch):
@@ -390,7 +500,7 @@ def test_policy_sms_capture_keyword(tmp_path, monkeypatch):
     policy.on_investigation_capture("event_001", b"fresh-frame")
     assert len(sms.sent) == 1
     assert sms.sent[0].recipient == "+15551234567"
-    assert "EMERGENCY_LIKELY" in sms.sent[0].message
+    assert sms.sent[0].message.startswith("EMERGENCY: ")
 
 
 def test_evidence_buffer_is_frozen_at_trigger(tmp_path, monkeypatch):

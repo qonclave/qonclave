@@ -27,6 +27,12 @@ A posture sample whose state is SUSPICIOUS/DANGER and whose abnormal timer
 
 The VLM's verdict never diagnoses a medical condition: it only picks one of
 three coarse classifications, and the human recipient acts on the SMS.
+
+The reply is written for a worried relative reading a phone, so the prompt
+demands exactly two short plain-English sentences, naming the person, with no
+numbers or sensor terms. Posture telemetry reaches the model only as a
+qualitative hint (_CUE_PHRASES) -- handed the raw torso angle, it reported
+"The torso angle is 12.0 degrees from vertical" straight back into the alert.
 """
 
 from __future__ import annotations
@@ -37,7 +43,7 @@ import os
 import threading
 import time
 
-from framework import events, transport
+from framework import events, track_store, transport
 
 log = logging.getLogger("qonclave.hub")
 
@@ -46,31 +52,56 @@ log = logging.getLogger("qonclave.hub")
 INVESTIGATE_MAX_NEW_TOKENS = 384
 
 INVESTIGATE_PROMPT_TEMPLATE = (
-    "You are assisting a home-safety monitor. A fall-detection system flagged "
-    "{identity} ({posture_context}). The image shows the scene now"
-    "{history_note}.\n"
-    "You cannot and must not diagnose any medical condition; only assess how "
-    "the scene looks. Respond with ONLY a JSON object, no other text, of "
-    "exactly this form:\n"
+    "You are helping a home-safety monitor decide whether to wake a human.\n"
+    "{subject_line}"
+    "Sensor context, for your judgement ONLY: {posture_hint}. Never mention, "
+    "quote or paraphrase that context, and never put a number, angle, "
+    "measurement, percentage or sensor word in your reply -- it is read by a "
+    "worried relative on a phone, not by an engineer.\n"
+    "Look at the image{history_note} and describe only what you can SEE.\n"
+    "You cannot and must not diagnose any medical condition.\n"
+    "Respond with ONLY a JSON object, no other text, of exactly this form:\n"
     '{{"classification": "EMERGENCY_LIKELY" or "SAFE_LIKELY" or "UNCERTAIN", '
     '"confidence": a number from 0 to 1, '
-    '"observations": ["up to 4 short factual observations about the person and scene"], '
-    '"recommended_action": "one short sentence for the human operator"}}\n'
-    "Use EMERGENCY_LIKELY only if the person appears collapsed, unresponsive, "
-    "or in visible distress; SAFE_LIKELY if they appear to be resting, "
-    "exercising, or otherwise fine; UNCERTAIN if you cannot tell."
+    '"observations": ["<first sentence>", "<second sentence>"], '
+    '"recommended_action": "one short sentence telling the reader what to do"}}\n'
+    "observations MUST be EXACTLY TWO short plain-English sentences, each "
+    "under 100 characters. The first says {subject_requirement}. The second "
+    "says what the surroundings show. No lists, no measurements, no jargon.\n"
+    "Use EMERGENCY_LIKELY only if {subject_short} appears collapsed, "
+    "unresponsive, or in visible distress; SAFE_LIKELY if they appear to be "
+    "resting, exercising, or otherwise fine; UNCERTAIN if you cannot tell."
 )
 
+# Plain-English rendering of the posture cues, so the prompt can ground the
+# VLM without handing it numbers to parrot back. The old prompt passed the raw
+# torso angle and the model dutifully reported "The torso angle is 12.0 degrees
+# from vertical, which may indicate a fall" -- sensor telemetry, in an alert
+# meant for a family member.
+_CUE_PHRASES = {
+    "torso_horizontal": "leaning far over to one side",
+    "head_below_shoulders": "head hanging down towards the chest",
+    "body_low": "body down near floor level",
+    "box_wider_than_tall": "lying stretched out rather than upright",
+    "rapid_downward_transition": "having dropped suddenly",
+    "minimal_movement": "not moving at all",
+}
+
 MANUAL_INVESTIGATE_PROMPT = (
-    "You are assisting a home-safety monitor. A human operator asked for an "
-    "on-demand check of this camera scene right now{history_note}.\n"
-    "You cannot and must not diagnose any medical condition; only describe "
-    "and assess how the scene looks. Respond with ONLY a JSON object, no "
-    "other text, of exactly this form:\n"
+    "You are helping a home-safety monitor. Someone asked for an on-demand "
+    "check of this camera scene right now{history_note}.\n"
+    "Describe only what you can SEE. Never put a number, angle, measurement, "
+    "percentage or sensor word in your reply -- it is read on a phone.\n"
+    "You cannot and must not diagnose any medical condition.\n"
+    "Respond with ONLY a JSON object, no other text, of exactly this form:\n"
     '{{"classification": "EMERGENCY_LIKELY" or "SAFE_LIKELY" or "UNCERTAIN", '
     '"confidence": a number from 0 to 1, '
-    '"observations": ["up to 4 short factual observations about any people and the scene"], '
-    '"recommended_action": "one short sentence for the human operator"}}\n'
+    '"observations": ["<first sentence>", "<second sentence>"], '
+    '"recommended_action": "one short sentence telling the reader what to do"}}\n'
+    "observations MUST be EXACTLY TWO short plain-English sentences, each "
+    "under 100 characters: the first says who is visible and what they are "
+    "doing, the second says what the surroundings show. If you can see no one, "
+    "say so plainly.\n"
     "Use EMERGENCY_LIKELY only if someone appears collapsed, unresponsive, or "
     "in visible distress; SAFE_LIKELY if the scene appears fine (including an "
     "empty room); UNCERTAIN if you cannot tell."
@@ -96,6 +127,44 @@ def _env_float(name: str, default: float) -> float:
         return float(os.environ.get(name, default))
     except (TypeError, ValueError):
         return default
+
+
+def _two_sentences(raw) -> list[str]:
+    """Normalize the VLM's observations to at most two clean sentences.
+
+    The prompt asks for exactly two, but a model that returns four (or one
+    blob, or a bare string) must not produce a wall of text in an SMS -- so the
+    cap is enforced here rather than trusted.
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        items = [raw]
+    elif isinstance(raw, list):
+        items = raw
+    else:
+        items = [str(raw)]
+    out = []
+    for item in items:
+        text = str(item).strip().strip(";").strip()
+        if text:
+            out.append(text)
+        if len(out) == 2:
+            break
+    return out
+
+
+def _display_name(identity) -> str | None:
+    """A real name to address the person by, or None if there isn't one.
+
+    posture.py reports the literal string "Unknown" when no face matched, and
+    an alert must never read "Unknown may need help" -- so that placeholder is
+    treated as absence, not as a name.
+    """
+    name = (identity or "").strip()
+    if not name or name.casefold() == "unknown":
+        return None
+    return name
 
 
 def compose_investigation_image(main_jpeg: bytes, history: list) -> bytes:
@@ -194,7 +263,14 @@ class InvestigationManager:
         if not analysis:
             return None
         now = self._clock()
-        identity = analysis.get("identity") or "Unknown"
+        # Posture runs for unidentified tracks too, and a collapsing person is
+        # exactly who stops being face-recognizable -- so when the sample that
+        # triggered this carries no name, recover the one this track_id was
+        # established under. Without it the alert says "Unknown" about someone
+        # the hub identified thirty seconds earlier.
+        identity = (_display_name(analysis.get("identity"))
+                    or track_store.known_identity(track_id)
+                    or "Unknown")
         key = identity.casefold()
         state = analysis.get("state")
 
@@ -423,27 +499,55 @@ class InvestigationManager:
         else:
             self._run_vlm(event, image_bytes, source)
 
+    def _posture_hint(self, event) -> str:
+        """Qualitative, number-free description of why posture flagged this."""
+        analysis = event.get("analysis") or {}
+        breakdown = analysis.get("score_breakdown") or {}
+        phrases = [_CUE_PHRASES[name] for name, pts in breakdown.items()
+                   if pts and pts > 0 and name in _CUE_PHRASES]
+        if not phrases:
+            phrases = ["holding an unusual posture"]
+        lead = ("the movement sensor has flagged this person for a while"
+                if event.get("posture_state") == "DANGER"
+                else "the movement sensor has flagged this person")
+        return f"{lead}: {', '.join(phrases)}"
+
     def _prompt_for(self, event) -> str:
+        # Parenthetical, so it reads correctly mid-sentence in both templates.
         history_note = (
-            "; a strip of earlier snapshots (oldest to newest) is attached below it"
+            " (a strip of earlier snapshots, oldest to newest, is attached below it)"
             if event.get("history") else ""
         )
         if event.get("manual"):
             return MANUAL_INVESTIGATE_PROMPT.format(history_note=history_note)
-        analysis = event.get("analysis") or {}
-        breakdown = analysis.get("score_breakdown") or {}
-        cues = [name.replace("_", " ") for name, pts in breakdown.items() if pts and pts > 0]
-        posture_context = (
-            f"posture state {event['posture_state']}, "
-            f"abnormal for {analysis.get('abnormal_duration_seconds', 0)}s, "
-            f"motionless for {analysis.get('duration_seconds', 0)}s, "
-            f"torso angle {analysis.get('torso_angle', '?')} deg from vertical"
-        )
-        if cues:
-            posture_context += f"; cues: {', '.join(cues)}"
+
+        name = _display_name(event.get("identity"))
+        if name:
+            subject_line = f"The monitor flagged {name}.\n"
+            subject_requirement = (
+                f'what {name} is doing and what position they are in, and it '
+                f'MUST begin with the name "{name}" -- never "a person", '
+                f'"an individual", "someone", "the person" or "a man"/"a woman" '
+                f'in place of the name'
+            )
+            subject_short = name
+        else:
+            # No face match for this track, so there is genuinely no name to
+            # use; say that plainly rather than inventing one.
+            subject_line = ("The monitor flagged someone it could not "
+                            "identify.\n")
+            subject_requirement = (
+                'what the person is doing and what position they are in, '
+                'referring to them as "an unidentified person" because no name '
+                'is known'
+            )
+            subject_short = "the person"
+
         return INVESTIGATE_PROMPT_TEMPLATE.format(
-            identity=event["identity"],
-            posture_context=posture_context,
+            subject_line=subject_line,
+            subject_requirement=subject_requirement,
+            subject_short=subject_short,
+            posture_hint=self._posture_hint(event),
             history_note=history_note,
         )
 
@@ -501,12 +605,25 @@ class InvestigationManager:
             confidence = float(parsed.get("confidence"))
         except (TypeError, ValueError):
             confidence = None
-        observations = parsed.get("observations")
-        if not isinstance(observations, list):
-            observations = [str(observations)] if observations else []
+        observations = _two_sentences(parsed.get("observations"))
         recommended = str(parsed.get("recommended_action") or "").strip()
 
         identity = event["identity"]
+        name = _display_name(identity)
+        who = name or "someone the camera could not identify"
+        # The alert text IS the VLM's first sentence: it already names the
+        # person and says what position they are in, which is the whole of what
+        # a relative needs. Only when there is no usable sentence (VLM
+        # unavailable, unparseable) do we fall back to naming them ourselves.
+        headline = observations[0] if observations else f"{who} may need help."
+        if not headline.endswith((".", "!", "?")):
+            headline += "."
+        # The prompt demands the name, but a model that ignores it must not
+        # produce an emergency text that never says WHO -- the first thing the
+        # recipient needs. Only prepended when the sentence lacks it, so a
+        # compliant reply isn't made to stutter.
+        if name and name.casefold() not in headline.casefold():
+            headline = f"{name}: {headline}"
         message = None
         recipient = events.latest_device_id() or "unknown"
         if event.get("manual"):
@@ -515,13 +632,16 @@ class InvestigationManager:
             # present the result there.
             recipient = event.get("notify_recipient")
             if recipient:
-                summary = "; ".join(observations) if observations else "no details"
-                message = (f"VLM check [{classification}"
-                           + (f" {confidence:.2f}" if confidence is not None else "")
-                           + f"]: {summary}."
-                           + (f" {recommended}" if recommended else ""))
+                # Plain-English severity rather than the raw classification
+                # token: the reply goes to a phone, but dropping the verdict
+                # entirely would make an emergency read like an all-clear.
+                prefix = {"EMERGENCY_LIKELY": "EMERGENCY: ",
+                          "UNCERTAIN": "Not certain: "}.get(classification, "")
+                body = " ".join(p for p in (*observations, recommended) if p).strip()
+                message = (prefix + body).strip() \
+                    or "Camera checked, but there were no details to report."
                 if not result.get("available") and not frame_name:
-                    message = ("VLM check failed: no camera image could be "
+                    message = ("Camera check failed: no image could be "
                                "captured. Please check the camera feed directly.")
         elif (classification == "SAFE_LIKELY"
                 and (confidence is None or confidence < SAFE_MIN_CONFIDENCE)):
@@ -533,18 +653,13 @@ class InvestigationManager:
                      "-> escalating to a manual check", event_id, confidence,
                      SAFE_MIN_CONFIDENCE)
             classification = "UNCERTAIN"
-            message = (f"Please check on {identity}: prolonged "
-                       f"{event['posture_state'].lower()} posture detected and "
-                       "automatic verification was not confident. "
+            message = (f"Please check on {who}. {headline} "
                        f"{recommended}").strip()
         elif classification == "EMERGENCY_LIKELY":
-            message = (f"EMERGENCY: {identity} may need help "
-                       f"({event['reason'].replace('_', ' ')}). "
+            message = (f"EMERGENCY: {headline} "
                        f"{recommended or 'Please check on them immediately.'}")
         elif classification == "UNCERTAIN":
-            message = (f"Please check on {identity}: prolonged "
-                       f"{event['posture_state'].lower()} posture detected and "
-                       "automatic verification was inconclusive. "
+            message = (f"Please check on {who}. {headline} "
                        f"{recommended}").strip()
         sms_sent = False
         if message is not None and self.sms is not None:
@@ -584,13 +699,12 @@ class InvestigationManager:
             "received": True,
             "hub_verified": classification != "SAFE_LIKELY",
             "hub_confidence": confidence,
-            "alert": (f"Manual check {classification}"
-                      f" ({event['reason'].replace('_', ' ')})"
-                      if event.get("manual") else
-                      f"Investigation {classification}: {identity} "
-                      f"({event['reason'].replace('_', ' ')})"),
-            "reasoning_text": "; ".join(observations) +
-                              (f" -> {recommended}" if recommended else ""),
+            "alert": (f"Manual check {classification}" if event.get("manual")
+                      else f"Investigation {classification}: {who}"),
+            # Plain prose, space-joined: the old "; ".join produced
+            # "Sentence one.; Sentence two." on the dashboard and in SMS.
+            "reasoning_text": " ".join(
+                p for p in (*observations, recommended) if p),
             "reasoning_available": bool(result.get("available")),
             "latency_s": result.get("latency_s"),
             "device_id": events.latest_device_id(),
