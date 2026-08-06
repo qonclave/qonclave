@@ -29,7 +29,7 @@ from analysis_client import AnalysisClient
 from person_centering import PersonCenteringController, horizontal_bearing_degrees
 from person_tracker import PersonTracker
 from track_crop import crop_persons, remove_crop_locally, save_crop_locally
-from track_overlay import draw_track_overlay
+from track_overlay import draw_track_overlay_bgr, encode_jpeg
 
 load_dotenv()
 
@@ -229,13 +229,16 @@ if WEB_UI_USERNAME and WEB_UI_PASSWORD:
 else:
   log.warning("WEB_UI_USERNAME/WEB_UI_PASSWORD not set: Web UI is running WITHOUT authentication.")
 
-# --- Live preview with track-ID overlay: send_detections_to_ui redraws each
-# tracked person's box + "Track N: <name/status>" label onto the current
-# frame (track_overlay.draw_track_overlay) and caches it here; /track-preview
-# streams that cache as MJPEG. /camera-preview is the page the frontend
-# iframe actually loads (an <img> pointed at /track-preview) -- kept as its
-# own indirection so what the preview shows can change without an index.html
-# edit.
+# --- Live preview with track-ID overlay ------------------------------------
+# The preview runs at camera rate, not detection rate: every frame the
+# detection brick pulls from the camera is also handed to a publisher thread
+# (via the capture() tee below), which draws the last-known track boxes on it
+# and publishes it for /track-preview to stream as MJPEG. Detection (~1.5 Hz
+# on this board) only refreshes which boxes get drawn -- video smoothness no
+# longer waits on inference, matching how the stock EI runner UI behaves.
+# /camera-preview is the page the frontend iframe actually loads (an <img>
+# pointed at /track-preview) -- kept as its own indirection so what the
+# preview shows can change without an index.html edit.
 _latest_track_preview: bytes | None = None
 # Bumped on every publish so a streaming client can tell "new frame" from "same
 # frame again" without comparing bytes, and woken the moment a frame lands
@@ -243,11 +246,97 @@ _latest_track_preview: bytes | None = None
 # to its interval and re-sent unchanged ones in between.
 _track_preview_seq = 0
 _track_preview_cond = threading.Condition()
-# One frame is published per completed detection, so a gap much longer than that
-# means the pipeline stalled. Re-send the last frame then: it keeps the MJPEG
-# connection alive, and gives the generator a yield point at which a client that
-# has gone away can be noticed instead of blocking its worker thread forever.
+# A gap much longer than a frame interval means the camera stalled. Re-send the
+# last frame then: it keeps the MJPEG connection alive, and gives the generator
+# a yield point at which a client that has gone away can be noticed instead of
+# blocking its worker thread forever.
 _PREVIEW_KEEPALIVE_SEC = 2.0
+# Cap on published preview fps; frames above the cap are skipped before any
+# encode work happens. Bounds the encode cost (~10ms/frame on this board) and
+# per-client bandwidth while staying far above the ~1.5 fps detection rate.
+PREVIEW_MAX_FPS = float(os.environ.get("PREVIEW_MAX_FPS", "15"))
+
+# Last-known overlay state, written by send_detections_to_ui, read by the
+# publisher thread. Boxes older than the max age are dropped rather than pinned
+# onto live video -- e.g. when the person leaves or the runner stalls.
+_overlay_state_lock = threading.Lock()
+_overlay_tracks: list = []
+_overlay_labels: dict = {}
+_overlay_updated_at = 0.0
+_OVERLAY_MAX_AGE_SEC = 3.0
+
+# Latest raw camera frame, written by the capture() tee on the brick's camera
+# loop thread. Latest-wins: the publisher skips frames it can't keep up with.
+_camera_frame = None
+_camera_frame_seq = 0
+_camera_frame_cond = threading.Condition()
+
+# Cap on frames handed to the detection brick (and so to the EI runner). The
+# runner decodes, re-encodes, and writes to disk every frame it receives but
+# infers at only ~1.5/s on this board, so frames beyond that burn a large slice
+# of gst + node CPU on work that is thrown away. 3 fps stays comfortably above
+# the inference rate (measured: gating to 3 does not lower detections/sec)
+# while cutting the wasted decode work. 0 disables the gate.
+RUNNER_MAX_FPS = float(os.environ.get("RUNNER_MAX_FPS", "3"))
+_next_runner_frame_at = 0.0
+
+_original_capture = camera.capture
+
+def _capture_tee(*args, **kwargs):
+  """camera.capture wrapper: publish every frame to the preview thread, but
+  pass only RUNNER_MAX_FPS of them through to the detection brick. Returning
+  None takes the brick's normal no-frame path (brief sleep, poll again). The
+  brick stays the camera's only reader; runs on its camera-loop thread only,
+  so the gate state needs no lock."""
+  global _camera_frame, _camera_frame_seq, _next_runner_frame_at
+  frame = _original_capture(*args, **kwargs)
+  if frame is None:
+    return None
+  with _camera_frame_cond:
+    _camera_frame = frame
+    _camera_frame_seq += 1
+    _camera_frame_cond.notify_all()
+  if RUNNER_MAX_FPS > 0:
+    now = time.monotonic()
+    if now < _next_runner_frame_at:
+      return None
+    _next_runner_frame_at = now + 1.0 / RUNNER_MAX_FPS
+  return frame
+
+camera.capture = _capture_tee
+
+def _preview_publisher():
+  global _latest_track_preview, _track_preview_seq
+  last_seq = 0
+  min_interval = 1.0 / PREVIEW_MAX_FPS if PREVIEW_MAX_FPS > 0 else 0.0
+  next_publish_at = 0.0
+  while True:
+    with _camera_frame_cond:
+      _camera_frame_cond.wait_for(lambda: _camera_frame_seq != last_seq)
+      frame = _camera_frame
+      last_seq = _camera_frame_seq
+    now = time.monotonic()
+    if now < next_publish_at:
+      continue
+    next_publish_at = now + min_interval
+    with _overlay_state_lock:
+      tracks = _overlay_tracks
+      labels = _overlay_labels
+      overlay_fresh = (now - _overlay_updated_at) <= _OVERLAY_MAX_AGE_SEC
+    if tracks and overlay_fresh:
+      # Copy: the brick's camera loop may still be JPEG-encoding this same
+      # array for the runner, and drawing mutates it.
+      jpeg = draw_track_overlay_bgr(frame.copy(), tracks, labels)
+    else:
+      jpeg = encode_jpeg(frame)
+    if jpeg is None:
+      continue
+    with _track_preview_cond:
+      _latest_track_preview = jpeg
+      _track_preview_seq += 1
+      _track_preview_cond.notify_all()
+
+threading.Thread(target=_preview_publisher, name="PreviewPublisher", daemon=True).start()
 
 def _camera_preview_page(_request):
   return HTMLResponse(
@@ -636,21 +725,21 @@ def send_detections_to_ui(detections: dict, frame: bytes | None = None):
     if pose_snapshot:
       ui.send_message("pose_status", message=pose_snapshot)
 
-  if frame:
-    global _latest_track_preview, _track_preview_seq
-    if person_tracks:
-      labels = {
-        tid: f"Track {tid}: {entry['name']}" if entry["status"] == "known"
-             else f"Track {tid}: {entry['status'].replace('_', ' ').capitalize()}"
-        for tid, entry in identity_snapshot.items()
-      }
-      preview_frame = draw_track_overlay(frame, person_tracks, labels)
-    else:
-      preview_frame = frame
-    with _track_preview_cond:
-      _latest_track_preview = preview_frame
-      _track_preview_seq += 1
-      _track_preview_cond.notify_all()
+  # Refresh the overlay the camera-rate preview publisher draws; the frames
+  # themselves no longer come from this callback (see _preview_publisher).
+  global _overlay_tracks, _overlay_labels, _overlay_updated_at
+  if person_tracks:
+    labels = {
+      tid: f"Track {tid}: {entry['name']}" if entry["status"] == "known"
+           else f"Track {tid}: {entry['status'].replace('_', ' ').capitalize()}"
+      for tid, entry in identity_snapshot.items()
+    }
+  else:
+    labels = {}
+  with _overlay_state_lock:
+    _overlay_tracks = person_tracks
+    _overlay_labels = labels
+    _overlay_updated_at = time.monotonic()
 
   if person_tracks:
     # A person is actively tracked: show its position on the LED matrix

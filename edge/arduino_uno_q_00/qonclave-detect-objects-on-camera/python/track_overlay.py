@@ -23,21 +23,8 @@ _FONT_SCALE = 0.6
 _FONT_THICKNESS = 2
 
 
-def draw_track_overlay(frame_jpeg: bytes, tracks: list[dict], labels: dict) -> bytes:
-    """Return frame_jpeg re-encoded with each track's box + label drawn.
-
-    tracks: this frame's person_tracks (each needs at least "track_id" and
-        "bounding_box_xyxy").
-    labels: track_id -> display text (e.g. "Track 4: Jogendra"). A track
-        missing from labels still gets a box, labeled "Track <id>".
-
-    Returns the original bytes unchanged if the frame can't be decoded, so a
-    corrupt/unexpected frame never breaks the preview stream.
-    """
-    frame = cv2.imdecode(np.frombuffer(frame_jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
-    if frame is None:
-        return frame_jpeg
-
+def _draw_tracks(frame: np.ndarray, tracks: list[dict], labels: dict) -> None:
+    """Draw each track's box + label onto frame, in place."""
     for track in tracks:
         track_id = track["track_id"]
         x1, y1, x2, y2 = (int(v) for v in track["bounding_box_xyxy"])
@@ -59,5 +46,39 @@ def draw_track_overlay(frame_jpeg: bytes, tracks: list[dict], labels: dict) -> b
             _FONT, _FONT_SCALE, _LABEL_TEXT_COLOR, _FONT_THICKNESS,
         )
 
+
+def draw_track_overlay(frame_jpeg: bytes, tracks: list[dict], labels: dict) -> bytes:
+    """Return frame_jpeg re-encoded with each track's box + label drawn.
+
+    tracks: this frame's person_tracks (each needs at least "track_id" and
+        "bounding_box_xyxy").
+    labels: track_id -> display text (e.g. "Track 4: Jogendra"). A track
+        missing from labels still gets a box, labeled "Track <id>".
+
+    Returns the original bytes unchanged if the frame can't be decoded, so a
+    corrupt/unexpected frame never breaks the preview stream.
+    """
+    frame = cv2.imdecode(np.frombuffer(frame_jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if frame is None:
+        return frame_jpeg
+    _draw_tracks(frame, tracks, labels)
     ok, encoded = cv2.imencode(".jpg", frame)
     return encoded.tobytes() if ok else frame_jpeg
+
+
+def draw_track_overlay_bgr(frame_bgr: np.ndarray, tracks: list[dict], labels: dict) -> bytes | None:
+    """Like draw_track_overlay, but from a decoded BGR frame: skips the JPEG
+    decode, which matters on the camera-rate preview path.
+
+    Draws onto frame_bgr in place -- pass a copy if the caller (or another
+    thread) still needs the original pixels. Returns None if encoding fails.
+    """
+    _draw_tracks(frame_bgr, tracks, labels)
+    ok, encoded = cv2.imencode(".jpg", frame_bgr)
+    return encoded.tobytes() if ok else None
+
+
+def encode_jpeg(frame_bgr: np.ndarray) -> bytes | None:
+    """JPEG-encode a BGR frame; None if encoding fails."""
+    ok, encoded = cv2.imencode(".jpg", frame_bgr)
+    return encoded.tobytes() if ok else None
