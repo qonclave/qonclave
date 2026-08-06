@@ -202,25 +202,55 @@ CAMERA_DUAL_LENS_STACKED = os.environ.get("CAMERA_DUAL_LENS_STACKED", "false").s
 CAMERA_HORIZONTAL_FOV_DEGREES = float(os.environ.get("CAMERA_HORIZONTAL_FOV_DEGREES", "70"))
 CAMERA_DUAL_LENS_FOV_DEGREES = float(os.environ.get("CAMERA_DUAL_LENS_FOV_DEGREES", "180"))
 
-if CAMERA_SOURCE == "ip":
-  IP_CAMERA_URL = os.environ.get("IP_CAMERA_URL", "http://192.168.18.65:8080/video")
-  IP_CAMERA_USERNAME = os.environ.get("IP_CAMERA_USERNAME") or None
-  IP_CAMERA_PASSWORD = os.environ.get("IP_CAMERA_PASSWORD") or None
-  IP_CAMERA_FPS = int(os.environ.get("IP_CAMERA_FPS", "10"))
-  camera = IPCamera(url=IP_CAMERA_URL, username=IP_CAMERA_USERNAME,
+# CAMERA_PROBE_ATTEMPTS: some camera backends (notably V4LCamera over a
+# missing /dev node) don't fail in their constructor -- they fail lazily,
+# once something actually reads a frame. A single failed/empty read can also
+# be a normal cold-start blip (the sensor hasn't produced its first frame
+# yet), so "not found" is judged over several attempts, not one.
+CAMERA_PROBE_ATTEMPTS = int(os.environ.get("CAMERA_PROBE_ATTEMPTS", "5"))
+CAMERA_PROBE_RETRY_SEC = float(os.environ.get("CAMERA_PROBE_RETRY_SEC", "0.5"))
+
+
+def _build_camera():
+  if CAMERA_SOURCE == "ip":
+    IP_CAMERA_URL = os.environ.get("IP_CAMERA_URL", "http://192.168.18.65:8080/video")
+    IP_CAMERA_USERNAME = os.environ.get("IP_CAMERA_USERNAME") or None
+    IP_CAMERA_PASSWORD = os.environ.get("IP_CAMERA_PASSWORD") or None
+    IP_CAMERA_FPS = int(os.environ.get("IP_CAMERA_FPS", "10"))
+    return IPCamera(url=IP_CAMERA_URL, username=IP_CAMERA_USERNAME,
                     password=IP_CAMERA_PASSWORD, fps=IP_CAMERA_FPS)
-elif CAMERA_SOURCE == "file":
-  VIDEO_FILE_PATH = os.environ.get("VIDEO_FILE_PATH", "/app/media/walking_front_view.mp4")
-  if not VIDEO_FILE_PATH:
-    raise RuntimeError("CAMERA_SOURCE=file requires VIDEO_FILE_PATH to be set")
-  VIDEO_FILE_LOOP = os.environ.get("VIDEO_FILE_LOOP", "true").strip().lower() not in ("0", "false", "no")
-  VIDEO_FILE_FPS = int(os.environ.get("VIDEO_FILE_FPS", "25"))
-  camera = FileCamera(VIDEO_FILE_PATH, loop=VIDEO_FILE_LOOP, fps=VIDEO_FILE_FPS)
-else:
-  # VIDEO_DEVICE is set by arduino-app-cli when it detects a local USB
-  # camera; USB_CAMERA_DEVICE lets that be overridden explicitly.
-  USB_CAMERA_DEVICE = os.environ.get("USB_CAMERA_DEVICE") or os.environ.get("VIDEO_DEVICE", 0)
-  camera = V4LCamera(device=USB_CAMERA_DEVICE)
+  elif CAMERA_SOURCE == "file":
+    VIDEO_FILE_PATH = os.environ.get("VIDEO_FILE_PATH", "/app/media/walking_front_view.mp4")
+    if not VIDEO_FILE_PATH:
+      raise RuntimeError("CAMERA_SOURCE=file requires VIDEO_FILE_PATH to be set")
+    VIDEO_FILE_LOOP = os.environ.get("VIDEO_FILE_LOOP", "true").strip().lower() not in ("0", "false", "no")
+    VIDEO_FILE_FPS = int(os.environ.get("VIDEO_FILE_FPS", "25"))
+    return FileCamera(VIDEO_FILE_PATH, loop=VIDEO_FILE_LOOP, fps=VIDEO_FILE_FPS)
+  else:
+    # VIDEO_DEVICE is set by arduino-app-cli when it detects a local USB
+    # camera; USB_CAMERA_DEVICE lets that be overridden explicitly.
+    USB_CAMERA_DEVICE = os.environ.get("USB_CAMERA_DEVICE") or os.environ.get("VIDEO_DEVICE", 0)
+    return V4LCamera(device=USB_CAMERA_DEVICE)
+
+
+try:
+  camera = _build_camera()
+  for attempt in range(1, CAMERA_PROBE_ATTEMPTS + 1):
+    try:
+      if camera.capture() is not None:
+        break
+    except Exception as e:
+      log.warning(f"Camera probe {attempt}/{CAMERA_PROBE_ATTEMPTS} ({CAMERA_SOURCE}) failed: {e}")
+    if attempt == CAMERA_PROBE_ATTEMPTS:
+      raise RuntimeError(f"camera produced no frame after {CAMERA_PROBE_ATTEMPTS} attempts")
+    time.sleep(CAMERA_PROBE_RETRY_SEC)
+except Exception as e:
+  # No camera device found (or it never produced a frame): run headless
+  # rather than crash the whole app. The Web UI, hub connectivity (health
+  # monitor, MQTT status), and LED matrix keep working; anything downstream
+  # of `camera`/`detection_stream` is guarded to skip when this is None.
+  log.error(f"Camera unavailable ({CAMERA_SOURCE}): {e}. Running with camera detection disabled.")
+  camera = None
 
 ui = WebUI()
 
@@ -286,30 +316,31 @@ _camera_frame_cond = threading.Condition()
 RUNNER_MAX_FPS = float(os.environ.get("RUNNER_MAX_FPS", "3"))
 _next_runner_frame_at = 0.0
 
-_original_capture = camera.capture
+if camera is not None:
+  _original_capture = camera.capture
 
-def _capture_tee(*args, **kwargs):
-  """camera.capture wrapper: publish every frame to the preview thread, but
-  pass only RUNNER_MAX_FPS of them through to the detection brick. Returning
-  None takes the brick's normal no-frame path (brief sleep, poll again). The
-  brick stays the camera's only reader; runs on its camera-loop thread only,
-  so the gate state needs no lock."""
-  global _camera_frame, _camera_frame_seq, _next_runner_frame_at
-  frame = _original_capture(*args, **kwargs)
-  if frame is None:
-    return None
-  with _camera_frame_cond:
-    _camera_frame = frame
-    _camera_frame_seq += 1
-    _camera_frame_cond.notify_all()
-  if RUNNER_MAX_FPS > 0:
-    now = time.monotonic()
-    if now < _next_runner_frame_at:
+  def _capture_tee(*args, **kwargs):
+    """camera.capture wrapper: publish every frame to the preview thread, but
+    pass only RUNNER_MAX_FPS of them through to the detection brick. Returning
+    None takes the brick's normal no-frame path (brief sleep, poll again). The
+    brick stays the camera's only reader; runs on its camera-loop thread only,
+    so the gate state needs no lock."""
+    global _camera_frame, _camera_frame_seq, _next_runner_frame_at
+    frame = _original_capture(*args, **kwargs)
+    if frame is None:
       return None
-    _next_runner_frame_at = now + 1.0 / RUNNER_MAX_FPS
-  return frame
+    with _camera_frame_cond:
+      _camera_frame = frame
+      _camera_frame_seq += 1
+      _camera_frame_cond.notify_all()
+    if RUNNER_MAX_FPS > 0:
+      now = time.monotonic()
+      if now < _next_runner_frame_at:
+        return None
+      _next_runner_frame_at = now + 1.0 / RUNNER_MAX_FPS
+    return frame
 
-camera.capture = _capture_tee
+  camera.capture = _capture_tee
 
 def _preview_publisher():
   global _latest_track_preview, _track_preview_seq
@@ -415,9 +446,11 @@ def _monitor_hub_health():
     time.sleep(5.0)
 
 threading.Thread(target=_monitor_hub_health, name="HubHealthMonitor", daemon=True).start()
-detection_stream = VideoObjectDetection(camera, confidence=0.5, debounce_sec=0.0, camera_preview=True)
+detection_stream = (VideoObjectDetection(camera, confidence=0.5, debounce_sec=0.0, camera_preview=True)
+                    if camera is not None else None)
 
-ui.on_message("override_th", lambda sid, threshold: detection_stream.override_threshold(threshold))
+ui.on_message("override_th", lambda sid, threshold:
+              detection_stream.override_threshold(threshold) if detection_stream else None)
 
 ROBOT_DIRECTIONS = {"LEFT", "RIGHT", "FORWARD", "BACKWARD"}
 
@@ -1052,7 +1085,8 @@ def send_detections_to_ui(detections: dict, frame: bytes | None = None):
 
   maybe_notify_hub(detections, frame)
 
-detection_stream.on_detect_all(send_detections_to_ui)
+if detection_stream is not None:
+  detection_stream.on_detect_all(send_detections_to_ui)
 
 # --- Hub->edge command channel: connect to the MQTT broker and listen for
 # commands the hub pushes to this device.

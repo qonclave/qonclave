@@ -491,13 +491,16 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
 
         # With periodic /edge/event escalation off, these samples are how the
         # hub learns which device to target with MQTT commands.
-        events.note_device(request.form.get("device_id")
+        track_device_id = (request.form.get("device_id")
                            or request.args.get("device_id"))
+        events.note_device(track_device_id)
 
-        # No node id on this endpoint by default — the crop is tagged with a
-        # track_id, not a device id — so the sighting is anonymous until an
-        # /edge/event from the same IP names it.
-        device_registry.record(ip=client, source="track")
+        # device_id is optional here (the crop is tagged with a track_id, not
+        # a device id, so an older/minimal device may omit it) — pass it
+        # through when present so this sighting merges into the same row as
+        # this device's other announcements instead of sitting anonymous
+        # under "ip:<addr>" forever.
+        device_registry.record(device_id=track_device_id, ip=client, source="track")
 
         raw_analyzers = request.form.get("analyzers") or request.args.get("analyzers") \
             or "face,pose"

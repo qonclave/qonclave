@@ -42,6 +42,12 @@ unconditionally.
 |-----|---------|---------|
 | `CAMERA_SOURCE` | `file` | `usb` for a physically-connected USB camera, `ip` for an Android IP-camera stream, or `file` to loop a local video file instead of a live feed |
 | `CAMERA_DUAL_LENS_STACKED` | `false` | Set to `true` when the camera is a 360° dual-lens rig that stacks the rear-camera image on top and the front-camera image on the bottom of a single frame. Flips the LED Matrix position display's row mapping to match (see LED Matrix Person Position Display below); leave `false` for a normal single-lens camera. |
+| `CAMERA_PROBE_ATTEMPTS` | `5` | Frames to try reading at startup before giving up on the camera as absent/unreachable |
+| `CAMERA_PROBE_RETRY_SEC` | `0.5` | Delay between those probe attempts |
+
+If no camera is found (or it never produces a frame within the probe attempts above),
+the app logs the failure and runs with detection disabled rather than crashing — the
+Web UI, hub connectivity (health check, MQTT status), and LED matrix keep working.
 
 ### USB (default)
 
@@ -55,7 +61,9 @@ requires a USB-C hub and a USB camera.
 Requires the camera to expose a `/dev/v4l/by-id/` udev entry (standard for real USB
 webcams). On hardware with no physical camera attached at all, this fails at
 startup with `CameraOpenError` rather than the CLI's pre-flight check — expected,
-since `app.yaml` no longer declares a hard physical-camera requirement.
+since `app.yaml` no longer declares a hard physical-camera requirement. The app
+catches this and runs with detection disabled instead of crashing (see
+`CAMERA_PROBE_ATTEMPTS` above).
 
 ### IP camera (optional)
 

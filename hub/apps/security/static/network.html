@@ -58,6 +58,16 @@
                  margin-right:6px; vertical-align:0; }
   .empty-note { display:none; margin-top:12px; text-align:center;
                 color:var(--warn); font-size:13px; }
+
+  .tooltip { position:fixed; z-index:10; pointer-events:none; opacity:0;
+             transition:opacity .1s ease; background:var(--card);
+             border:1px solid var(--border); border-radius:8px;
+             padding:10px 12px; font-size:12px; line-height:1.5;
+             box-shadow:0 6px 20px rgba(0,0,0,.35); max-width:260px; }
+  .tooltip.show { opacity:1; }
+  .tooltip .t-title { font-weight:600; margin-bottom:4px; }
+  .tooltip .t-row { display:flex; gap:8px; color:var(--muted); }
+  .tooltip .t-row span:last-child { color:var(--fg); font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
 </style>
 </head>
 <body>
@@ -119,6 +129,8 @@
     </table>
   </div>
 </div>
+
+<div id="tooltip" class="tooltip"></div>
 
 <script>
 const $ = id => document.getElementById(id);
@@ -198,15 +210,50 @@ function upsertDevice(d) {
     const rtt = document.createElementNS(SVGNS, "text");
     rtt.setAttribute("class", "rtt"); rtt.setAttribute("y", 34);
     g.append(halo, dot, name, rtt);
+    g.addEventListener("mouseenter", ev => { showTooltip(g); positionTooltip(ev); });
+    g.addEventListener("mousemove", positionTooltip);
+    g.addEventListener("mouseleave", hideTooltip);
     $("devices").appendChild(g);
     nodes.set(key, g);
   }
+  g._data = d;
   g.setAttribute("class", `dev ${d.state}`);
   g.style.transform = `translate(${x}px, ${y}px)`;
   g.querySelector("text.name").textContent = d.device_id || d.ip || "?";
   g.querySelector("text.rtt").textContent =
       d.rtt_ms != null ? `${d.rtt_ms} ms` : "unmeasured";
   return key;
+}
+
+function showTooltip(g) {
+  const d = g._data;
+  if (!d) return;
+  const tip = $("tooltip");
+  tip.innerHTML = `
+    <div class="t-title">${d.device_id ? esc(d.device_id) : "(unidentified)"}</div>
+    <div class="t-row"><span>IP</span><span>${d.ip ? esc(d.ip) : "—"}</span></div>
+    <div class="t-row"><span>State</span><span>${esc(d.state)}</span></div>
+    <div class="t-row"><span>RTT</span><span>${d.rtt_ms != null ? d.rtt_ms + " ms" : "unmeasured"}</span></div>
+    <div class="t-row"><span>Last seen</span><span>${ago(d.last_seen)}</span></div>
+    <div class="t-row"><span>First seen</span><span>${ago(d.first_seen)}</span></div>
+    <div class="t-row"><span>Sightings</span><span>${d.sightings}</span></div>
+    <div class="t-row"><span>Seen via</span><span>${d.sources.map(esc).join(", ")}</span></div>`;
+  tip.classList.add("show");
+}
+
+function positionTooltip(ev) {
+  const tip = $("tooltip");
+  const pad = 14;
+  let x = ev.clientX + pad, y = ev.clientY + pad;
+  const rect = tip.getBoundingClientRect();
+  if (x + rect.width > window.innerWidth) x = ev.clientX - rect.width - pad;
+  if (y + rect.height > window.innerHeight) y = ev.clientY - rect.height - pad;
+  tip.style.left = `${x}px`;
+  tip.style.top = `${y}px`;
+}
+
+function hideTooltip() {
+  $("tooltip").classList.remove("show");
 }
 
 async function loadHealth() {

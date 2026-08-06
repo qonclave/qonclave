@@ -35,6 +35,11 @@ from __future__ import annotations
 import json
 import threading
 
+# How often to republish this device's status while connected, so the hub's
+# device_registry (ONLINE_S=60) keeps seeing it as online rather than aging
+# it to idle/offline between reconnects.
+STATUS_PUBLISH_INTERVAL_S = 20
+
 
 # Spec topics — spec/v1/asyncapi/commands.yaml. The hub publishes to both these
 # and the pre-spec qonclave/<id>/command during the migration, so this device
@@ -64,6 +69,8 @@ class EdgeMQTTClient:
         self._connect_error = None
         self._lock = threading.Lock()
         self._thread = None
+        self._status_thread = None
+        self._stop = threading.Event()
 
     # --- logging helpers (Logger has no .debug/.warning parity guarantee) ---
     def _info(self, msg):
@@ -92,6 +99,16 @@ class EdgeMQTTClient:
             self._thread = threading.Thread(
                 target=self._run, name="EdgeMQTTClient", daemon=True)
             self._thread.start()
+            self._status_thread = threading.Thread(
+                target=self._status_heartbeat, name="EdgeMQTTStatusHeartbeat",
+                daemon=True)
+            self._status_thread.start()
+
+    def _status_heartbeat(self):
+        while not self._stop.is_set():
+            if self._connected:
+                self.publish_status()
+            self._stop.wait(STATUS_PUBLISH_INTERVAL_S)
 
     def _run(self):
         try:
@@ -136,6 +153,10 @@ class EdgeMQTTClient:
         topic = command_topic(self.device_id)
         client.subscribe(topic, qos=1)
         self._info(f"Edge MQTT connected; subscribed to {topic}")
+        # Announce presence immediately on (re)connect, rather than waiting
+        # for the next heartbeat tick, so the hub's network page reflects a
+        # fresh connection without a delay.
+        self.publish_status()
 
     def _on_disconnect(self, client, userdata, *args):
         self._connected = False
@@ -155,6 +176,24 @@ class EdgeMQTTClient:
             except Exception as e:
                 self._error(f"on_command handler failed: {e}")
 
+    # --- announce -------------------------------------------------------------
+    def publish_status(self):
+        """Publish this device's presence on its status topic (retained, so a
+        hub that subscribes late still sees the last-known state). This is
+        what lets the hub's device_registry know this device exists at all —
+        connecting and subscribing to commands alone tells the broker nothing
+        about who else is listening."""
+        client = self._client
+        if client is None or not self._connected:
+            return
+        try:
+            client.publish(
+                status_topic(self.device_id),
+                json.dumps({"device_id": self.device_id, "online": True}),
+                qos=1, retain=True)
+        except Exception as e:
+            self._warn(f"Edge MQTT status publish failed: {e}")
+
     # --- introspection ------------------------------------------------------
     def is_connected(self) -> bool:
         return self._connected
@@ -171,6 +210,7 @@ class EdgeMQTTClient:
         }
 
     def close(self):
+        self._stop.set()
         client = self._client
         if client is not None:
             try:
