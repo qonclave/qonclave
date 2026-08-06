@@ -38,6 +38,12 @@ Endpoints:
     GET  /user/recognize_activity        recent POST /recognize calls (JSON)
     GET  /user/recognize_activity/<id>.jpg  the crop for one of those calls
 
+    POST /assistant/query      edge voice assistant: transcribed command ->
+                               LLM (or canned template) reply
+    GET  /user/assistant_activity  LLM status + recent assistant exchanges,
+                               for the dashboard's assistant card
+    (both live in apps/assistant/routes.py, registered below)
+
 Design goals:
     * Runs on ANY laptop (regular x86 Windows/Linux included). Reasoning is
       conditional — see framework/vlm.py — so only that piece is
@@ -64,13 +70,19 @@ from .policy import Policy
 from .sms_bus import SMSBus
 from .vlm import VLMBackend
 
+# "apps" is a sibling top-level package (hub/ is on sys.path, it is not itself a
+# package), so this must be absolute — same style as hub/server.py's
+# "from apps.security.policy import SecurityPolicy".
+from apps.assistant.routes import create_assistant_blueprint
+
 log = logging.getLogger("qonclave.hub")
 
 MAX_UPLOAD_MB = int(os.environ.get("QONCLAVE_MAX_UPLOAD_MB", "16"))
 
 
 def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
-               static_dir: str, face_id=None, llm: LLMBackend | None = None) -> Flask:
+               static_dir: str, face_id=None, llm: LLMBackend | None = None,
+               assistant_llm: LLMBackend | None = None) -> Flask:
     """
     Build the Qonclave hub Flask app for one Policy.
 
@@ -85,6 +97,12 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
                 Notification (trial mode: fixed template + fixed number)
     llm         optional LLMBackend (text-only Qwen3-4B); used by the Policy
                 for on_sms_reply() reasoning; exposed via /health
+    assistant_llm
+                LLMBackend the /assistant/query route generates with, or None
+                to make it serve canned template replies instead. Separate
+                from llm so the assistant can be switched off (see
+                ASSISTANT_LLM_ENABLED in hub/server.py) without disabling
+                /health reporting or the Policy's own LLM use.
     static_dir  directory holding the app's dashboard.html, test_*.html
     """
     app = Flask(__name__, static_folder=None)
@@ -593,5 +611,7 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
     def user_index():
         # default landing = dashboard
         return send_from_directory(static_dir, "dashboard.html")
+
+    app.register_blueprint(create_assistant_blueprint(assistant_llm))
 
     return app

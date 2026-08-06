@@ -1,0 +1,25 @@
+{
+  "schema_version": "1.0",
+  "node_id": "soil-07",
+  "wake_counter": 412,
+  "events": [
+    {
+      "schema_version": "1.0",
+      "event_id": "evt-002",
+      "source_node_id": "soil-07",
+      "relative_time": {
+        "wake_counter": 412,
+        "ms_since_wake": 180
+      },
+      "trigger": "threshold_crossed",
+      "metadata": {
+        "moisture_pct": 11
+      }
+    }
+  ],
+  "power": {
+    "battery_pct": 62.0,
+    "on_mains": false,
+    "duty_cycle_s": 86400
+  }
+}

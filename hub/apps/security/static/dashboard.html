@@ -92,6 +92,19 @@
   .recognize-item .meta { padding:6px 8px; font-size:11px; }
   .recognize-item .meta .track { color:var(--muted); margin-bottom:4px; }
   .recognize-item .pill { font-size:10px; padding:1px 7px; }
+  .chat { display:flex; flex-direction:column; gap:12px; margin-top:12px;
+          max-height:420px; overflow-y:auto; }
+  .exchange { border-bottom:1px solid var(--border); padding-bottom:12px; }
+  .exchange:last-child { border-bottom:none; padding-bottom:0; }
+  .exchange .who { font-size:11px; color:var(--muted); text-transform:uppercase;
+                   letter-spacing:.04em; margin-bottom:3px; }
+  .exchange .said { font-size:14px; line-height:1.45; white-space:pre-wrap;
+                    word-break:break-word; }
+  .exchange .said.q { color:var(--accent); }
+  .exchange .exmeta { margin-top:7px; display:flex; gap:8px; flex-wrap:wrap;
+                      align-items:center; font-size:11px; color:var(--muted); }
+  .exchange .exmeta .pill { font-size:10px; padding:1px 7px; }
+  .fallback { color:var(--warn); font-size:11px; margin-top:5px; }
 </style>
 </head>
 <body>
@@ -127,6 +140,19 @@
         <label>Reasoning</label>
         <div class="reason" id="reason">—</div>
       </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:18px;">
+    <label>Edge voice assistant
+      <span id="assistantPill" class="pill" style="margin-left:8px;font-size:11px;">…</span>
+      <span id="assistantCountPill" class="pill" style="margin-left:4px;font-size:11px;"></span>
+    </label>
+    <div class="sub" style="margin-bottom:2px;">
+      Transcribed commands arriving via POST /assistant/query, and what the hub answered.
+    </div>
+    <div id="assistantFeed" class="chat">
+      <div style="color:var(--muted);font-size:13px;">No assistant queries yet.</div>
     </div>
   </div>
 
@@ -544,6 +570,63 @@ async function refreshLLM() {
   } catch (e) { /* leave prior state */ }
 }
 
+// Speech transcripts and model output are free text — escape before innerHTML.
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g,
+  (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+async function refreshAssistant() {
+  try {
+    const r = await fetch("/user/assistant_activity?limit=12");
+    const j = await r.json();
+
+    const pill = $("assistantPill");
+    const llm = j.llm || {};
+    if (!llm.enabled) {
+      pill.textContent = "LLM off — templates";
+      pill.className = "pill warn";
+      pill.title = "ASSISTANT_LLM_ENABLED=0 on the hub";
+    } else if (llm.available) {
+      pill.textContent = (llm.model_id || "LLM").split("/").pop();
+      pill.className = "pill ok";
+      pill.title = llm.model_id || "";
+    } else {
+      pill.textContent = "LLM unavailable";
+      pill.className = "pill err";
+      pill.title = llm.error || "model not loaded";
+    }
+
+    $("assistantCountPill").textContent = j.count ? `${j.count} recent` : "";
+    $("assistantCountPill").className = "pill";
+
+    const feed = $("assistantFeed");
+    if (!j.activity || !j.activity.length) {
+      feed.innerHTML = '<div style="color:var(--muted);font-size:13px;">No assistant queries yet.</div>';
+      return;
+    }
+    feed.innerHTML = j.activity.map(a => {
+      const srcPill = a.source === "llm"
+        ? '<span class="pill ok">llm</span>'
+        : `<span class="pill warn">${esc(a.tool_used || "template")}</span>`;
+      const llmLatency = a.llm_latency_s != null ? ` · gen ${a.llm_latency_s}s` : "";
+      const fallback = a.fallback_reason
+        ? `<div class="fallback">fell back to template — ${esc(a.fallback_reason)}</div>`
+        : "";
+      return `
+        <div class="exchange">
+          <div class="who">${esc(a.device_id)} asked · ${shortTime(a.received_at)}</div>
+          <div class="said q">${esc(a.query)}</div>
+          <div class="who" style="margin-top:8px;">hub replied</div>
+          <div class="said">${esc(a.response)}</div>
+          ${fallback}
+          <div class="exmeta">${srcPill}<span>${a.latency_ms}ms total${llmLatency}</span></div>
+        </div>`;
+    }).join("");
+  } catch (e) {
+    $("assistantPill").textContent = "unreachable";
+    $("assistantPill").className = "pill err";
+  }
+}
+
 async function refreshRecognizeActivity() {
   try {
     const r = await fetch("/user/recognize_activity?limit=16");
@@ -581,6 +664,8 @@ refreshLLM();
 setInterval(refreshLLM, 2000);
 refreshRecognizeActivity();
 setInterval(refreshRecognizeActivity, 1500);
+refreshAssistant();
+setInterval(refreshAssistant, 1500);
 </script>
 </body>
 </html>

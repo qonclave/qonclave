@@ -59,6 +59,10 @@ PORT = int(os.environ.get("QONCLAVE_PORT", "8000"))
 MQTT_HOST = os.environ.get("QONCLAVE_MQTT_HOST", "127.0.0.1")
 MQTT_PORT = int(os.environ.get("QONCLAVE_MQTT_PORT", "1883"))
 MQTT_ENABLED = os.environ.get("QONCLAVE_MQTT_ENABLED", "1") == "1"
+# Set to 0 to make POST /assistant/query serve canned template replies instead
+# of generating with the LLM. Only affects the assistant; the Policy's own LLM
+# use (SMS reasoning) and /health reporting are untouched.
+ASSISTANT_LLM_ENABLED = os.environ.get("ASSISTANT_LLM_ENABLED", "1") == "1"
 
 vlm = VLMBackend()
 llm = LLMBackend()
@@ -66,7 +70,8 @@ mqtt = MQTTBus(host=MQTT_HOST, port=MQTT_PORT, enabled=MQTT_ENABLED)
 face_id = FaceIdentityBackend()
 sms = SMSBus()
 policy = SecurityPolicy(vlm, face_id, sms, llm)
-app = create_app(policy=policy, vlm=vlm, mqtt=mqtt, sms=sms, face_id=face_id, static_dir=STATIC_DIR, llm=llm)
+app = create_app(policy=policy, vlm=vlm, mqtt=mqtt, sms=sms, face_id=face_id, static_dir=STATIC_DIR,
+                 llm=llm, assistant_llm=llm if ASSISTANT_LLM_ENABLED else None)
 
 
 def main():
@@ -95,6 +100,8 @@ def main():
     log.info("MQTT status: %s", mqtt.status())
     log.info("Face ID    : %s", face_id.status())
     log.info("SMS status : %s", sms.status())
+    log.info("Assistant  : %s", "LLM" if ASSISTANT_LLM_ENABLED else
+             "template replies (ASSISTANT_LLM_ENABLED=0)")
     if os.environ.get("QONCLAVE_WARMUP") == "1":
         log.info("QONCLAVE_WARMUP=1 -> loading VLM + LLM + face ID models now...")
         vlm.warmup()
@@ -103,8 +110,15 @@ def main():
         log.info("VLM status after warmup: %s", vlm.status())
         log.info("LLM status after warmup: %s", llm.status())
         log.info("Face ID status after warmup: %s", face_id.status())
+    elif ASSISTANT_LLM_ENABLED:
+        # Load Qwen3-4B before serving: the first voice query would otherwise
+        # pay the load time and blow past the edge's HUB_TIMEOUT_SEC.
+        log.info("Assistant LLM enabled -> loading the LLM now...")
+        llm.warmup()
+        log.info("LLM status after warmup: %s", llm.status())
     log.info("Edge  : POST /edge/event | POST /recognize (per-track-id face ID)")
     log.info("SMS   : POST /sms  (Twilio inbound-reply webhook)")
+    log.info("Voice : POST /assistant/query  (edge assistant)")
     log.info("User  : GET /user/dashboard | GET /user/events | GET /user/latest.jpg")
     log.info("        GET /user/frames/<name> | POST /user/reason | GET /user/")
     log.info("Other : GET /health | GET / (-> /user/)")

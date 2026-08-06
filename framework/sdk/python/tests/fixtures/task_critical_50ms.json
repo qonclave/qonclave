@@ -1,0 +1,11 @@
+{
+  "task_id": "task-critical",
+  "task": {
+    "complexity": 1,
+    "urgency": 3,
+    "privacy": "unrestricted",
+    "use_case": "collision_avoidance",
+    "deadline_ms": 30,
+    "remaining_ms": 30
+  }
+}

@@ -1,0 +1,120 @@
+name: framework
+
+on:
+  push:
+    paths: ['framework/**', '.github/workflows/framework.yml']
+  pull_request:
+    paths: ['framework/**', '.github/workflows/framework.yml']
+
+jobs:
+  python:
+    name: python sdk
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - run: pip install -e "framework/sdk/python[dev]"
+
+      # Build the C SDK first so its conformance runner emits the interop artifact. Without this
+      # the cross-language tests skip, and a wire disagreement between the two bindings would go
+      # unnoticed — which is the failure this whole spec-first arrangement exists to prevent.
+      - name: build C SDK for interop artifacts
+        run: |
+          cmake -S framework/sdk/c -B build-c
+          cmake --build build-c
+          ctest --test-dir build-c --output-on-failure
+
+      # Layering, spec agreement, placement mechanism, and cross-language interop.
+      - run: python -m pytest framework/sdk/python/tests -v
+
+      - name: interop must have actually run, not skipped
+        run: |
+          test -f framework/conformance/generated/c-uplink-minimal.cbor \
+            || { echo "interop artifact missing; cross-language tests silently skipped"; exit 1; }
+
+      - run: python -m qonclave.cli spec-validate
+        working-directory: framework
+
+  isolation:
+    name: extras stay isolated
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # The layering rule exists so an edge install does not carry a web framework. Asserting it
+      # in a clean environment is the only way to know it is still true — test_layering.py checks
+      # the imports, this checks what actually lands on disk.
+      - name: edge install must not pull Flask
+        run: |
+          pip install -e "framework/sdk/python[edge]"
+          python -c "import qonclave.core, qonclave.edge; print('edge ok')"
+          if python -c "import flask" 2>/dev/null; then
+            echo "LEAK: flask present in an edge install"; exit 1
+          fi
+          echo "no leak"
+
+  conformance:
+    name: conformance fixtures
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        profile: [full, constrained, minimal]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -e "framework/sdk/python[dev]"
+
+      - name: run fixtures for profile ${{ matrix.profile }}
+        working-directory: framework
+        run: python -m qonclave.cli conformance --cases conformance/cases --profile ${{ matrix.profile }}
+
+  c-sdk:
+    name: c sdk
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: configure and build
+        run: |
+          cmake -S framework/sdk/c -B build
+          cmake --build build
+
+      # placement, codec, psk, checkin, conformance. All must pass — placement in particular must
+      # agree with the Python binding, since a divergent decision is a bug no schema catches.
+      - name: test
+        run: ctest --test-dir build --output-on-failure
+
+      # The crypto backend is swappable, and swapping it must not change any digest. Rebuilding
+      # the full FIPS/RFC 4231 vector set against a caller-supplied backend is what proves the
+      # seam is real rather than just declared.
+      - name: builds and passes against a caller-supplied SHA-256 backend
+        run: |
+          sed 's/return "builtin";/return "custom-ci";/' \
+            framework/sdk/c/src/sha256_builtin.c > /tmp/my_sha256.c
+          cmake -S framework/sdk/c -B build-sha -DQONCLAVE_SHA256_SOURCE=/tmp/my_sha256.c
+          cmake --build build-sha
+          ctest --test-dir build-sha --output-on-failure
+
+      # The library must build against a caller-supplied port, not only the bundled posix one.
+      # A trivial stand-in is enough to catch the port boundary drifting.
+      - name: builds against a caller-supplied port
+        run: |
+          cat > /tmp/my_port.c <<'EOF'
+          #include "qonclave/port.h"
+          int qc_port_request(const uint8_t *r, size_t rl, uint8_t *s, size_t sc, uint32_t t)
+          { (void)r;(void)rl;(void)s;(void)sc;(void)t; return -1; }
+          int qc_port_nvs_read(const char *k, uint8_t *o, size_t c) { (void)k;(void)o;(void)c; return -1; }
+          int qc_port_nvs_write(const char *k, const uint8_t *d, size_t l) { (void)k;(void)d;(void)l; return -1; }
+          uint32_t qc_port_now_ms(void) { return 0; }
+          EOF
+          cmake -S framework/sdk/c -B build-port \
+            -DQONCLAVE_PROFILE=minimal -DQONCLAVE_PORT_SOURCE=/tmp/my_port.c
+          cmake --build build-port
