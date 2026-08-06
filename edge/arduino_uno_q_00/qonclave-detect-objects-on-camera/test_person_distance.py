@@ -53,7 +53,7 @@ def test_small_person_approaches():
     c = controller()
     move = c.command_for(60, 120, FRAME_W, FRAME_H, track_id=4, now=0.0)
     assert move.direction == "FORWARD"
-    assert move.magnitude == 1
+    assert move.magnitude == 500
     assert move.track_id == 4
 
 
@@ -160,12 +160,12 @@ def test_motion_drops_the_confirmation_streak():
 
 
 def test_magnitude_is_a_valid_mcu_argument():
-    # main.py rejects magnitudes outside 1..360 before the Bridge call; a 0
+    # main.py rejects magnitudes outside 1..5000 before the Bridge call; a 0
     # would silently turn distance keeping into a no-op.
-    c = controller(step_seconds=0)
+    c = controller(step_ms=0)
     move = c.command_for(60, 120, FRAME_W, FRAME_H, 4, now=0.0)
     assert isinstance(move.magnitude, int)
-    assert 1 <= move.magnitude <= 360
+    assert 1 <= move.magnitude <= 5000
 
 
 if __name__ == "__main__":

@@ -30,8 +30,8 @@ Stability, in a deliberately conservative order:
     frames captured while the robot was moving describe a distance it no
     longer has, and keep arriving for ~1 pipeline latency after it stops;
   * one small timed step per decision (the MCU's FORWARD/BACKWARD unit is
-    whole seconds), then re-measure -- never a proportional "drive until
-    correct" motion toward a human being.
+    whole milliseconds), then re-measure -- never a proportional "drive
+    until correct" motion toward a human being.
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class DistanceCommand:
     direction: str          # FORWARD (approach) or BACKWARD (retreat)
-    magnitude: int          # seconds, the MCU's unit for these directions
+    magnitude: int          # milliseconds, the MCU's unit for these directions
     size_ratio: float       # the measurement the decision was made on
     track_id: int
     reason: str
@@ -67,7 +67,7 @@ class PersonDistanceController:
         enabled: bool = True,
         approach_below: float = 0.35,
         retreat_above: float = 0.65,
-        step_seconds: int = 1,
+        step_ms: int = 500,
         minimum_interval_seconds: float = 2.5,
         confirm_frames: int = 3,
         post_motion_blank_seconds: float = 1.5,
@@ -77,7 +77,7 @@ class PersonDistanceController:
         # The gap between the thresholds is the hold zone; never let a config
         # invert them into an always-moving band.
         self.retreat_above = max(self.approach_below + 0.05, retreat_above)
-        self.step_seconds = max(1, int(step_seconds))  # MCU minimum is 1s
+        self.step_ms = max(1, int(step_ms))  # MCU minimum is 1ms
         self.minimum_interval_seconds = max(0.0, minimum_interval_seconds)
         self.confirm_frames = max(1, int(confirm_frames))
         self.post_motion_blank_seconds = max(0.0, post_motion_blank_seconds)
@@ -148,14 +148,14 @@ class PersonDistanceController:
             return None
 
         self._next_command_at = now + max(
-            self.minimum_interval_seconds, float(self.step_seconds)
+            self.minimum_interval_seconds, self.step_ms / 1000.0
         )
         # Streak resets after every issued step so the NEXT step needs fresh
         # confirmation from post-move frames too.
         self._reset_streak()
         return DistanceCommand(
             direction=direction,
-            magnitude=self.step_seconds,
+            magnitude=self.step_ms,
             size_ratio=round(ratio, 3),
             track_id=track_id,
             reason=("person too small in frame -> approach"

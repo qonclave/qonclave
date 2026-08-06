@@ -452,8 +452,10 @@ def _execute_robot_command(message):
     raise ValueError(f"Unsupported direction: {direction or '(empty)'}")
 
   magnitude = int(message.get("magnitude", 1))
-  if not 1 <= magnitude <= 360:
-    raise ValueError("Magnitude must be between 1 and 360")
+  is_turn = direction in {"LEFT", "RIGHT"}
+  magnitude_min, magnitude_max = (1, 360) if is_turn else (1, 5000)
+  if not magnitude_min <= magnitude <= magnitude_max:
+    raise ValueError(f"Magnitude must be between {magnitude_min} and {magnitude_max}")
 
   started = mcu.call("move_robot", direction, magnitude, default=_MCU_UNAVAILABLE)
   if started is _MCU_UNAVAILABLE:
@@ -465,17 +467,17 @@ def _execute_robot_command(message):
   # web UI, hub MQTT): motion stales bearings and box sizes alike. Small
   # turns finish between detection callbacks, so waiting to *observe*
   # robot_motion_active would miss exactly the moves that cause ping-pong.
-  if direction in {"LEFT", "RIGHT"}:
+  if is_turn:
     est_duration = magnitude * person_centering.estimated_ms_per_degree / 1000.0
   else:
-    est_duration = float(magnitude)  # FORWARD/BACKWARD magnitude is seconds
+    est_duration = magnitude / 1000.0  # FORWARD/BACKWARD magnitude is ms
   person_centering.note_motion(est_duration)
   person_distance.note_motion(est_duration)
   return {
     "ok": True,
     "direction": direction,
     "magnitude": magnitude,
-    "unit": "degrees" if direction in {"LEFT", "RIGHT"} else "seconds",
+    "unit": "degrees" if is_turn else "milliseconds",
   }
 
 def handle_robot_move(sid, message):
@@ -607,13 +609,13 @@ person_centering = PersonCenteringController(
 # this drives FORWARD when they are too small in frame to see clearly and
 # BACKWARD when they are uncomfortably close, holding inside the deadband.
 # Size comes from the larger box dimension, so a FALLEN person (wide, short
-# box) is not misread as "far away" and driven into. One 1s nudge per paced,
-# confirmed decision -- see python/person_distance.py for the safety order.
+# box) is not misread as "far away" and driven into. One paced, confirmed
+# nudge per decision -- see python/person_distance.py for the safety order.
 person_distance = PersonDistanceController(
   enabled=os.environ.get("FOLLOW_DISTANCE_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on"),
   approach_below=float(os.environ.get("FOLLOW_DISTANCE_APPROACH_BELOW", "0.35")),
   retreat_above=float(os.environ.get("FOLLOW_DISTANCE_RETREAT_ABOVE", "0.65")),
-  step_seconds=int(os.environ.get("FOLLOW_DISTANCE_STEP_SEC", "1")),
+  step_ms=int(os.environ.get("FOLLOW_DISTANCE_STEP_MS", "500")),
   minimum_interval_seconds=float(os.environ.get("FOLLOW_DISTANCE_MIN_INTERVAL_SEC", "2.5")),
   confirm_frames=int(os.environ.get("FOLLOW_DISTANCE_CONFIRM_FRAMES", "3")),
   post_motion_blank_seconds=float(os.environ.get("FOLLOW_DISTANCE_POST_MOTION_BLANK_SEC", "1.5")),
@@ -630,8 +632,8 @@ person_distance = PersonDistanceController(
 # The budget is deliberately well under it to leave room for the upload.
 INVESTIGATION_APPROACH_ENABLED = os.environ.get(
   "INVESTIGATION_APPROACH_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
-INVESTIGATION_APPROACH_FORWARD_SEC = int(
-  os.environ.get("INVESTIGATION_APPROACH_FORWARD_SEC", "1"))
+INVESTIGATION_APPROACH_FORWARD_MS = int(
+  os.environ.get("INVESTIGATION_APPROACH_FORWARD_MS", "1000"))
 INVESTIGATION_APPROACH_TOLERANCE_DEGREES = float(
   os.environ.get("INVESTIGATION_APPROACH_TOLERANCE_DEGREES", "8"))
 INVESTIGATION_APPROACH_MAX_TURN_DEGREES = float(
@@ -1188,7 +1190,7 @@ def _approach_target_before_capture(event_id: str, requested: bool):
     bearing,
     size_ratio=size_ratio,
     max_size_ratio=INVESTIGATION_APPROACH_MAX_SIZE_RATIO,
-    forward_seconds=INVESTIGATION_APPROACH_FORWARD_SEC,
+    forward_ms=INVESTIGATION_APPROACH_FORWARD_MS,
     tolerance_degrees=INVESTIGATION_APPROACH_TOLERANCE_DEGREES,
     max_turn_degrees=INVESTIGATION_APPROACH_MAX_TURN_DEGREES,
     ms_per_degree=person_centering.estimated_ms_per_degree,
@@ -1317,7 +1319,7 @@ else:
            "(posture investigation, dashboard button, CAPTURE SMS)")
 log.info(
   f"Investigation approach: "
-  + (f"forward {INVESTIGATION_APPROACH_FORWARD_SEC}s after facing the target "
+  + (f"forward {INVESTIGATION_APPROACH_FORWARD_MS}ms after facing the target "
      f"(within {INVESTIGATION_APPROACH_MAX_TURN_DEGREES:.0f} deg), "
      f"{INVESTIGATION_APPROACH_BUDGET_SEC}s budget"
      if INVESTIGATION_APPROACH_ENABLED else "disabled (capture in place)")
@@ -1326,7 +1328,7 @@ log.info(
   "Distance keeping: "
   + (f"hold person at size {person_distance.approach_below:.2f}-"
      f"{person_distance.retreat_above:.2f} of frame, "
-     f"{person_distance.step_seconds}s nudges every "
+     f"{person_distance.step_ms}ms nudges every "
      f">={person_distance.minimum_interval_seconds}s after "
      f"{person_distance.confirm_frames} confirming frames"
      if person_distance.enabled else "disabled (rotate only)")
