@@ -38,7 +38,9 @@ from framework import events, transport
 
 log = logging.getLogger("qonclave.hub")
 
-INVESTIGATE_MAX_NEW_TOKENS = 220
+# Generous cap: the model writes multi-sentence observations, and JSON cut
+# off mid-object parses as nothing at all (-> a spurious UNCERTAIN).
+INVESTIGATE_MAX_NEW_TOKENS = 384
 
 INVESTIGATE_PROMPT_TEMPLATE = (
     "You are assisting a home-safety monitor. A fall-detection system flagged "
@@ -49,7 +51,7 @@ INVESTIGATE_PROMPT_TEMPLATE = (
     "exactly this form:\n"
     '{{"classification": "EMERGENCY_LIKELY" or "SAFE_LIKELY" or "UNCERTAIN", '
     '"confidence": a number from 0 to 1, '
-    '"observations": ["short factual observations about the person and scene"], '
+    '"observations": ["up to 4 short factual observations about the person and scene"], '
     '"recommended_action": "one short sentence for the human operator"}}\n'
     "Use EMERGENCY_LIKELY only if the person appears collapsed, unresponsive, "
     "or in visible distress; SAFE_LIKELY if they appear to be resting, "
@@ -64,7 +66,7 @@ MANUAL_INVESTIGATE_PROMPT = (
     "other text, of exactly this form:\n"
     '{{"classification": "EMERGENCY_LIKELY" or "SAFE_LIKELY" or "UNCERTAIN", '
     '"confidence": a number from 0 to 1, '
-    '"observations": ["short factual observations about any people and the scene"], '
+    '"observations": ["up to 4 short factual observations about any people and the scene"], '
     '"recommended_action": "one short sentence for the human operator"}}\n'
     "Use EMERGENCY_LIKELY only if someone appears collapsed, unresponsive, or "
     "in visible distress; SAFE_LIKELY if the scene appears fine (including an "

@@ -297,6 +297,11 @@ class VLMBackend:
         parsed = extract_json(result.get("text") or "")
         log.info("VLM structured_query (%.2fs): parsed=%s",
                  result.get("latency_s") or 0.0, parsed)
+        if not parsed and result.get("text"):
+            # A silent {} turns into a policy fallback downstream; the raw
+            # text is the only way to see WHY (truncation, fences, prose).
+            log.warning("VLM structured_query parse failed; raw output: %r",
+                        result["text"][:500])
         return {
             "available": True,
             "text": result.get("text"),
