@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..core.enums import Complexity, Privacy, Urgency
-from ..core.models import MediaPayload, TaskDescriptor
+from ..core.models import EdgeEvent, MediaPayload, TaskDescriptor
 
 
 @dataclass(slots=True)
@@ -63,6 +63,41 @@ class InferenceTask:
             ),
             **kwargs,
         )
+
+    @classmethod
+    def from_event(
+        cls,
+        event: EdgeEvent,
+        *,
+        task_id: str,
+        default_complexity: Complexity = Complexity.VLM_REASON,
+        default_use_case: str | None = None,
+    ) -> "InferenceTask":
+        """Build a task from an inbound EdgeEvent's declared `task` descriptor, if any.
+
+        An event may carry a `task` descriptor the edge declared, including the budget
+        it has already spent. When it does not -- true for every device that hasn't
+        been reflashed to declare one -- the defaults apply and nothing has a deadline,
+        so a deadline-dependent placement rule simply never fires. That is deliberate:
+        an unmodified device's behavior must not change because this exists.
+        """
+        declared = event.task
+        if declared is None:
+            return cls.declare(task_id, complexity=default_complexity, use_case=default_use_case)
+
+        task = cls.declare(
+            task_id,
+            complexity=declared.complexity,
+            urgency=declared.urgency,
+            privacy=declared.privacy,
+            use_case=declared.use_case or default_use_case,
+            deadline_ms=declared.deadline_ms,
+        )
+        # declare() seeds remaining from deadline; the edge already spent some of it.
+        if declared.remaining_ms is not None:
+            task.descriptor.remaining_ms = declared.remaining_ms
+        task.descriptor.hops = list(declared.hops or [])
+        return task
 
     @property
     def elapsed_ms(self) -> int:

@@ -163,7 +163,7 @@ merge on either side of the framework/`hub/` split can tell what it's actually c
 | `adapter.py`, `transport.py` | `hub/ingest.py` — the Flask half (upload handling) stays in the app | ✅ done |
 | `events.py` | `hub/events.py` | ✅ done |
 | `recognize_activity.py` | `hub/events.py` | ⬜ not started |
-| `policy.py` | `hub/policy.py` | 🔄 lifted, then reverted — see below |
+| `policy.py` | `hub/policy.py` | ✅ done — lifted, reverted, redone; see below |
 | `server.py` | `hub/app.py` | ⬜ not started |
 | `mqtt_bus.py` | **stays put** — it is the demo's chosen pipe, wrapped in `PubSubTransport` | ⬜ not started |
 | `sms_bus.py` | `apps/<name>/egress/twilio_sms.py` — **leaves the framework** | ⬜ not started |
@@ -176,11 +176,11 @@ merge on either side of the framework/`hub/` split can tell what it's actually c
 | edge-side `edge_confidence` threshold | a `PlacementPolicy` — no longer hardcoded | ⬜ not started; `edge/` imports nothing from `qonclave.*` yet |
 | `icons.py` | **stays app-level** | n/a — correctly not lifted |
 
-`hub/` is no longer untouched: `adapter.py`, `events.py`, and `transport.py` are thin shims over
-the SDK today, proved by `hub/tests/` running against both. Everything else in the table above is
-still the pre-convergence, framework-agnostic implementation.
+`hub/` is no longer untouched: `adapter.py`, `events.py`, `transport.py`, and now `policy.py` are
+thin shims over the SDK today, proved by `hub/tests/` running against all four. Everything else in
+the table above is still the pre-convergence, framework-agnostic implementation.
 
-### `policy.py` was lifted, then reverted (2026-08-06)
+### `policy.py` was lifted, then reverted, then redone (2026-08-06)
 
 `hub/framework/policy.py` briefly re-exported `Policy`/`Verdict`/`Notification` from
 `qonclave.hub.policy`, with three hooks renamed: `evaluate(image_path, event: dict)` →
@@ -201,6 +201,14 @@ losing tested behavior. See the `TODO` at the top of `hub/framework/policy.py`.
 reapply the rename against *that* method set, not the one from the first attempt; (3) update every
 `apps/*/policy.py` subclass and every `hub/framework/server.py` call site in the same change, so
 the contract and its only caller never disagree mid-commit.
+
+**Done, same day.** All three steps landed together: `qonclave.hub.policy.Policy` gained the three
+track hooks, `hub/framework/policy.py` is now a re-export shim (same shape as `adapter.py`), and
+`hub/apps/security/policy.py` plus every call site in `hub/framework/server.py` (`/edge/event`,
+`/sms`, `/user/llm_response`) moved to the typed contract in the same change. `command_for`'s
+return is converted to a wire dict via `adapter.command_to_wire()` before it reaches MQTT or the
+HTTP response — the one place a `qonclave.core.models.Command` object would otherwise leak past
+the framework boundary.
 
 Three more of the table's rows are worth explaining.
 

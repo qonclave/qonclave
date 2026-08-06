@@ -185,7 +185,7 @@ static test pages vary per use case.
 | GET | `/test/mqtt/messages` | Recently received MQTT messages, optionally filtered by `?topic=` |
 | POST | `/edge/event` | Edge event JSON + frame in, policy-driven verification response out |
 | POST | `/track/analyze` | Per-track-id analysis: one cropped-person JPEG + `track_id` in, fanned out to the requested `analyzers` (`face`, `pose`), independent sub-objects out. Bypasses Policy entirely. |
-| POST | `/sms` | Twilio inbound-reply webhook: runs `policy.on_sms_reply()`, optionally publishes MQTT command |
+| POST | `/sms` | Twilio inbound-reply webhook: runs `policy.on_reply()`, optionally publishes MQTT command |
 | GET | `/user/dashboard` | Live event / verification dashboard page (also the default `/user/` landing) |
 | GET | `/user/network` | Network page: this hub + devices seen on the LAN, placed by round-trip time |
 | GET | `/user/devices` | Devices seen on the network (JSON) |

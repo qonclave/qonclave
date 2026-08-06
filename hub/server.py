@@ -51,6 +51,7 @@ from framework.face_id.identity import FaceIdentityBackend  # noqa: E402
 from framework.pose.pose import PoseBackend  # noqa: E402
 from framework.sms_bus import SMSBus  # noqa: E402
 from apps.security.policy import SecurityPolicy  # noqa: E402
+from apps.security.placement import SecurityPlacement  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "apps", "security", "static")
@@ -72,8 +73,9 @@ face_id = FaceIdentityBackend()
 pose = PoseBackend()
 sms = SMSBus()
 policy = SecurityPolicy(vlm, face_id, sms, llm, mqtt=mqtt)
+placement = SecurityPlacement()
 app = create_app(policy=policy, vlm=vlm, mqtt=mqtt, sms=sms, face_id=face_id,
-                 static_dir=STATIC_DIR, llm=llm, pose=pose,
+                 static_dir=STATIC_DIR, llm=llm, pose=pose, placement=placement,
                  assistant_llm=llm if ASSISTANT_LLM_ENABLED else None)
 
 

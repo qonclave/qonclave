@@ -485,15 +485,15 @@ def test_policy_sms_capture_keyword(tmp_path, monkeypatch):
 
     # CAPTURE starts an investigation (no MQTT command via the framework's
     # reply path -- trigger_manual publishes the capture command itself).
-    assert policy.on_sms_reply("+15551234567", "capture") is None
+    assert policy.on_reply("+15551234567", "capture") is None
     assert mqtt.published[0][1]["command"] == "capture_investigation_image"
-    ack = policy.reply_for_sms("+15551234567", "capture")
+    ack = policy.reply_for("+15551234567", "capture")
     assert "analyzing" in ack.lower()
 
     # A second CAPTURE while busy is refused with an explanatory reply.
-    assert policy.on_sms_reply("+15551234567", "CAPTURE") is None
+    assert policy.on_reply("+15551234567", "CAPTURE") is None
     assert len(mqtt.published) == 1
-    busy = policy.reply_for_sms("+15551234567", "CAPTURE")
+    busy = policy.reply_for("+15551234567", "CAPTURE")
     assert "cannot" in busy.lower()
 
     # Capture arrives -> reasoning is texted back to the sender.

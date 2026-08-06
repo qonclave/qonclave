@@ -27,7 +27,7 @@ Endpoints:
                                MQTT command: event_id + one fresh frame,
                                handed to the policy's investigation flow
     POST /sms                 Twilio inbound-reply webhook: runs policy
-                               on_sms_reply(), optionally publishes MQTT command
+                               on_reply(), optionally publishes MQTT command
 
     GET  /user/dashboard      live dashboard page (app-provided static/);
                                also the default landing page (/, /user/)
@@ -76,6 +76,9 @@ import re
 import time
 
 from flask import Flask, Response, jsonify, redirect, request, send_from_directory
+from qonclave.placement import InferenceTask, PlacementPolicy, resolve
+from qonclave.placement.probe import build, local_state
+from qonclave.placement.tiers import Tier
 
 from . import adapter, device_registry, discovery, events, icons, recognize_activity, track_store, transport
 from .face_id.identity import _slugify_name
@@ -174,7 +177,7 @@ def _publish_track_frame(track_id: int, crop_jpeg: bytes, keypoints, label: str)
 
 def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
                static_dir: str, face_id=None, llm: LLMBackend | None = None,
-               pose=None,
+               pose=None, placement: PlacementPolicy | None = None,
                assistant_llm: LLMBackend | None = None) -> Flask:
     """
     Build the Qonclave hub Flask app for one Policy.
@@ -191,7 +194,13 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
     sms         shared SMSBus; sends an SMS when notify_for() returns a
                 Notification (trial mode: fixed template + fixed number)
     llm         optional LLMBackend (text-only Qwen3-4B); used by the Policy
-                for on_sms_reply() reasoning; exposed via /health
+                for on_reply() reasoning; exposed via /health
+    placement   optional qonclave.placement.PlacementPolicy instance. When
+                given, /edge/event runs it (observability only today -- this
+                deployment has no compute tier, so the resolved tier is
+                always where the event was already going) and logs the
+                resolution. The app supplies its own PlacementPolicy the same
+                way it supplies its own Policy; framework/ never imports one.
     assistant_llm
                 LLMBackend the /assistant/query route generates with, or None
                 to make it serve canned template replies instead. Separate
@@ -308,9 +317,7 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
         log.info("POST /edge/event from %s (content-type=%s, len=%s)",
                  client, request.headers.get("Content-Type"), request.content_length)
 
-        # One validated model from here down, whichever vocabulary arrived.
-        # adapter.to_legacy_dict renders it back for the Policy, which still
-        # takes a dict; phase 3 retires that call.
+        # One validated model from here down, all the way through the Policy.
         event = transport.parse_edge_event()
 
         path, err = transport.save_incoming_image(event)
@@ -321,20 +328,32 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
         device_registry.record(device_id=event.source_node_id, ip=client,
                                source="event")
 
-        event_dict = adapter.to_legacy_dict(event)
         event_id = event.event_id
         frame_name = os.path.basename(path) if path else None
         log.info("Edge event %s | device=%s | edge_conf=%s | frame=%s",
                  event_id, event.source_node_id, event.confidence,
                  frame_name or "(none)")
 
-        verdict = policy.evaluate(path, event_dict)
-        command = policy.command_for(verdict, event_dict)
-        device_id = event.source_node_id
-        if command is not None and device_id:
-            mqtt.publish_command(device_id, command)
+        if placement is not None:
+            try:
+                task = InferenceTask.from_event(event, task_id=event_id)
+                tiers = build(local_state("hub", Tier.HUB))
+                resolution = resolve(task, tiers, placement)
+                log.debug("Placement for %s: %s", event_id, resolution.explain())
+            except Exception as e:
+                # Observability only -- today's single-laptop deployment has
+                # nowhere else to send the event anyway, so a placement bug
+                # must never block ingestion.
+                log.warning("Placement decision failed for %s: %s", event_id, e)
 
-        notification = policy.notify_for(verdict, event_dict)
+        verdict = policy.evaluate(event, image_path=path)
+        command = policy.command_for(verdict, event)
+        command_wire = adapter.command_to_wire(command) if command is not None else None
+        device_id = event.source_node_id
+        if command_wire is not None and device_id:
+            mqtt.publish_command(device_id, command_wire)
+
+        notification = policy.notify_for(verdict, event)
         if notification is not None:
             sms.send(notification)
 
@@ -345,7 +364,7 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
             "hub_verified": verdict.verified,
             "hub_confidence": verdict.confidence,
             "alert": verdict.alert,
-            "command": command,
+            "command": command_wire,
             **verdict.extra,
         }
 
@@ -687,7 +706,7 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
         body = request.form.get("Body", "").strip()
         log.info("SMS reply from %s: %r", sender, body)
 
-        command = policy.on_sms_reply(sender, body)
+        command = policy.on_reply(sender, body)
         if command is not None:
             device_id = events.latest_device_id()
             if device_id:
@@ -702,11 +721,11 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
         else:
             action = "ignored"
 
-        reply_text = policy.reply_for_sms(sender, body)
+        reply_text = policy.reply_for(sender, body)
         if reply_text:
             from .policy import Notification
             sent = sms.send(Notification(message=reply_text, recipient=sender))
-            log.info("SMS reply_for_sms -> sent=%s: %r", sent, reply_text[:80])
+            log.info("SMS reply_for -> sent=%s: %r", sent, reply_text[:80])
 
         sms.record_reply(sender, body, action)
         return ("", 200)
@@ -935,7 +954,7 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
     @app.get("/user/llm_response")
     def user_llm_response():
         """Latest LLM analysis of an inbound SMS reply, for the dashboard."""
-        analysis = policy.last_sms_analysis()
+        analysis = policy.dashboard_state()
         return jsonify({
             "available": (llm.status().get("available") if llm else False),
             "analysis": analysis,

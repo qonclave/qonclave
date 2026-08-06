@@ -71,31 +71,11 @@ class SecurityPlacement(PlacementPolicy):
 
 
 def task_from_event(event, *, task_id: str) -> InferenceTask:
-    """Build an InferenceTask from an inbound EdgeEvent.
-
-    The event may carry a `task` descriptor the edge declared, including the
-    budget it has already spent. When it does not — which is every event from a
-    device that has not been reflashed — the defaults apply and nothing has a
-    deadline, so the budget rule above never fires. That is deliberate: this
-    must not change behaviour for a device that knows nothing about it.
-    """
-    declared = event.task
-    if declared is None:
-        return InferenceTask.declare(
-            task_id, complexity=Complexity.VLM_REASON,
-            use_case="person_verification", image_path=None,
-        )
-
-    task = InferenceTask.declare(
-        task_id,
-        complexity=declared.complexity,
-        urgency=declared.urgency,
-        privacy=declared.privacy,
-        use_case=declared.use_case or "person_verification",
-        deadline_ms=declared.deadline_ms,
+    """Build an InferenceTask from an inbound EdgeEvent, defaulting to this app's
+    own use case when the edge hasn't declared one. See InferenceTask.from_event
+    for what happens when it has."""
+    return InferenceTask.from_event(
+        event, task_id=task_id,
+        default_complexity=Complexity.VLM_REASON,
+        default_use_case="person_verification",
     )
-    # declare() seeds remaining from deadline; the edge already spent some of it.
-    if declared.remaining_ms is not None:
-        task.descriptor.remaining_ms = declared.remaining_ms
-    task.descriptor.hops = list(declared.hops or [])
-    return task

@@ -14,6 +14,8 @@ import json
 import logging
 import threading
 
+from qonclave.core.models import EdgeEvent
+
 from framework.policy import Policy, Verdict, Notification
 from framework.vlm import VLMBackend
 from framework.llm import LLMBackend
@@ -87,13 +89,13 @@ class SecurityPolicy(Policy):
         # the VLM running on every escalated frame.
         self.investigation = InvestigationManager(vlm, sms, mqtt)
         # Outcome of the most recent SMS "CAPTURE" trigger, shared between
-        # on_sms_reply() and reply_for_sms() (called back-to-back).
+        # on_reply() and reply_for() (called back-to-back).
         self._last_capture_request: tuple[str | None, dict] = (None, {})
         # Last verified verdict stored so it can be injected into LLM context
         # for richer SMS reply reasoning.
         self._last_verdict: Verdict | None = None
-        # One LLM call per inbound message, shared between on_sms_reply() and
-        # reply_for_sms() which the framework calls back-to-back. Keyed by
+        # One LLM call per inbound message, shared between on_reply() and
+        # reply_for() which the framework calls back-to-back. Keyed by
         # (sender, body); holds the most recent result only.
         self._llm_cache: tuple[str, str, dict] | None = None  # (sender, body, result)
         self._llm_cache_lock = threading.Lock()
@@ -140,7 +142,7 @@ class SecurityPolicy(Policy):
     def update_track_settings(self, values):
         return self.posture.update_settings(values)
 
-    def evaluate(self, image_path: str, event: dict) -> Verdict:
+    def evaluate(self, event: EdgeEvent, image_path: str | None = None) -> Verdict:
         # Run face-ID up front — it does its own independent face detection,
         # so it doesn't need to wait on the VLM's person_present verdict —
         # and fold any known name into the verify prompt so the VLM's
@@ -297,14 +299,14 @@ class SecurityPolicy(Policy):
             "identity_unknown_count": sum(1 for f in faces if not f.get("identified")),
         }
 
-    def notify_for(self, verdict: Verdict, event: dict) -> Notification | None:
+    def notify_for(self, verdict: Verdict, event: EdgeEvent) -> Notification | None:
         if verdict.verified:
             self._last_verdict = verdict
             reasoning = verdict.reasoning_text or ""
             message = f"{verdict.alert}. {reasoning}".strip() if reasoning else verdict.alert
             return Notification(
                 message=message,
-                recipient=event.get("device_id", "unknown"),
+                recipient=event.source_node_id or "unknown",
             )
         return None
 
@@ -313,7 +315,7 @@ class SecurityPolicy(Policy):
     def _llm_interpret_reply(self, sender: str, body: str) -> dict:
         """
         Run (or return cached) LLM interpretation of an inbound SMS reply.
-        Called from both on_sms_reply() and reply_for_sms() so the model runs
+        Called from both on_reply() and reply_for() so the model runs
         exactly once per inbound message regardless of call order.
 
         Returns a parsed dict with keys: intent, mqtt_command, reply.
@@ -382,7 +384,7 @@ class SecurityPolicy(Policy):
             self._llm_cache = (sender, body, parsed)
         return parsed
 
-    def on_sms_reply(self, sender: str, body: str) -> dict | None:
+    def on_reply(self, sender: str, body: str) -> dict | None:
         keyword = body.strip().upper()
 
         if keyword == "STOP":
@@ -416,9 +418,9 @@ class SecurityPolicy(Policy):
                  parsed.get("intent"), body, sender)
         return None
 
-    def reply_for_sms(self, sender: str, body: str) -> str | None:
+    def reply_for(self, sender: str, body: str) -> str | None:
         keyword = body.strip().upper()
-        # Keywords are handled entirely in on_sms_reply; no LLM reply needed.
+        # Keywords are handled entirely in on_reply; no LLM reply needed.
         if keyword in ("STOP", "DISPATCH"):
             return None
 
@@ -436,7 +438,7 @@ class SecurityPolicy(Policy):
         reply = parsed.get("reply")
         return reply if reply else None
 
-    def last_sms_analysis(self) -> dict | None:
+    def dashboard_state(self) -> dict | None:
         with self._llm_cache_lock:
             if self._llm_cache is None:
                 return None

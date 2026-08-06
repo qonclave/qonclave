@@ -39,6 +39,11 @@ and independently under `spec/v1/`.
   `hub/`'s independent feature work back into the branch that lifted `events.py` onto `EventStore`
   — without it, `note_device()` referenced module-level state that no longer existed post-lift, a
   silent `NameError` waiting on the first `/track/analyze` or `/edge/investigation` call.
+- **`InferenceTask.from_event()`** — build a task from an inbound `EdgeEvent`'s declared `task`
+  descriptor, with a caller-supplied fallback complexity/use_case for events that don't declare
+  one (true of every device that hasn't been reflashed to). Generalizes what
+  `hub/apps/security/placement.py`'s `task_from_event()` did locally, so framework-level code that
+  wants a placement decision doesn't need an app-specific default to get one.
 
 ### Changed
 
@@ -62,9 +67,15 @@ and independently under `spec/v1/`.
 ### Notes
 
 `edge/` is still untouched — nothing under it imports `qonclave.*` yet. `hub/` is no longer fully
-untouched: `hub/framework/adapter.py`, `events.py`, and `transport.py` are thin shims over this
-SDK today. `hub/framework/policy.py` was lifted the same way and then reverted while merging
-`hub/`'s own feature work (2026-08-06) — `docs/CONVENTIONS.md`'s "Where existing code lands"
-section is the current, maintained status of every module, including that revert and what redoing
-it correctly requires. Pointing the rest of `hub/server.py` at `qonclave.hub` remains a separate,
-later change.
+untouched: `hub/framework/adapter.py`, `events.py`, `transport.py`, and now `policy.py` are thin
+shims over this SDK today. `hub/framework/policy.py` was lifted, reverted while merging `hub/`'s
+own feature work, and redone (all 2026-08-06) — `docs/CONVENTIONS.md`'s "Where existing code
+lands" section is the current, maintained status of every module. Pointing the rest of
+`hub/server.py` at `qonclave.hub` remains a separate, later change.
+
+`hub/apps/security/placement.py`'s `SecurityPlacement` had zero callers until now — clean usage of
+`qonclave.placement`, but unproven under real traffic. `create_app()` gained an optional
+`placement` parameter that runs it inside `/edge/event` (observability only: this deployment has
+no compute tier, so the resolved tier never changes what happens next) — the first real evidence
+the placement API works for a non-SDK-authored consumer, ahead of the broader `framework/sdk/`
+migration roadmap this unblocks.
