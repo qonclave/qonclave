@@ -1,121 +1,184 @@
+#!/usr/bin/env python3
 """
-test_track_store.py — the per-track keypoint history.
+test_track_store.py — ring-buffer contract for framework/track_store.py:
+per-track history cap, prune, snapshot shape, latest-frame bookkeeping.
 
-This buffer is what fall logic will read, so its two structural properties
-matter more than they look: it is bounded PER TRACK (one person standing still
-must not evict everyone else's history), and identity is sticky (a later frame
-showing the back of someone's head is not evidence they became a stranger).
+Run from the repo root:
+    python hub/tests/test_track_store.py
 """
-
-from __future__ import annotations
 
 import os
 import sys
 
-import pytest
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+HERE = os.path.dirname(os.path.abspath(__file__))
+HUB_DIR = os.path.dirname(HERE)
+sys.path.insert(0, HUB_DIR)
 
 from framework import track_store  # noqa: E402
 
-KNOWN = {"identity": "Jogendra", "confidence": 0.93, "status": "known"}
-UNKNOWN = {"identity": "unknown", "confidence": 0.2, "status": "unknown"}
-POSE_OK = {"status": "ok", "keypoints": [[1.0, 2.0, 0.9]] * 17, "mean_score": 0.8}
-POSE_NONE = {"status": "no_pose", "keypoints": None, "mean_score": 0.05}
+_FACE = {"identity": "Jogendra", "confidence": 0.93, "status": "known"}
+_POSE = {"status": "ok", "keypoints": [[1.0, 2.0, 0.9]] * 17, "mean_score": 0.71}
 
 
-@pytest.fixture(autouse=True)
-def _clean():
+def test_record_and_history_roundtrip():
     track_store.clear()
-    yield
-    track_store.clear()
-
-
-def test_records_and_reads_back():
-    track_store.record(1, KNOWN, POSE_OK)
-    hist = track_store.history(1)
+    track_store.record(4, _FACE, _POSE, frame_name="track_4.jpg")
+    hist = track_store.history(4)
     assert len(hist) == 1
-    assert hist[0]["identity"] == "Jogendra"
-    assert len(hist[0]["keypoints"]) == 17
+    sample = hist[0]
+    assert sample["identity"] == "Jogendra"
+    assert sample["status"] == "known"
+    assert sample["pose_status"] == "ok"
+    assert sample["mean_score"] == 0.71
+    assert sample["keypoints"] == _POSE["keypoints"]
+    assert "ts" in sample
+    assert track_store.latest_frame(4) == "track_4.jpg"
 
 
-def test_history_is_bounded_per_track(monkeypatch):
-    monkeypatch.setattr(track_store, "HISTORY_MAX", 5)
+def test_partial_results_are_recorded_as_none():
     track_store.clear()
-    for _ in range(20):
-        track_store.record(1, KNOWN, POSE_OK)
-    assert len(track_store.history(1)) == 5
+    track_store.record(4, None, _POSE)          # pose-only tick (known person)
+    track_store.record(4, _FACE, None)          # face-only tick
+    hist = track_store.history(4)
+    assert hist[0]["identity"] is None and hist[0]["pose_status"] == "ok"
+    assert hist[1]["identity"] == "Jogendra" and hist[1]["pose_status"] is None
 
 
-def test_one_busy_track_does_not_evict_another():
-    """The reason the buffer is per track rather than global."""
-    track_store.record(2, KNOWN, POSE_OK)
-    for _ in range(500):
-        track_store.record(1, KNOWN, POSE_OK)
-    assert len(track_store.history(2)) == 1
+def test_history_is_capped_at_maxlen():
+    track_store.clear()
+    for _ in range(track_store.HISTORY_MAX + 25):
+        track_store.record(4, None, _POSE)
+    assert len(track_store.history(4)) == track_store.HISTORY_MAX
 
 
-def test_identity_is_sticky():
-    """Matches the edge's IdentityMap rule. A person who turns away has not
-    become someone else."""
-    track_store.record(1, KNOWN, POSE_OK)
-    track_store.record(1, UNKNOWN, POSE_OK)
-    snap = track_store.snapshot()
-    assert snap[1]["identity"] == "Jogendra"
-    assert snap[1]["status"] == "known"
-
-
-def test_a_sample_with_neither_analyzer_is_still_recorded():
-    """'We looked and saw nothing' is information. A gap and a negative are
-    different things to anything reading this as a time series."""
-    track_store.record(1, None, None)
-    hist = track_store.history(1)
-    assert len(hist) == 1
-    assert hist[0]["keypoints"] is None
-
-
-def test_no_pose_is_distinguishable_from_a_gap():
-    track_store.record(1, KNOWN, POSE_NONE)
-    assert track_store.history(1)[0]["pose_status"] == "no_pose"
+def test_unknown_track_has_empty_history_and_no_frame():
+    track_store.clear()
+    assert track_store.history(99) == []
+    assert track_store.latest_frame(99) is None
 
 
 def test_snapshot_shape():
-    track_store.record(3, KNOWN, POSE_OK, frame_name="track_3.jpg")
-    row = track_store.snapshot()[3]
-    assert set(row) == {"identity", "status", "history_len", "last_seen", "latest_pose"}
-    assert row["history_len"] == 1
-    assert row["latest_pose"]["status"] == "ok"
+    track_store.clear()
+    track_store.record(4, _FACE, _POSE, frame_name="track_4.jpg")
+    track_store.record(5, None, {"status": "no_pose", "keypoints": None, "mean_score": 0.05})
+    snap = track_store.snapshot()
+    assert set(snap) == {4, 5}
+    assert snap[4]["identity"] == "Jogendra"
+    assert snap[4]["status"] == "known"
+    assert snap[4]["history_len"] == 1
+    assert snap[4]["has_frame"] is True
+    assert snap[4]["latest_pose"]["status"] == "ok"
+    assert snap[4]["latest_pose"]["mean_score"] == 0.71
+    assert snap[5]["identity"] is None
+    assert snap[5]["has_frame"] is False
+    assert snap[5]["latest_pose"]["status"] == "no_pose"
 
 
-def test_latest_returns_the_newest_sample():
-    track_store.record(1, KNOWN, POSE_OK)
-    track_store.record(1, KNOWN, POSE_NONE)
-    assert track_store.latest(1)["pose_status"] == "no_pose"
+def test_snapshot_keeps_identity_through_pose_only_samples():
+    # The real steady state: face resolves once, then the edge sends pose
+    # only. The newest sample carries no face result, but the person is still
+    # identified -- snapshot() must not report them as unidentified.
+    track_store.clear()
+    track_store.record(4, _FACE, _POSE)
+    for _ in range(10):
+        track_store.record(4, None, _POSE)
+    snap = track_store.snapshot()[4]
+    assert snap["identity"] == "Jogendra"
+    assert snap["status"] == "known"
+    assert snap["latest_pose"]["status"] == "ok"   # still the newest sample's
 
 
-def test_prune_drops_tracks_the_edge_no_longer_reports():
-    """The edge owns track lifetime — it assigns the ids and knows when someone
-    left. The hub ageing entries out on its own timer would make the two
-    disagree about who is present."""
-    for track_id in (1, 2, 3):
-        track_store.record(track_id, KNOWN, POSE_OK)
-    dropped = track_store.prune({1, 3})
-    assert sorted(dropped) == [2]
-    assert set(track_store.snapshot()) == {1, 3}
+def test_snapshot_identity_is_the_most_recent_face_result():
+    track_store.clear()
+    track_store.record(4, {"identity": "no_face", "confidence": 0.0, "status": "no_face"}, None)
+    track_store.record(4, _FACE, None)
+    track_store.record(4, None, _POSE)
+    snap = track_store.snapshot()[4]
+    assert (snap["identity"], snap["status"]) == ("Jogendra", "known")
 
 
-def test_prune_with_nothing_active_clears_everything():
-    track_store.record(1, KNOWN, POSE_OK)
-    track_store.prune(set())
-    assert track_store.snapshot() == {}
+def test_snapshot_known_identity_survives_later_weak_face_results():
+    track_store.clear()
+    track_store.record(6, _FACE, _POSE)
+    track_store.record(
+        6, {"identity": "unknown", "confidence": 0.12, "status": "unknown"}, _POSE)
+    track_store.record(
+        6, {"identity": "no_face", "confidence": 0.0, "status": "no_face"}, _POSE)
+
+    snap = track_store.snapshot()[6]
+    assert snap["identity"] == "Jogendra"
+    assert snap["status"] == "known"
 
 
-def test_latest_frame_tracks_the_last_written_name():
-    track_store.record(1, KNOWN, POSE_OK, frame_name="track_1.jpg")
-    assert track_store.latest_frame(1) == "track_1.jpg"
+def test_record_frame_is_served_from_memory():
+    track_store.clear()
+    assert track_store.latest_frame_bytes(4) is None
+    track_store.record_frame(4, b"jpeg-one")
+    assert track_store.latest_frame_bytes(4) == b"jpeg-one"
+    track_store.record_frame(4, b"jpeg-two")
+    assert track_store.latest_frame_bytes(4) == b"jpeg-two"
 
 
-def test_unknown_track_reads_are_empty_not_errors():
-    assert track_store.history(999) == []
-    assert track_store.latest(999) is None
-    assert track_store.latest_frame(999) is None
+def test_wait_for_frame_returns_immediately_when_newer_exists():
+    track_store.clear()
+    track_store.record_frame(4, b"jpeg-one")
+    frame, seq = track_store.wait_for_frame(4, last_seq=-1, timeout=0.1)
+    assert frame == b"jpeg-one"
+    # Same seq back in: nothing newer, so it blocks then reports no change.
+    frame2, seq2 = track_store.wait_for_frame(4, last_seq=seq, timeout=0.05)
+    assert frame2 is None and seq2 == seq
+
+
+def test_wait_for_frame_wakes_on_a_new_frame():
+    import threading as _t
+    track_store.clear()
+    track_store.record_frame(4, b"first")
+    _, seq = track_store.wait_for_frame(4, last_seq=-1, timeout=0.1)
+
+    _t.Timer(0.05, lambda: track_store.record_frame(4, b"second")).start()
+    frame, new_seq = track_store.wait_for_frame(4, last_seq=seq, timeout=2.0)
+    assert frame == b"second"
+    assert new_seq != seq
+
+
+def test_track_count_is_capped_by_lru_eviction():
+    track_store.clear()
+    for tid in range(track_store.TRACKS_MAX + 10):
+        track_store.record(tid, None, _POSE)
+    snap = track_store.snapshot()
+    assert len(snap) == track_store.TRACKS_MAX
+    # The oldest ids were evicted; the newest survive.
+    assert 0 not in snap
+    assert (track_store.TRACKS_MAX + 9) in snap
+
+
+def test_has_frame_is_true_for_memory_only_frames():
+    track_store.clear()
+    track_store.record(4, None, _POSE)          # no frame_name (retention off)
+    track_store.record_frame(4, b"jpeg")
+    assert track_store.snapshot()[4]["has_frame"] is True
+
+
+def test_prune_drops_inactive_and_reports_them():
+    track_store.clear()
+    track_store.record(4, _FACE, _POSE, frame_name="track_4.jpg")
+    track_store.record(5, None, _POSE)
+    track_store.record(6, None, _POSE)
+    track_store.record_frame(4, b"jpeg")
+    dropped = track_store.prune(active_ids={5})
+    assert sorted(dropped) == [4, 6]
+    assert set(track_store.snapshot()) == {5}
+    assert track_store.latest_frame(4) is None        # frame bookkeeping pruned too
+    assert track_store.latest_frame_bytes(4) is None  # and the in-memory frame
+
+
+def run_all():
+    tests = [obj for name, obj in globals().items() if name.startswith("test_")]
+    for test in tests:
+        test()
+        print(f"PASS: {test.__name__}")
+    print(f"\n{len(tests)} passed")
+
+
+if __name__ == "__main__":
+    run_all()

@@ -29,13 +29,13 @@ def test_stacked_front_and_rear_lens_bearings():
 
 
 def test_controller_uses_exact_error_direction_and_rounded_magnitude():
-    controller = PersonCenteringController(minimum_interval_seconds=0)
+    controller = PersonCenteringController(minimum_interval_seconds=0, turn_gain=1.0)
     right = controller.command_for(23.6, track_id=7, now=0)
     assert right.direction == "RIGHT"
     assert right.magnitude == 24
     assert right.angle_error_degrees == 23.6
 
-    controller = PersonCenteringController(minimum_interval_seconds=0)
+    controller = PersonCenteringController(minimum_interval_seconds=0, turn_gain=1.0)
     left = controller.command_for(-12.2, track_id=8, now=0)
     assert left.direction == "LEFT"
     assert left.magnitude == 12
@@ -43,13 +43,50 @@ def test_controller_uses_exact_error_direction_and_rounded_magnitude():
 
 def test_controller_tolerance_cap_and_cooldown():
     controller = PersonCenteringController(
-        tolerance_degrees=3, max_turn_degrees=45, minimum_interval_seconds=1
+        tolerance_degrees=3, max_turn_degrees=45, minimum_interval_seconds=1,
+        turn_gain=1.0,
     )
     assert controller.command_for(2.9, track_id=1, now=0) is None
     first = controller.command_for(120, track_id=1, now=0)
     assert first.magnitude == 45
     assert controller.command_for(30, track_id=1, now=0.5) is None
     assert controller.command_for(30, track_id=1, now=1.0) is not None
+
+
+def test_turn_gain_scales_correction():
+    controller = PersonCenteringController(minimum_interval_seconds=0, turn_gain=0.7)
+    turn = controller.command_for(20.0, track_id=1, now=0)
+    assert turn.magnitude == 14  # 20 * 0.7
+    assert turn.angle_error_degrees == 20.0
+
+
+def test_note_motion_blanks_bearings_until_window_expires():
+    controller = PersonCenteringController(
+        minimum_interval_seconds=0, post_motion_blank_seconds=1.5
+    )
+    # A commanded 0.5s move blanks until its end plus the blank window.
+    controller.note_motion(duration_seconds=0.5, now=0)
+    assert controller.command_for(30, track_id=1, now=0.4) is None
+    assert controller.command_for(30, track_id=1, now=1.9) is None
+    assert controller.command_for(30, track_id=1, now=2.0) is not None
+
+
+def test_note_motion_extends_but_never_shrinks_blank_window():
+    controller = PersonCenteringController(
+        minimum_interval_seconds=0, post_motion_blank_seconds=1.0
+    )
+    controller.note_motion(duration_seconds=2.0, now=0)  # blank until 3.0
+    controller.note_motion(now=0.5)  # would end at 1.5; must not shrink
+    assert controller.command_for(30, track_id=1, now=2.9) is None
+    assert controller.command_for(30, track_id=1, now=3.0) is not None
+
+
+def test_blanked_controller_issues_no_command_even_for_large_error():
+    controller = PersonCenteringController(
+        minimum_interval_seconds=0, post_motion_blank_seconds=1.0
+    )
+    controller.note_motion(now=0)
+    assert controller.command_for(90, track_id=1, now=0.99) is None
 
 
 def run_all():

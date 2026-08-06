@@ -1,5 +1,19 @@
 # Plan: unified per-track analysis API + hub-side pose detection
 
+> **STATUS: IMPLEMENTED** — all five phases are built, tested, and verified
+> end-to-end (edge on the UNO Q → hub on the Snapdragon X Elite; 1.39 ms
+> NPU inference, live skeleton at `/user/tracks/<id>.jpg`). Deviations from
+> this plan as written: the edge client file is `analysis_client.py`; the
+> gitignore entries live in the root `.gitignore` (there is no
+> `hub/.gitignore`); pose setup is wired into `setup_hub.ps1` directly (the
+> face-ID chain goes through its own `setup/setup.ps1`); the shared
+> `qnn_session.py` takes optional provider options and pose opts into
+> `htp_performance_mode: burst`; `PoseBackend.status()` reports the
+> session's *resolved* provider rather than mirroring
+> `FaceIdentityBackend`'s load-time guess; and the dashboard's recognition
+> feed was kept, fed by the face sub-result. See `qonclave_plan.md` §14 for
+> the up-to-date scope record.
+
 Roadmap item 3 from `docs/scratch.txt`. Targets branch `main` with the
 uncommitted per-track recognition feature in the working tree.
 
@@ -326,8 +340,8 @@ All tests keep the repo's dependency-free `run_all()` + `if __name__ ==
 ## Risks
 
 - **Edge CPU at 4 Hz.** The single-decode change in Phase 4 is the mitigation;
-  if the UNO Q still struggles, lower `POSE_SAMPLE_INTERVAL_SEC` first — the
-  hub side has enormous headroom (1.45 ms/inference).
+  if the UNO Q still struggles, raise `POSE_SAMPLE_INTERVAL_SEC` first (fewer
+  samples per second) — the hub side has enormous headroom (1.45 ms/inference).
 - **Context-binary portability.** `hrnet_pose_ctx.onnx` is tied to the QAIRT
   build and HTP arch that produced it. Regenerate via `setup_pose.ps1` on each
   host; the raw-model fallback keeps things working if it's stale.

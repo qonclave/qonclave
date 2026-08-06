@@ -1,10 +1,10 @@
 """
-overlay.py — draw a COCO-17 skeleton onto a crop.
+overlay.py — draw a COCO-17 skeleton over a person crop.
 
-Kept separate from `pose.py` so inference never depends on a drawing library,
-and so a failed overlay can never fail an estimate. The colour scheme is
-left-cool / right-warm, which is the fastest way to see a left/right swap — the
-most common way a top-down pose model goes wrong on a person facing away.
+Used by the hub's /track/analyze pipeline to write the per-track annotated
+frames (hub/track_frames/track_<id>.jpg) that GET /user/tracks/<id>.jpg
+serves. Colour convention from the prototype: right side warm (orange), left
+side cool (blue), joints green.
 """
 
 from __future__ import annotations
@@ -13,80 +13,56 @@ import logging
 
 log = logging.getLogger("qonclave.pose")
 
-# COCO-17 skeleton, as (from, to) keypoint indices.
-SKELETON = (
-    (15, 13), (13, 11), (16, 14), (14, 12), (11, 12),   # legs + hips
-    (5, 11), (6, 12), (5, 6),                            # torso
-    (5, 7), (7, 9), (6, 8), (8, 10),                     # arms
-    (1, 2), (0, 1), (0, 2), (1, 3), (2, 4),              # head
-)
+# COCO-17 skeleton edge list (indices into pose_pipeline.KEYPOINT_NAMES).
+SKELETON = [(15, 13), (13, 11), (16, 14), (14, 12), (11, 12), (5, 11), (6, 12),
+            (5, 6), (5, 7), (6, 8), (7, 9), (8, 10), (1, 2), (0, 1), (0, 2),
+            (1, 3), (2, 4), (3, 5), (4, 6)]
+# limb colors (BGR): right side warm, left side cool
+_RIGHT = (2, 4, 6, 8, 10, 12, 14, 16)
+COLORS = [(0, 170, 255) if a in _RIGHT or b in _RIGHT else (255, 170, 0)
+          for a, b in SKELETON]
 
-# BGR, because OpenCV. Cool = left, warm = right.
-LEFT_COLOR = (255, 176, 0)
-RIGHT_COLOR = (0, 140, 255)
-CENTER_COLOR = (200, 200, 200)
-
-LEFT_KEYPOINTS = frozenset({1, 3, 5, 7, 9, 11, 13, 15})
-RIGHT_KEYPOINTS = frozenset({2, 4, 6, 8, 10, 12, 14, 16})
-
-MIN_DRAW_SCORE = 0.1
+KP_THRESHOLD = 0.12  # min keypoint score to draw
 
 
-def _color_for(index: int):
-    if index in LEFT_KEYPOINTS:
-        return LEFT_COLOR
-    if index in RIGHT_KEYPOINTS:
-        return RIGHT_COLOR
-    return CENTER_COLOR
+def draw_pose_overlay(crop_jpeg: bytes, keypoints, label: str = "",
+                      kp_thresh: float = KP_THRESHOLD) -> "bytes | None":
+    """Draw the skeleton (and an optional label) onto a JPEG crop.
 
-
-def draw_pose_overlay(crop_jpeg: bytes, keypoints, label: str | None = None) -> bytes:
-    """Return `crop_jpeg` with a skeleton drawn on it.
-
-    Best-effort: on any failure the ORIGINAL bytes come back rather than an
-    exception or a blank image. This is decoration on a retention artifact, and
-    losing the decoration is always better than losing the frame.
+    keypoints: 17 x [x, y, score] in the crop's pixel space, as returned by
+    PoseBackend.estimate(). Returns re-encoded JPEG bytes, or None if the
+    input can't be decoded/encoded — never raises.
     """
-    if not crop_jpeg or not keypoints:
-        return crop_jpeg
-
     try:
         import cv2
         import numpy as np
 
-        buf = np.frombuffer(crop_jpeg, dtype=np.uint8)
-        image = cv2.imdecode(buf, cv2.IMREAD_COLOR)
-        if image is None:
-            return crop_jpeg
+        frame = cv2.imdecode(np.frombuffer(crop_jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if frame is None:
+            return None
 
-        h, w = image.shape[:2]
+        kps = np.asarray(keypoints, dtype=np.float32)
+        if kps.ndim != 2 or kps.shape[1] != 3:
+            return None
 
-        def visible(kp):
-            x, y, score = kp
-            return score >= MIN_DRAW_SCORE and 0 <= x < w and 0 <= y < h
-
-        for a, b in SKELETON:
-            if a >= len(keypoints) or b >= len(keypoints):
-                continue
-            ka, kb = keypoints[a], keypoints[b]
-            if not (visible(ka) and visible(kb)):
-                continue
-            cv2.line(image, (int(ka[0]), int(ka[1])), (int(kb[0]), int(kb[1])),
-                     _color_for(a), 2, cv2.LINE_AA)
-
-        for i, kp in enumerate(keypoints):
-            if not visible(kp):
-                continue
-            cv2.circle(image, (int(kp[0]), int(kp[1])), 3, _color_for(i), -1, cv2.LINE_AA)
+        for (a, b), col in zip(SKELETON, COLORS):
+            if a < len(kps) and b < len(kps) \
+                    and kps[a, 2] >= kp_thresh and kps[b, 2] >= kp_thresh:
+                cv2.line(frame, (int(kps[a, 0]), int(kps[a, 1])),
+                         (int(kps[b, 0]), int(kps[b, 1])), col, 2, cv2.LINE_AA)
+        for j in range(len(kps)):
+            if kps[j, 2] >= kp_thresh:
+                cv2.circle(frame, (int(kps[j, 0]), int(kps[j, 1])), 3,
+                           (60, 255, 60), -1, cv2.LINE_AA)
 
         if label:
-            cv2.putText(image, label, (6, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+            cv2.putText(frame, label, (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55,
                         (0, 0, 0), 3, cv2.LINE_AA)
-            cv2.putText(image, label, (6, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+            cv2.putText(frame, label, (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55,
                         (255, 255, 255), 1, cv2.LINE_AA)
 
-        ok, encoded = cv2.imencode(".jpg", image)
-        return encoded.tobytes() if ok else crop_jpeg
-    except Exception as e:
-        log.debug("pose overlay failed, returning the original crop: %s", e)
-        return crop_jpeg
+        ok, encoded = cv2.imencode(".jpg", frame)
+        return encoded.tobytes() if ok else None
+    except Exception:
+        log.exception("draw_pose_overlay failed")
+        return None

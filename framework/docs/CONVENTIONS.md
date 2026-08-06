@@ -155,24 +155,54 @@ once a day:
 
 ## Where existing code lands
 
-`hub/framework/` is untouched and still runs the demo. When convergence happens, this is the map:
+Convergence is underway, not finished. This is the map — kept current, not aspirational, so a
+merge on either side of the framework/`hub/` split can tell what it's actually colliding with:
 
-| Today (`hub/framework/`) | Target (`sdk/python/src/qonclave/`) |
-|---|---|
-| `policy.py` | `hub/policy.py` |
-| `server.py` | `hub/app.py` |
-| `transport.py` | `hub/ingest.py` — the Flask half stays in the app |
-| `events.py`, `recognize_activity.py` | `hub/events.py` |
-| `mqtt_bus.py` | **stays put** — it is the demo's chosen pipe, wrapped in `PubSubTransport` |
-| `sms_bus.py` | `apps/<name>/egress/twilio_sms.py` — **leaves the framework** |
-| `server.py`'s `POST /sms` route | `apps/<name>/` — it reads Twilio's own form fields |
-| `discovery.py` | `discovery/backends/udp.py` |
-| `vlm.py`, `llm.py` | `inference/local/geniex.py` |
-| `face_id/` | `inference/local/face_id/` |
-| edge-side `edge_confidence` threshold | a `PlacementPolicy` — no longer hardcoded |
-| `icons.py` | **stays app-level** |
+| Today (`hub/framework/`) | Target (`sdk/python/src/qonclave/`) | Status |
+|---|---|---|
+| `adapter.py`, `transport.py` | `hub/ingest.py` — the Flask half (upload handling) stays in the app | ✅ done |
+| `events.py` | `hub/events.py` | ✅ done |
+| `recognize_activity.py` | `hub/events.py` | ⬜ not started |
+| `policy.py` | `hub/policy.py` | 🔄 lifted, then reverted — see below |
+| `server.py` | `hub/app.py` | ⬜ not started |
+| `mqtt_bus.py` | **stays put** — it is the demo's chosen pipe, wrapped in `PubSubTransport` | ⬜ not started |
+| `sms_bus.py` | `apps/<name>/egress/twilio_sms.py` — **leaves the framework** | ⬜ not started |
+| `server.py`'s `POST /sms` route | `apps/<name>/` — it reads Twilio's own form fields | ⬜ not started |
+| `discovery.py` | `discovery/backends/udp.py` | ⬜ not started |
+| `vlm.py`, `llm.py` | `inference/local/geniex.py` | ⬜ not started |
+| `face_id/` | `inference/local/face_id/` | ⬜ not started |
+| `pose/`, `qnn_session.py` | `inference/local/` — didn't exist when this table was first written | ⬜ not started |
+| `device_registry.py` | `discovery/` — didn't exist when this table was first written | ⬜ not started |
+| edge-side `edge_confidence` threshold | a `PlacementPolicy` — no longer hardcoded | ⬜ not started; `edge/` imports nothing from `qonclave.*` yet |
+| `icons.py` | **stays app-level** | n/a — correctly not lifted |
 
-Two of these are worth explaining.
+`hub/` is no longer untouched: `adapter.py`, `events.py`, and `transport.py` are thin shims over
+the SDK today, proved by `hub/tests/` running against both. Everything else in the table above is
+still the pre-convergence, framework-agnostic implementation.
+
+### `policy.py` was lifted, then reverted (2026-08-06)
+
+`hub/framework/policy.py` briefly re-exported `Policy`/`Verdict`/`Notification` from
+`qonclave.hub.policy`, with three hooks renamed: `evaluate(image_path, event: dict)` →
+`evaluate(event: EdgeEvent, image_path=None)`, `on_sms_reply`/`reply_for_sms`/`last_sms_analysis` →
+`on_reply`/`reply_for`/`dashboard_state`.
+
+Merging the branch that did that lift with the `hub/` mainline found the mainline had kept
+building on the **old**, unrenamed contract the whole time — an investigation flow, known-person
+follow priorities, buzzer control, and pose-driven per-track analysis, all real and tested,
+none of it aware the rename had happened. Re-lifting `policy.py` as-is would have silently
+dropped every one of those. `policy.py` went back to the pre-lift shape (old names, plus the new
+hooks upstream added — `analyze_track`, `track_settings`, `update_track_settings`, none of which
+existed the first time this was lifted) rather than resolve that conflict file-by-file and risk
+losing tested behavior. See the `TODO` at the top of `hub/framework/policy.py`.
+
+**Redoing this lift correctly** means, in order: (1) add `analyze_track`, `track_settings`, and
+`update_track_settings` to `qonclave.hub.policy.Policy` — they're real hooks now, not a gap; (2)
+reapply the rename against *that* method set, not the one from the first attempt; (3) update every
+`apps/*/policy.py` subclass and every `hub/framework/server.py` call site in the same change, so
+the contract and its only caller never disagree mid-commit.
+
+Three more of the table's rows are worth explaining.
 
 `vlm.py`/`llm.py`/`face_id/` land in `inference/local/`, **not** `compute/`. That is rule 2 in
 practice, and it is what lets today's single-laptop hub keep doing its own VLM work with no

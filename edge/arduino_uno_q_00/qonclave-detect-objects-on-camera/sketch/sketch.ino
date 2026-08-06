@@ -9,13 +9,16 @@
 #include "Arduino_LED_Matrix.h"
 #include "Arduino_RouterBridge.h"
 #include "src/BNO08xOrientation.h"
+#include "src/DebugSerial.h"
 #include "src/MotorController.h"
+#include "src/BuzzerController.h"
 
 ArduinoLEDMatrix matrix;
 BNO08xOrientation::Config orientationConfig = {10, 9, 8, 1000000, 20000};
 BNO08xOrientation orientation(orientationConfig);
 MotorController::Config motorConfig = {D2, D3, D4, D5, 12};
 MotorController motors(motorConfig, orientation);
+BuzzerController buzzer;
 const int KNOB_PIN = A0;
 
 int smoothedKnob = 500;
@@ -69,11 +72,28 @@ bool robot_motion_active() {
   return motors.isMoving();
 }
 
+void trigger_buzzer(int frequency, int duration) {
+  buzzer.tone(frequency, duration);
+}
+
+void play_believer() {
+  buzzer.playBeliever();
+}
+
+void stop_buzzer() {
+  buzzer.stop();
+}
+
+bool buzzer_active() {
+  return buzzer.isBuzzing();
+}
+
 void setup() {
-  Serial.begin(115200);
-  if (Serial) Serial.println("[IMU] Starting BNO08x diagnostics");
+  QONCLAVE_DEBUG_BEGIN(115200);
+  QONCLAVE_DEBUG(if (Serial) Serial.println("[IMU] Starting BNO08x diagnostics"));
 
   motors.begin();
+  buzzer.begin();
 
   matrix.begin();
   matrix.renderBitmap(icon_clear, 8, 13);
@@ -85,6 +105,10 @@ void setup() {
   Bridge.provide("move_robot", move_robot);
   Bridge.provide("stop_robot", stop_robot);
   Bridge.provide("robot_motion_active", robot_motion_active);
+  Bridge.provide("trigger_buzzer", trigger_buzzer);
+  Bridge.provide("play_believer", play_believer);
+  Bridge.provide("stop_buzzer", stop_buzzer);
+  Bridge.provide("buzzer_active", buzzer_active);
 
   smoothedKnob = analogRead(KNOB_PIN);
 }
@@ -92,20 +116,23 @@ void setup() {
 void loop() {
   Bridge.update();
   motors.update();
+  buzzer.update();
 
   const uint32_t imuSample = orientation.sampleCount();
   if (Serial && imuSample != lastImuSample && orientation.available() &&
       millis() - lastImuStatusAt >= 250) {
     lastImuSample = imuSample;
     lastImuStatusAt = millis();
-    Serial.print("[IMU] angle_deg=");
-    Serial.print(orientation.angleDegrees(), 2);
-    Serial.print(" sample=");
-    Serial.println(imuSample);
+    QONCLAVE_DEBUG(
+      Serial.print("[IMU] angle_deg=");
+      Serial.print(orientation.angleDegrees(), 2);
+      Serial.print(" sample=");
+      Serial.println(imuSample);
+    );
   } else if (Serial && !orientation.ready() &&
              millis() - lastImuStatusAt >= 2000) {
     lastImuStatusAt = millis();
-    Serial.println("[IMU] ERROR sensor not connected; retrying");
+    QONCLAVE_DEBUG(Serial.println("[IMU] ERROR sensor not connected; retrying"));
   }
 
   if (millis() - lastKnobReadAt >= 15) {
@@ -118,7 +145,9 @@ void loop() {
 
     if (abs(percentage - lastSentPercentage) >= 2) {
       lastSentPercentage = percentage;
-      Bridge.call("on_knob_change", String(percentage));
+      // Temporarily disabled: Bridge.call() waits indefinitely for a reply and
+      // can stall the sketch if the Linux-side handler is unavailable.
+      // Bridge.call("on_knob_change", String(percentage));
     }
   }
 

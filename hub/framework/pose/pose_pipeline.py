@@ -1,271 +1,313 @@
+r"""
+Pose estimation pipeline: HRNetPose w8a8 on the Hexagon NPU.
+
+Top-down single-person pose: the caller supplies a person crop (and,
+optionally, the person's tight box inside that crop); this module expands the
+box to the model's 3:4 aspect with padding, affine-warps it to the 192x256
+input, runs the quantized HRNet, and decodes 17 COCO keypoints from the
+17x64x48 heatmap with quarter-offset sub-pixel refinement.
+
+The tight box matters: the crop the edge sends is framed for FACE detection
+(0.8 x box-height of headroom above the person), so the subject fills only
+about half of it. Warping the tight person box instead of the whole crop puts
+the subject at the model's full input height, which is what top-down pose
+models are trained on. When no box is given the whole image is used.
+
+Ported from the standalone AI Hub export prototype (run_video.py in the
+hrnet_pose-onnx-w8a8 export); quantization constants come from that export's
+metadata.json.
+
+Works on:
+  - Windows ARM64 (WoS)   (NPU via QNNExecutionProvider, CPU fallback)
+  - anything else         (CPU, if an ONNX model is present)
+
+Prefers models/hrnet_pose_ctx.onnx — the precompiled HTP context binary —
+which cuts session init from ~6.0s to ~0.3s. Falls back to the raw QDQ
+models/hrnet_pose.onnx. The context binary is SDK/HTP-specific: regenerate it
+on the target host with `python pose_pipeline.py compile` (setup_pose.ps1
+does this); never commit it.
+
+Usage:
+  python pose_pipeline.py benchmark image.jpg [--runs N]
+  python pose_pipeline.py estimate  image.jpg
+  python pose_pipeline.py compile
 """
-pose_pipeline.py — HRNetPose w8a8 inference on the Hexagon NPU.
 
-Low-level: sessions, preprocessing, heatmap decode. The policy layer is `pose.py`.
-
-Mirrors `face_id/face_pipeline.py` rather than `vlm.py`. GenieX is a *generative*
-runtime — tokenizer, chat template, generate(), KV cache. HRNetPose is a CNN that
-returns a heatmap tensor, so it takes the path this repo already uses for face
-ID: ONNX Runtime with the QNN execution provider.
-
-Model files come from an AI Hub export and are never vendored — see
-models/README.txt. Nothing here works until that export has run, which is
-deliberate: a 109 MB weight file does not belong in git.
-
-CLI self-test, matching face_pipeline's convention:
-    python hub/framework/pose/pose_pipeline.py benchmark <crop.jpg>
-"""
-
-from __future__ import annotations
-
-import json
+import argparse
+import platform
 import sys
 import time
 from pathlib import Path
 
 import numpy as np
 
-MODELS_DIR = Path(__file__).resolve().parent / "models"
-POSE_ONNX_PATH = MODELS_DIR / "hrnet_pose.onnx"
-POSE_CTX_PATH = MODELS_DIR / "hrnet_pose_ctx.onnx"
-METADATA_PATH = MODELS_DIR / "metadata.json"
+try:
+    from ..qnn_session import qnn_session, session_mode
+except ImportError:  # run directly as a script (python pose_pipeline.py ...)
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from qnn_session import qnn_session, session_mode
 
-# HRNetPose w8a8 geometry. Input is 192 wide x 256 high; the heatmap is a
-# quarter of that per side, 17 COCO keypoints deep.
-INPUT_W, INPUT_H = 192, 256
-HEATMAP_W, HEATMAP_H = 48, 64
-NUM_KEYPOINTS = 17
+# ── Paths ─────────────────────────────────────────────────────────────────────
 
-# Quantization constants from the AI Hub export's metadata.json. Defaults are
-# the values the plan recorded; metadata.json wins when present, because a
-# re-export can change them and a silently wrong scale produces plausible
-# keypoints in the wrong places — the worst kind of failure.
-DEFAULT_INPUT_SCALE = 0.003917243331670761
-DEFAULT_INPUT_ZP = 0
-DEFAULT_OUTPUT_SCALE = 0.0037365437019616365
-DEFAULT_OUTPUT_ZP = 10
+MODELS_DIR    = Path(__file__).parent / "models"
+RAW_ONNX_PATH = MODELS_DIR / "hrnet_pose.onnx"       # raw QDQ graph (+ .data sidecar)
+CTX_ONNX_PATH = MODELS_DIR / "hrnet_pose_ctx.onnx"   # precompiled HTP context binary
 
-# A top-down pose model expects a tight box with the subject filling the frame.
-# The edge's crop is framed for FACE detection (padding_top=0.8), so the person
-# occupies about half of it — see the pose plan's Phase 4 note. Expanding the
-# supplied person box by this factor reproduces the framing HRNet was trained on.
-BOX_EXPANSION = 1.25
+# ── Model contract (from the AI Hub export's metadata.json) ──────────────────
 
-COCO_KEYPOINT_NAMES = (
-    "nose", "left_eye", "right_eye", "left_ear", "right_ear",
-    "left_shoulder", "right_shoulder", "left_elbow", "right_elbow",
-    "left_wrist", "right_wrist", "left_hip", "right_hip",
-    "left_knee", "right_knee", "left_ankle", "right_ankle",
-)
+IN_SCALE, IN_ZP   = 0.003917243331670761, 0    # uint8 input quantization
+OUT_SCALE, OUT_ZP = 0.0037365437019616365, 10  # uint8 heatmap quantization
+IN_W, IN_H = 192, 256                           # model input (W x H)
+HM_W, HM_H = 48, 64                             # heatmap grid  (W x H)
 
+BOX_PADDING = 1.25  # standard top-down pose expansion around the tight box
 
-def load_metadata() -> dict:
-    """Quantization params from the export, falling back to the recorded ones."""
-    meta = {
-        "input_scale": DEFAULT_INPUT_SCALE,
-        "input_zp": DEFAULT_INPUT_ZP,
-        "output_scale": DEFAULT_OUTPUT_SCALE,
-        "output_zp": DEFAULT_OUTPUT_ZP,
-    }
-    if METADATA_PATH.exists():
-        try:
-            raw = json.loads(METADATA_PATH.read_text(encoding="utf-8"))
-            for key in meta:
-                if key in raw:
-                    meta[key] = raw[key]
-        except (ValueError, OSError):
-            pass  # a malformed metadata.json must not stop inference
-    return meta
+KEYPOINT_NAMES = [
+    "nose", "l_eye", "r_eye", "l_ear", "r_ear", "l_shoulder", "r_shoulder",
+    "l_elbow", "r_elbow", "l_wrist", "r_wrist", "l_hip", "r_hip",
+    "l_knee", "r_knee", "l_ankle", "r_ankle",
+]
+
+# QNN provider options: burst pins the HTP clock for latency-critical models.
+# The prototype's 1.45ms/inference figure was measured with burst on; the
+# default power profile is measurably slower.
+_PROVIDER_OPTIONS = {"htp_performance_mode": "burst"}
 
 
-def model_path() -> Path | None:
-    """The model to load, preferring the compiled HTP context binary.
+# ── Session ───────────────────────────────────────────────────────────────────
 
-    The context binary cuts session init from ~6.0 s to ~0.30 s. It is tied to
-    the QAIRT build and HTP architecture that produced it, so a stale one is a
-    slow start rather than a failure — which is why the raw model stays as a
-    fallback and neither is committed.
-    """
-    if POSE_CTX_PATH.exists():
-        return POSE_CTX_PATH
-    if POSE_ONNX_PATH.exists():
-        return POSE_ONNX_PATH
+def model_path() -> "Path | None":
+    """The model file build_session() would load, or None if neither exists."""
+    if CTX_ONNX_PATH.exists():
+        return CTX_ONNX_PATH
+    if RAW_ONNX_PATH.exists():
+        return RAW_ONNX_PATH
     return None
 
 
-def build_session(quiet: bool = False):
-    """Load HRNetPose. Raises FileNotFoundError when no export has been run."""
+def build_session():
+    """Load HRNetPose on the Hexagon NPU (CPU fallback). -> (session, input_name)"""
     path = model_path()
     if path is None:
         raise FileNotFoundError(
-            f"No pose model in {MODELS_DIR}. Run hub/framework/pose/setup/setup_pose.ps1, "
-            "or see models/README.txt for the manual export steps."
+            f"Pose model not found: {RAW_ONNX_PATH}\n"
+            "Export it first (see models/README.txt):\n"
+            "  hub/framework/pose/setup/setup_pose.ps1 -Token YOUR_TOKEN"
         )
-    try:
-        from ..qnn_session import qnn_session
-    except ImportError:  # direct script execution
-        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-        from qnn_session import qnn_session  # type: ignore
-
-    session = qnn_session(path, "HRNetPose", quiet=quiet)
+    session = qnn_session(path, "HRNetPose", provider_options=_PROVIDER_OPTIONS)
     return session, session.get_inputs()[0].name
 
 
-# ── preprocessing ────────────────────────────────────────────────────────────
+def compile_context_model() -> Path:
+    """One-time: bake the HTP context binary into hrnet_pose_ctx.onnx.
 
-def letterbox(image: np.ndarray, out_w: int = INPUT_W, out_h: int = INPUT_H):
-    """Aspect-preserving resize with padding. Returns (image, transform).
-
-    The transform is what maps a keypoint back out of model space, so it is
-    returned rather than recomputed — recomputing it is where off-by-a-pad
-    errors come from.
+    Cuts session init ~6.0s -> ~0.3s. The output is tied to the QAIRT build
+    and HTP architecture that produced it — regenerate per host, never commit.
     """
-    import cv2
+    import onnxruntime as ort
+    import onnxruntime_qnn as qnn
 
-    h, w = image.shape[:2]
-    if h == 0 or w == 0:
-        raise ValueError("cannot letterbox an empty image")
-
-    scale = min(out_w / w, out_h / h)
-    new_w, new_h = max(1, int(round(w * scale))), max(1, int(round(h * scale)))
-    resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
-
-    canvas = np.zeros((out_h, out_w, 3), dtype=image.dtype)
-    pad_x, pad_y = (out_w - new_w) // 2, (out_h - new_h) // 2
-    canvas[pad_y:pad_y + new_h, pad_x:pad_x + new_w] = resized
-    return canvas, {"scale": scale, "pad_x": pad_x, "pad_y": pad_y}
-
-
-def expand_box(box, img_w: int, img_h: int, factor: float = BOX_EXPANSION):
-    """Grow a person box about its centre, clamped to the image."""
-    x1, y1, x2, y2 = box
-    cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
-    half_w, half_h = (x2 - x1) * factor / 2.0, (y2 - y1) * factor / 2.0
-    return (
-        max(0, int(round(cx - half_w))), max(0, int(round(cy - half_h))),
-        min(img_w, int(round(cx + half_w))), min(img_h, int(round(cy + half_h))),
-    )
-
-
-def preprocess(image: np.ndarray, person_box=None, meta: dict | None = None):
-    """Crop to the person box, letterbox, quantize. Returns (tensor, transform)."""
-    meta = meta or load_metadata()
-    h, w = image.shape[:2]
-
-    offset_x = offset_y = 0
-    if person_box is not None:
-        x1, y1, x2, y2 = expand_box(person_box, w, h)
-        if x2 > x1 and y2 > y1:
-            image = image[y1:y2, x1:x2]
-            offset_x, offset_y = x1, y1
-
-    boxed, transform = letterbox(image)
-    transform["offset_x"], transform["offset_y"] = offset_x, offset_y
-
-    # uint8 in, per the w8a8 quantization. The scale/zp come from the export.
-    tensor = boxed.astype(np.uint8)[np.newaxis]  # [1, H, W, 3]
-    return tensor, transform
-
-
-# ── heatmap decode ───────────────────────────────────────────────────────────
-
-def decode_heatmap(heatmap: np.ndarray, transform: dict, meta: dict | None = None):
-    """Per-channel argmax with quarter-offset sub-pixel refinement.
-
-    Returns keypoints in the coordinate space of the image that was passed to
-    `preprocess` — crop-relative, not frame-relative. Mapping further out is the
-    caller's job, because only the caller knows what the crop was cut from.
-    """
-    meta = meta or load_metadata()
-    hm = np.asarray(heatmap)
-
-    # Accept [1, K, H, W] and [K, H, W]; the export has produced both shapes.
-    if hm.ndim == 4:
-        hm = hm[0]
-    if hm.shape[0] != NUM_KEYPOINTS and hm.shape[-1] == NUM_KEYPOINTS:
-        hm = np.transpose(hm, (2, 0, 1))  # [H, W, K] -> [K, H, W]
-
-    if hm.dtype != np.float32:
-        hm = (hm.astype(np.float32) - meta["output_zp"]) * meta["output_scale"]
-
-    k, h, w = hm.shape
-    scale, pad_x, pad_y = transform["scale"], transform["pad_x"], transform["pad_y"]
-    offset_x, offset_y = transform.get("offset_x", 0), transform.get("offset_y", 0)
-    stride_x, stride_y = INPUT_W / w, INPUT_H / h
-
-    keypoints = []
-    for i in range(k):
-        plane = hm[i]
-        idx = int(np.argmax(plane))
-        py, px = divmod(idx, w)
-        score = float(plane[py, px])
-
-        # Quarter-offset refinement: nudge a quarter pixel toward the brighter
-        # neighbour. Cheap, and worth roughly a pixel of accuracy at this
-        # heatmap resolution.
-        fx, fy = float(px), float(py)
-        if 0 < px < w - 1:
-            fx += 0.25 * np.sign(plane[py, px + 1] - plane[py, px - 1])
-        if 0 < py < h - 1:
-            fy += 0.25 * np.sign(plane[py + 1, px] - plane[py - 1, px])
-
-        # heatmap -> model input -> undo letterbox -> undo the box crop
-        mx, my = fx * stride_x, fy * stride_y
-        x = (mx - pad_x) / scale + offset_x
-        y = (my - pad_y) / scale + offset_y
-        keypoints.append([float(x), float(y), score])
-
-    return keypoints
-
-
-def mean_score(keypoints) -> float:
-    if not keypoints:
-        return 0.0
-    return float(np.mean([kp[2] for kp in keypoints]))
-
-
-# ── CLI ──────────────────────────────────────────────────────────────────────
-
-def _benchmark(image_path: str, runs: int = 50) -> int:
-    import cv2
-
-    image = cv2.imread(image_path)
-    if image is None:
-        print(f"could not read {image_path}")
-        return 1
-
-    t0 = time.monotonic()
-    session, input_name = build_session()
-    init_s = time.monotonic() - t0
-    print(f"session init: {init_s:.2f}s  (expect ~0.30s with the context binary, ~6.0s without)")
+    if not RAW_ONNX_PATH.exists():
+        raise FileNotFoundError(f"raw model not found: {RAW_ONNX_PATH}")
 
     try:
-        from ..qnn_session import resolved_mode
-    except ImportError:
-        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-        from qnn_session import resolved_mode  # type: ignore
-    print(f"mode: {resolved_mode(session)}  (npu expected on Snapdragon; cpu is ~30x slower)")
+        ort.register_execution_provider_library(qnn.get_ep_name(), qnn.get_library_path())
+    except Exception:
+        pass  # already registered
 
-    meta = load_metadata()
-    tensor, transform = preprocess(image, meta=meta)
+    npu_devices = [
+        d for d in ort.get_ep_devices()
+        if d.ep_name == qnn.get_ep_name() and d.device.type == ort.OrtHardwareDeviceType.NPU
+    ]
+    if not npu_devices:
+        raise RuntimeError("no QNN NPU device found — context compile needs the NPU")
 
-    session.run(None, {input_name: tensor})  # warm
-    t0 = time.monotonic()
+    so = ort.SessionOptions()
+    options = {"backend_path": qnn.get_qnn_htp_path()}
+    options.update(_PROVIDER_OPTIONS)
+    so.add_provider_for_devices(npu_devices, options)
+
+    # ORT_ENABLE_ALL is required — the default (ORT_DISABLE_ALL) breaks the
+    # NHWC layout transform QNN asks for and the compile fails with
+    # "Conv_token_61 ... com.ms.internal.nhwc ... not selected by that EP".
+    # embed_compiled_data_into_model makes the output a single self-contained
+    # file (no .data sidecar to keep in sync).
+    ort.ModelCompiler(
+        so, str(RAW_ONNX_PATH), embed_compiled_data_into_model=True,
+        graph_optimization_level=ort.GraphOptimizationLevel.ORT_ENABLE_ALL,
+    ).compile_to_file(str(CTX_ONNX_PATH))
+    return CTX_ONNX_PATH
+
+
+# ── Crop math + pre/post processing (ported from the prototype) ──────────────
+
+def box_to_input_crop(box_xyxy, pad: float = BOX_PADDING):
+    """Expand a tight person box to the model's 3:4 aspect with padding.
+
+    Returns (x, y, w, h) in source-image coordinates. Aspect-fit: whichever of
+    width/height falls short of 3:4 is GROWN (never shrunk), so nothing inside
+    the padded box is cropped away — the warp letterboxes in source
+    coordinates instead of padding a pre-cut image.
+    """
+    x1, y1, x2, y2 = box_xyxy
+    cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+    bw, bh = (x2 - x1) * pad, (y2 - y1) * pad
+    ar = IN_W / IN_H  # 0.75
+    if bw / bh > ar:
+        bh = bw / ar
+    else:
+        bw = bh * ar
+    return cx - bw / 2, cy - bh / 2, bw, bh
+
+
+def preprocess(image_bgr: np.ndarray, crop_rect,
+               input_type: str = "tensor(uint8)") -> np.ndarray:
+    """Affine-crop crop_rect to 192x256 and match the ONNX input dtype.
+
+    AI Hub exports have used both a uint8 quantized boundary and a float32
+    boundary for the same w8a8 model. The float graph performs its own
+    normalization and expects RGB values in [0, 1].
+    """
+    import cv2
+
+    rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+    x, y, w, h = crop_rect
+    M = np.array([[IN_W / w, 0, -x * IN_W / w],
+                  [0, IN_H / h, -y * IN_H / h]], dtype=np.float32)
+    patch = cv2.warpAffine(rgb, M, (IN_W, IN_H), flags=cv2.INTER_LINEAR,
+                           borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
+    normalized = patch.astype(np.float32) / 255.0
+    if input_type == "tensor(float)":
+        return np.ascontiguousarray(normalized.transpose(2, 0, 1)[None])
+    if input_type != "tensor(uint8)":
+        raise ValueError(f"unsupported HRNetPose input type: {input_type}")
+    q = np.rint(normalized / IN_SCALE) + IN_ZP
+    q = np.clip(q, 0, 255).astype(np.uint8)
+    return np.ascontiguousarray(q.transpose(2, 0, 1)[None])
+
+
+def decode_heatmaps(heatmaps: np.ndarray, crop_rect) -> np.ndarray:
+    """argmax + quarter-offset sub-pixel refinement, mapped back to
+    source-image coordinates. -> (17, 3) array of x, y, score."""
+    if heatmaps.dtype == np.uint8:
+        hm = (heatmaps[0].astype(np.float32) - OUT_ZP) * OUT_SCALE
+    elif np.issubdtype(heatmaps.dtype, np.floating):
+        hm = heatmaps[0].astype(np.float32, copy=False)
+    else:
+        raise ValueError(f"unsupported HRNetPose output dtype: {heatmaps.dtype}")
+    k = hm.shape[0]
+    flat = hm.reshape(k, -1)
+    idx = flat.argmax(1)
+    scores = flat.max(1)
+    ys, xs = np.divmod(idx, HM_W)
+    px = xs.astype(np.float32)
+    py = ys.astype(np.float32)
+    # standard HRNet sub-pixel nudge toward the larger neighbour
+    for j in range(k):
+        x, y = int(xs[j]), int(ys[j])
+        if 0 < x < HM_W - 1:
+            px[j] += 0.25 * np.sign(hm[j, y, x + 1] - hm[j, y, x - 1])
+        if 0 < y < HM_H - 1:
+            py[j] += 0.25 * np.sign(hm[j, y + 1, x] - hm[j, y - 1, x])
+    cx, cy, cw, ch = crop_rect
+    fx = cx + (px + 0.5) * (cw / HM_W)
+    fy = cy + (py + 0.5) * (ch / HM_H)
+    return np.stack([fx, fy, scores], 1)
+
+
+def estimate(session, input_name: str, image_bgr: np.ndarray,
+             person_box=None) -> np.ndarray:
+    """Run pose on one image. person_box is the tight (x1,y1,x2,y2) person
+    rect in image pixels; None uses the whole image. -> (17, 3) keypoints in
+    image pixels."""
+    h, w = image_bgr.shape[:2]
+    box = person_box if person_box is not None else (0, 0, w, h)
+    crop_rect = box_to_input_crop(box)
+    input_type = session.get_inputs()[0].type
+    x = preprocess(image_bgr, crop_rect, input_type)
+    hm = session.run(None, {input_name: x})[0]
+    return decode_heatmaps(hm, crop_rect)
+
+
+# ── CLI (matches face_pipeline.py's convention) ──────────────────────────────
+
+def _load_image(path: str) -> np.ndarray:
+    import cv2
+
+    img = cv2.imread(path, cv2.IMREAD_COLOR)
+    if img is None:
+        print(f"Cannot read image: {path}")
+        sys.exit(1)
+    return img
+
+
+def mode_estimate(image_path: str):
+    img = _load_image(image_path)
+    t0 = time.time()
+    session, input_name = build_session()
+    print(f"Session ready in {time.time() - t0:.2f}s (mode={session_mode(session)})")
+
+    kps = estimate(session, input_name, img)
+    print(f"\nKeypoints for {image_path} ({img.shape[1]}x{img.shape[0]}):")
+    for name, (x, y, s) in zip(KEYPOINT_NAMES, kps):
+        print(f"  {name:12s} x={x:7.1f} y={y:7.1f} score={s:.3f}")
+    print(f"\nmean score: {float(kps[:, 2].mean()):.3f}")
+
+
+def mode_benchmark(image_path: str, runs: int):
+    img = _load_image(image_path)
+
+    t0 = time.time()
+    session, input_name = build_session()
+    init_s = time.time() - t0
+    which = model_path()
+    print(f"Session init : {init_s:.2f}s ({which.name if which else '?'}, mode={session_mode(session)})")
+
+    x = preprocess(img, box_to_input_crop((0, 0, img.shape[1], img.shape[0])))
+    for _ in range(5):  # warmup
+        session.run(None, {input_name: x})
+
+    times = []
     for _ in range(runs):
-        outputs = session.run(None, {input_name: tensor})
-    per_run_ms = (time.monotonic() - t0) / runs * 1000
-    print(f"inference: {per_run_ms:.2f} ms/run over {runs} runs  (expect ~1.45 ms on NPU)")
+        t0 = time.perf_counter()
+        session.run(None, {input_name: x})
+        times.append((time.perf_counter() - t0) * 1000)
+    times.sort()
 
-    kps = decode_heatmap(outputs[0], transform, meta)
-    print(f"keypoints: {len(kps)}  mean_score: {mean_score(kps):.3f}")
-    for name, kp in zip(COCO_KEYPOINT_NAMES, kps):
-        print(f"  {name:<16} x={kp[0]:7.1f} y={kp[1]:7.1f} score={kp[2]:.3f}")
-    return 0
+    print(f"\n--- Benchmark ({runs} runs, pure inference) ---")
+    print(f"latency mean {np.mean(times):.2f} ms | p50 {times[len(times) // 2]:.2f} | "
+          f"p95 {times[int(len(times) * .95)]:.2f} | {1000 / np.mean(times):.0f} FPS")
+    print(f"Mode          : {session_mode(session).upper()}")
+    print(f"Platform      : {platform.system()} {platform.machine()}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="HRNetPose w8a8 on the Hexagon NPU")
+    sub = parser.add_subparsers(dest="mode")
+
+    p = sub.add_parser("estimate", help="Print keypoints for one image")
+    p.add_argument("image")
+
+    p = sub.add_parser("benchmark", help="Benchmark inference latency")
+    p.add_argument("image")
+    p.add_argument("--runs", type=int, default=50)
+
+    sub.add_parser("compile", help="Bake the HTP context binary (hrnet_pose_ctx.onnx)")
+
+    args = parser.parse_args()
+
+    if args.mode == "estimate":
+        mode_estimate(args.image)
+    elif args.mode == "benchmark":
+        mode_benchmark(args.image, args.runs)
+    elif args.mode == "compile":
+        print("Compiling HTP context binary (needs the raw model + NPU)...")
+        t0 = time.time()
+        out = compile_context_model()
+        print(f"Wrote {out} in {time.time() - t0:.1f}s")
+    else:
+        parser.print_help()
 
 
 if __name__ == "__main__":
-    if len(sys.argv) >= 3 and sys.argv[1] == "benchmark":
-        raise SystemExit(_benchmark(sys.argv[2]))
-    print(__doc__)
-    print("usage: python pose_pipeline.py benchmark <crop.jpg>")
-    raise SystemExit(2)
+    main()

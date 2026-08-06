@@ -79,15 +79,16 @@ without any camera attached. The file must be reachable inside the app container
 place it somewhere under the app folder (e.g. `media/`, next to `python/`), which
 is bind-mounted to `/app`, and point `VIDEO_FILE_PATH` at its in-container path.
 
-A sample clip is bundled at `media/sample.mp4` (stock footage from Pexels, free
-license) — set `VIDEO_FILE_PATH=/app/media/sample.mp4` to try this mode out of
-the box.
+A sample clip is bundled at `media/walking_front_view.mp4` (stock footage from
+Pexels, free license) — a single person walking toward the camera at changing
+scale, which exercises per-track analysis and the crop-rejection thresholds.
+It is the default, so this mode works out of the box.
 
 | Var | Default | Meaning |
 |-----|---------|---------|
-| `VIDEO_FILE_PATH` | `/app/media/sample.mp4` | Path to the video file, as seen inside the container |
+| `VIDEO_FILE_PATH` | `/app/media/walking_front_view.mp4` | Path to the video file, as seen inside the container |
 | `VIDEO_FILE_LOOP` | `true` | Rewind and replay the file once it ends, so detection keeps running continuously |
-| `VIDEO_FILE_FPS` | `10` | Frames per second to read from the file |
+| `VIDEO_FILE_FPS` | `25` | Frames per second to read from the file |
 
 ## Brick Used
 
@@ -140,43 +141,103 @@ Configurable via environment variables:
 | `PERSON_TRACK_DIRECTION_HISTORY` | `5` | Frames of centroid history used to smooth the direction estimate |
 | `PERSON_TRACK_MIN_MOVEMENT_PX` | `10` | Minimum net movement (px) over the smoothing window before direction is reported as `stationary` |
 
-## Per-Track Face Recognition
+## Per-Track Analysis (Face Recognition + Pose)
 
-Each tracked person (`python/person_tracker.py`'s `track_id`) is independently identified by
-the Qonclave hub: `python/track_crop.py` crops that track's bounding box out of the current
-frame (padded, and rejected if too small or mostly clipped off-frame), and
-`python/recognition_client.py` samples it to the hub's `POST /recognize` endpoint —
-immediately the first time a track appears, then at most once per second while its identity
-is still unresolved, and never again once it's `known`. No frame is ever streamed
-continuously; this is a sampled, per-track request, separate from the whole-frame
-`/edge/event` escalation above and from the LED/auto-centering display, which stays keyed off
-bearing angle only, not identity.
+Each tracked person (`python/person_tracker.py`'s `track_id`) is independently analyzed by
+the Qonclave hub through one unified endpoint: `python/track_crop.py` crops that track's
+bounding box out of the current frame (padded for face framing; the unpadded person rect's
+position inside the crop rides along as `person_box` so the hub's pose model can re-frame
+tightly), and `python/analysis_client.py` samples it to the hub's `POST /track/analyze`
+endpoint with a **per-analyzer cadence**:
+
+- **face** — immediately the first time a track appears, then at most once per
+  `FACE_SAMPLE_INTERVAL_SEC` while its identity is still unresolved, and never again once
+  it's `known` (unchanged from the original face-only pipeline).
+- **pose** — every `POSE_SAMPLE_INTERVAL_SEC` (default 0.25s = 4 Hz) for as long as the
+  track is alive, known or not: fall detection needs a continuous time series.
+
+One crop serves whichever analyzers are due, so a known person costs one request per pose
+tick instead of two, and at most one request is ever in flight per track. Crop rejection is
+also per-analyzer (a small-but-visible person still samples face; a half-out-of-frame person
+still samples pose — exactly the fall case). No frame is ever streamed continuously; this is
+a sampled, per-track request, separate from the whole-frame `/edge/event` escalation above
+and from the LED/auto-centering display, which stays keyed off bearing angle only, not
+identity.
 
 Each track's latest sent crop is saved locally as `track_<id>.jpg` in `TRACK_CROPS_DIR`, so
 you can visually confirm a crop actually shows the right person. `python/identity_map.py`
-then tracks each `track_id -> {name, confidence, status}` with a **known-is-sticky** rule: a
-`"known"` result always updates the entry, but an `"unknown"` / `"no_face"` result only fills
-in a track that has no entry yet — it never overwrites an existing name. That's what keeps a
-name attached to a track through a person briefly turning away or stepping out of frame.
-`status` is one of `unidentified` (no response yet), `known`, `unknown`, `no_face`, or `error`
-(the hub request itself failed). The current map is logged to the console (only when it
-changes) as `Track <id> — <name or status>`, and pushed to the Web UI over the `identity_map`
-message.
+then tracks each `track_id -> {name, confidence, status}` from the response's `face`
+sub-object with an **upgrade-only rank ladder**: `known` always overwrites (and is fully
+sticky — later `unknown`/`no_face` samples never erase a name); below that a status can only
+move *up* the ladder `unidentified/error/unavailable < no_face < unknown`, so a first bad
+sample (`no_face` from a turned-away head) gets corrected by a later `unknown` instead of
+sticking forever. `status` is one of `unidentified` (no response yet), `known`, `unknown`,
+`no_face`, or `error` (the hub request itself failed). The current map is logged to the
+console (only when it changes) as `Track <id> — <name or status>`, and pushed to the Web UI
+over the `identity_map` message; each track's latest pose status goes out as `pose_status`.
+The pose keypoints themselves stay on the hub (`GET /user/tracks`,
+`GET /user/tracks/<id>.jpg` for the skeleton overlay).
 
 Configurable via environment variables:
 
 | Var | Default | Meaning |
 |-----|---------|---------|
-| `TRACK_RECOGNITION_ENABLED` | `1` | Set to `0` to disable per-track recognition entirely |
+| `TRACK_RECOGNITION_ENABLED` | `1` | Set to `0` to disable per-track analysis entirely |
+| `TRACK_ANALYZERS` | `face,pose` | Which hub analyzers to sample for (comma-separated) |
 | `TRACK_CROP_PADDING` | `0.25` | Fraction of the box's width/height added as padding on the left, right, and bottom edges |
-| `TRACK_CROP_PADDING_TOP` | `0.8` | Fraction of the box's height added above it — larger than `TRACK_CROP_PADDING` by default, since a person's face sits at the top of their box and is the edge most likely to get clipped by a tight detector box |
-| `TRACK_CROP_MIN_SIZE_PX` | `40` | Reject a crop if either dimension, after padding and clamping to the frame, is smaller than this |
-| `TRACK_CROP_MIN_VISIBLE_RATIO` | `0.85` | Reject a crop if less than this fraction of the (unpadded) box actually lies within the frame |
+| `TRACK_CROP_PADDING_TOP` | `0.8` | Fraction of the box's height added above it so a face at the top of the person box is not clipped |
+| `TRACK_CROP_MIN_SIZE_PX` | `40` | Face gate: reject for face if either crop dimension, after padding and clamping to the frame, is smaller than this |
+| `TRACK_CROP_MIN_VISIBLE_RATIO` | `0.85` | Face gate: reject for face if less than this fraction of the (unpadded) box actually lies within the frame |
+| `TRACK_CROP_POSE_MIN_BOX_HEIGHT_PX` | `100` | Pose gate: reject for pose if the unpadded box is shorter than this (too few limb pixels) |
+| `TRACK_CROP_POSE_MIN_VISIBLE_RATIO` | `0.5` | Pose gate: visibility floor for pose — deliberately lax, a person half out of frame is exactly the fall-detection case |
 | `TRACK_CROPS_DIR` | `/app/track_crops` | Where each track's latest crop is saved, as `track_<id>.jpg` |
-| `RECOGNITION_SAMPLE_INTERVAL_SEC` | `1.0` | Minimum seconds between two `/recognize` requests for the same still-unresolved track |
-| `RECOGNITION_REQUEST_TIMEOUT_SEC` | `5` | HTTP request timeout per `/recognize` call |
+| `FACE_SAMPLE_INTERVAL_SEC` | `0.5` | Minimum seconds between two face samples for the same still-unresolved track |
+| `POSE_SAMPLE_INTERVAL_SEC` | `0.25` | Seconds between pose samples per live track (raise it if the UNO Q's CPU struggles) |
+| `ANALYSIS_REQUEST_TIMEOUT_SEC` | `5` | HTTP request timeout per `/track/analyze` call |
+
+## Known-Person Priority Following
+
+The auto-centering target is chosen by `python/follow_target_selector.py`, which prefers
+recognized people over unknowns. Selection order: the visible known person with the
+**lowest hub-stored priority number** (1 = highest; edit priorities from the hub
+dashboard's roster) → the previously selected known person, held for
+`FOLLOW_KNOWN_GRACE_FRAMES` detection frames while briefly missing (the robot does
+**not** chase an unknown during that grace, and never turns from a stale bounding box —
+motor commands only ever come from a current-frame track) → the longest-established
+unknown track → no target. Equal priorities keep the current target, then prefer more
+`frames_tracked`, then the lower `track_id`. A track that disappears and comes back with
+a *new* id must be re-confirmed by face recognition before it is followed again.
+
+Priorities live on the hub (`GET /user/known-person-priorities`, per enrolled face
+slug); `python/priority_sync.py` mirrors them every `FOLLOW_PRIORITY_REFRESH_SEC` on a
+background thread, keeps the last good map while the hub is unreachable, and re-fetches
+immediately when the hub comes back online. A recognized person absent from the map
+defaults to priority 100. The current follow state is pushed to the Web UI as the
+`follow_status` message, and the followed track's preview box turns green with a
+`[FOLLOWING, P<n>]` label suffix.
+
+Configurable via environment variables:
+
+| Var | Default | Meaning |
+|-----|---------|---------|
+| `FOLLOW_KNOWN_GRACE_FRAMES` | `10` | Detection frames a missing known target is held before unknown fallback (~1.5 frames/sec on this board, so 10 ≈ 6.7 s) |
+| `FOLLOW_PRIORITY_REFRESH_SEC` | `15` | Seconds between hub priority-map refreshes |
+| `FOLLOW_PRIORITY_TIMEOUT_SEC` | `3` | HTTP timeout per priority-map fetch |
 
 ## LED Matrix Person Position Display
+
+### MCU serial diagnostics
+
+RouterBridge owns the MCU/Linux serial channel, so raw sketch diagnostics are
+disabled by default. For a dedicated debug firmware build only, enable them
+with the Arduino compile property:
+
+```text
+compiler.cpp.extra_flags=-DQONCLAVE_MCU_DEBUG_SERIAL=1
+```
+
+Do not enable this flag while using RouterBridge RPC; raw serial text and RPC
+packets cannot safely share the same transport.
 
 While a person is being tracked, the onboard **12x8 LED Matrix** shows roughly where
 they are in the camera frame instead of the usual object-class icon: `python/led_display.py`

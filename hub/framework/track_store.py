@@ -1,127 +1,232 @@
 """
-track_store.py — per-track history of analysis results.
+track_store.py -- in-memory per-track history of POST /track/analyze results,
+the time series the fall-detection logic will read (nothing consumes it yet
+beyond the dashboard's /user/tracks routes), plus the latest skeleton-annotated
+frame per track so the dashboard can show live pose video.
 
-Mirrors `framework/events.py`'s shape: module-level, lock-guarded ring buffers,
-ephemeral. This is the time series fall logic will read; nothing consumes it yet
-beyond the dashboard, which is deliberate — building the buffer before the
-consumer means the consumer can be written against real recorded data rather
-than against a guess about what should have been recorded.
+Same module-level, lock-guarded ring-buffer style as events.py /
+recognize_activity.py: one deque per live track_id, capped at
+QONCLAVE_TRACK_HISTORY_MAX samples (default 150 = ~40s at the edge's 4 Hz
+pose cadence).
 
-Bounded per track, not globally. A single person standing in frame for an hour
-must not evict the history of everyone else, which a shared buffer would do.
+Two independent caps keep memory bounded without needing the edge to tell the
+hub when a track dies (it never does -- prune() exists for a caller that
+doesn't yet):
+  * per track:   HISTORY_MAX samples (deque maxlen)
+  * across tracks: TRACKS_MAX least-recently-updated tracks are evicted,
+    so a long session that churns through hundreds of track_ids can't grow
+    without limit.
+
+The annotated frames are held in memory (not read back off disk) so the MJPEG
+stream works even with QONCLAVE_TRACK_FRAMES_ENABLED=0 -- i.e. you can watch
+live pose without any imagery being persisted, which is the privacy-preserving
+default the cascade wants.
 """
 
 from __future__ import annotations
 
-import collections
+import itertools
 import os
 import threading
-import time
+from collections import deque
+from typing import Any
 
-# 150 samples at the default 4 Hz is about 40 seconds of history — long enough
-# to see a fall and its aftermath, short enough that a busy scene stays cheap.
+from . import transport
+
 HISTORY_MAX = int(os.environ.get("QONCLAVE_TRACK_HISTORY_MAX", "150"))
+TRACKS_MAX = int(os.environ.get("QONCLAVE_TRACK_MAX", "50"))
 
-_tracks: dict[int, collections.deque] = {}
-_meta: dict[int, dict] = {}
 _lock = threading.Lock()
+# Frame waiters block on this; it shares _lock so a record_frame() publish and
+# the history append it accompanies are seen together.
+_frame_cv = threading.Condition(_lock)
+
+_tracks: "dict[int, deque[dict[str, Any]]]" = {}
+_latest_frame: "dict[int, str]" = {}          # filename on disk (when retention is on)
+_frame_bytes: "dict[int, bytes]" = {}         # latest annotated JPEG, in memory
+_frame_seq: "dict[int, int]" = {}             # bumped on every new frame
+_updated_at: "dict[int, int]" = {}            # monotonic-ish ordering for LRU eviction
+_seq = itertools.count(1)
 
 
-def record(track_id: int, face_result: dict | None, pose_result: dict | None,
-           frame_name: str | None = None) -> None:
-    """Append one analysis sample for a track.
+def _touch_locked(track_id: int) -> None:
+    """Mark a track as most-recently-used and evict the coldest tracks beyond
+    TRACKS_MAX. Caller must hold _lock."""
+    _updated_at[track_id] = next(_seq)
+    if len(_updated_at) <= TRACKS_MAX:
+        return
+    for stale in sorted(_updated_at, key=_updated_at.get)[:len(_updated_at) - TRACKS_MAX]:
+        _updated_at.pop(stale, None)
+        _tracks.pop(stale, None)
+        _latest_frame.pop(stale, None)
+        _frame_bytes.pop(stale, None)
+        _frame_seq.pop(stale, None)
 
-    Both analyzers are optional: a request may have asked for only one, or one
-    may have been unavailable. A sample with neither is still recorded, because
-    "we looked and saw nothing" is information a time series needs — a gap and a
-    negative are different things.
+
+def record(track_id: int, face_result: "dict | None", pose_result: "dict | None",
+           frame_name: "str | None" = None,
+           analysis: "dict | None" = None) -> None:
+    """Append one /track/analyze result to the track's ring buffer.
+
+    face_result / pose_result are the endpoint's per-analyzer sub-objects
+    (either may be None when that analyzer wasn't requested); frame_name is
+    the annotated frame written to disk for this sample, if any.
     """
-    face_result = face_result or {}
-    pose_result = pose_result or {}
-
     sample = {
-        "ts": time.time(),
-        "keypoints": pose_result.get("keypoints"),
-        "mean_score": pose_result.get("mean_score"),
-        "pose_status": pose_result.get("status"),
-        "identity": face_result.get("identity"),
-        "status": face_result.get("status"),
+        "ts": transport.now_iso(),
+        "identity": (face_result or {}).get("identity"),
+        "status": (face_result or {}).get("status"),
+        "keypoints": (pose_result or {}).get("keypoints"),
+        "mean_score": (pose_result or {}).get("mean_score"),
+        "pose_status": (pose_result or {}).get("status"),
+        "analysis": analysis,
     }
-
-    with _lock:
-        if track_id not in _tracks:
-            _tracks[track_id] = collections.deque(maxlen=HISTORY_MAX)
-            _meta[track_id] = {}
-        _tracks[track_id].append(sample)
-
-        meta = _meta[track_id]
-        meta["last_seen"] = sample["ts"]
-        # Identity is sticky, matching the edge's IdentityMap rule: a track that
-        # was recognised once stays recognised, because a later frame showing the
-        # back of someone's head is not evidence they became a different person.
-        if face_result.get("status") == "known" and face_result.get("identity"):
-            meta["identity"] = face_result["identity"]
-            meta["status"] = "known"
-        elif "status" not in meta and face_result.get("status"):
-            meta["status"] = face_result["status"]
-        if frame_name:
-            meta["frame"] = frame_name
-
-
-def history(track_id: int) -> list[dict]:
-    with _lock:
-        return list(_tracks.get(track_id, ()))
-
-
-def latest(track_id: int) -> dict | None:
     with _lock:
         buf = _tracks.get(track_id)
-        return dict(buf[-1]) if buf else None
+        if buf is None:
+            buf = _tracks[track_id] = deque(maxlen=HISTORY_MAX)
+        buf.append(sample)
+        if frame_name:
+            _latest_frame[track_id] = frame_name
+        _touch_locked(track_id)
 
 
-def latest_frame(track_id: int) -> str | None:
+def record_frame(track_id: int, jpeg_bytes: bytes) -> None:
+    """Publish a new skeleton-annotated frame for a track, waking every open
+    MJPEG stream watching it."""
+    with _frame_cv:
+        _frame_bytes[track_id] = jpeg_bytes
+        _frame_seq[track_id] = next(_seq)
+        _touch_locked(track_id)
+        _frame_cv.notify_all()
+
+
+def latest_frame_bytes(track_id: int) -> "bytes | None":
+    """The track's newest annotated JPEG, or None if it has no pose frame."""
     with _lock:
-        return _meta.get(track_id, {}).get("frame")
+        return _frame_bytes.get(track_id)
 
 
-def snapshot() -> dict[int, dict]:
-    """One row per live track, for the dashboard."""
+def wait_for_frame(track_id: int, last_seq: int, timeout: float):
+    """Block until the track has a frame newer than last_seq.
+
+    Returns (jpeg_bytes, seq), or (None, last_seq) if nothing new arrived
+    within `timeout` -- the MJPEG generator uses that to decide whether to
+    keep the connection open or close a dead track's stream.
+    """
+    with _frame_cv:
+        if _frame_seq.get(track_id, -1) != last_seq and track_id in _frame_bytes:
+            return _frame_bytes[track_id], _frame_seq[track_id]
+        _frame_cv.wait(timeout)
+        seq = _frame_seq.get(track_id, -1)
+        if seq != last_seq and track_id in _frame_bytes:
+            return _frame_bytes[track_id], seq
+    return None, last_seq
+
+
+def history(track_id: int) -> list:
+    """All retained samples for one track, oldest first ([] if unknown)."""
+    with _lock:
+        buf = _tracks.get(track_id)
+        return list(buf) if buf else []
+
+
+def known_identity(track_id: int) -> "str | None":
+    """The established name for one track, or None if it was never identified.
+
+    Sticky, by the same rule snapshot() documents: once a track matched a known
+    face, later weak crops reporting unknown/no_face must not erase the name --
+    and a person turning away or collapsing is exactly when those weak crops
+    arrive. Investigations use this to name the person in an alert when the
+    posture sample that triggered them carried no face result.
+    """
+    with _lock:
+        buf = _tracks.get(track_id)
+        if not buf:
+            return None
+        for sample in reversed(buf):
+            if sample.get("status") == "known" and sample.get("identity"):
+                return sample["identity"]
+    return None
+
+
+def latest_frame(track_id: int) -> "str | None":
+    """Filename of the track's latest annotated frame on disk, if retention
+    is enabled and one was written."""
+    with _lock:
+        return _latest_frame.get(track_id)
+
+
+def snapshot() -> dict:
+    """{track_id: {identity, status, latest_pose, history_len}} for the
+    dashboard.
+
+    identity/status come from the most recent sample that actually carried a
+    face result, NOT from the newest sample outright: once a track is `known`
+    the edge stops sampling its face and sends pose only, so the newest sample
+    is nearly always face-less. Reporting that as `identity: null` would make
+    an identified person look unidentified. latest_pose is the newest sample's
+    pose fields.
+    """
     with _lock:
         out = {}
-        for track_id, buf in _tracks.items():
-            meta = _meta.get(track_id, {})
+        for tid, buf in _tracks.items():
             last = buf[-1] if buf else {}
-            out[track_id] = {
-                "identity": meta.get("identity"),
-                "status": meta.get("status"),
-                "history_len": len(buf),
-                "last_seen": meta.get("last_seen"),
+            identity, status = None, None
+            # A successful known match is sticky for this numeric track ID.
+            # Later weak crops can legitimately report unknown/no_face when a
+            # person turns or falls, but must not erase the established name.
+            known_sample = next(
+                (sample for sample in reversed(buf)
+                 if sample.get("status") == "known" and sample.get("identity")),
+                None,
+            )
+            if known_sample is not None:
+                identity, status = known_sample.get("identity"), "known"
+            else:
+                for sample in reversed(buf):
+                    if sample.get("status"):
+                        identity, status = sample.get("identity"), sample.get("status")
+                        break
+            out[tid] = {
+                "identity": identity,
+                "status": status,
                 "latest_pose": {
                     "status": last.get("pose_status"),
                     "mean_score": last.get("mean_score"),
-                    "keypoints": last.get("keypoints"),
+                    "ts": last.get("ts"),
                 },
+                "history_len": len(buf),
+                "has_frame": tid in _frame_bytes or tid in _latest_frame,
+                "posture": next(
+                    (sample.get("analysis") for sample in reversed(buf)
+                     if sample.get("analysis") is not None), None),
             }
         return out
 
 
-def prune(active_ids) -> list[int]:
-    """Drop tracks the edge no longer reports. Returns the ids dropped.
-
-    The edge owns track lifetime — it assigns the ids and knows when a person
-    left. The hub following that rather than ageing entries out on its own
-    timer is what keeps the two from disagreeing about who is present.
-    """
+def prune(active_ids) -> list:
+    """Drop every track not in active_ids; returns the dropped ids so the
+    caller can also remove their annotated frames."""
     active = set(active_ids)
-    with _lock:
-        dropped = [t for t in _tracks if t not in active]
-        for track_id in dropped:
-            _tracks.pop(track_id, None)
-            _meta.pop(track_id, None)
-        return dropped
+    with _frame_cv:
+        dropped = [tid for tid in _tracks if tid not in active]
+        for tid in dropped:
+            del _tracks[tid]
+            _latest_frame.pop(tid, None)
+            _frame_bytes.pop(tid, None)
+            _frame_seq.pop(tid, None)
+            _updated_at.pop(tid, None)
+        _frame_cv.notify_all()  # let streams for dropped tracks notice and close
+    return dropped
 
 
 def clear() -> None:
-    with _lock:
+    """Test helper: reset all state."""
+    with _frame_cv:
         _tracks.clear()
-        _meta.clear()
+        _latest_frame.clear()
+        _frame_bytes.clear()
+        _frame_seq.clear()
+        _updated_at.clear()
+        _frame_cv.notify_all()

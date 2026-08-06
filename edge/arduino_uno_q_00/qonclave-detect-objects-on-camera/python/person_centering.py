@@ -59,7 +59,23 @@ class TurnCommand:
 
 
 class PersonCenteringController:
-    """Converts tracked-person bearings into paced LEFT/RIGHT commands."""
+    """Converts tracked-person bearings into paced LEFT/RIGHT commands.
+
+    Stability measures against the detection pipeline's latency (~1s from
+    frame capture to bearing on this board):
+
+    - Post-motion blanking: bearings measured from frames captured while the
+      robot was moving describe a view the robot has already rotated away
+      from, and they keep arriving for roughly one pipeline latency after the
+      motion ends. ``note_motion()`` records commanded/observed motion, and
+      ``command_for`` discards every bearing until
+      ``post_motion_blank_seconds`` after the motion is expected to finish --
+      acting on those bearings is what sustains the turn -> shifted box ->
+      counter-turn ping-pong.
+    - Turn gain: each turn corrects only ``turn_gain`` of the measured error,
+      so a stale or noisy bearing produces an undershoot that the next fresh
+      bearing finishes off, instead of an overshoot that reverses direction.
+    """
 
     def __init__(
         self,
@@ -70,6 +86,8 @@ class PersonCenteringController:
         minimum_interval_seconds: float = 0.75,
         estimated_ms_per_degree: float = 12.0,
         settle_seconds: float = 0.35,
+        post_motion_blank_seconds: float = 1.5,
+        turn_gain: float = 0.7,
     ):
         self.enabled = enabled
         self.tolerance_degrees = max(0.0, tolerance_degrees)
@@ -77,19 +95,50 @@ class PersonCenteringController:
         self.minimum_interval_seconds = max(0.0, minimum_interval_seconds)
         self.estimated_ms_per_degree = max(0.0, estimated_ms_per_degree)
         self.settle_seconds = max(0.0, settle_seconds)
+        self.post_motion_blank_seconds = max(0.0, post_motion_blank_seconds)
+        self.turn_gain = min(1.0, max(0.1, turn_gain))
         self._next_command_at = 0.0
+        self._blank_until = 0.0
+
+    def note_motion(
+        self, duration_seconds: float = 0.0, now: float | None = None
+    ) -> None:
+        """Record robot motion starting now and lasting ``duration_seconds``.
+
+        Call this when a move command is issued (any source: auto-centering,
+        web UI, hub MQTT) with the move's estimated duration, and with the
+        default duration whenever the MCU reports motion in progress. Bearings
+        are then discarded until ``post_motion_blank_seconds`` after the
+        motion ends, which must cover the detection pipeline latency so no
+        frame captured mid-motion can still command a turn.
+        """
+        now = time.monotonic() if now is None else now
+        self._blank_until = max(
+            self._blank_until,
+            now + max(0.0, duration_seconds) + self.post_motion_blank_seconds,
+        )
 
     def command_for(
         self, angle_error_degrees: float, track_id: int, now: float | None = None
     ) -> TurnCommand | None:
-        if not self.enabled or abs(angle_error_degrees) <= self.tolerance_degrees:
+        if not self.enabled:
             return None
 
         now = time.monotonic() if now is None else now
+        if now < self._blank_until:
+            # This bearing came from (or cannot be distinguished from) a frame
+            # captured while the camera itself was moving.
+            return None
+
+        if abs(angle_error_degrees) <= self.tolerance_degrees:
+            return None
+
         if now < self._next_command_at:
             return None
 
-        correction = min(abs(angle_error_degrees), self.max_turn_degrees)
+        correction = min(
+            abs(angle_error_degrees) * self.turn_gain, self.max_turn_degrees
+        )
         magnitude = max(1, int(round(correction)))
         duration = magnitude * self.estimated_ms_per_degree / 1000.0
         self._next_command_at = now + max(

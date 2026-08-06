@@ -1,43 +1,35 @@
 """
-qnn_session.py — the one place this repo builds a Hexagon NPU inference session.
+qnn_session.py — the repo's single entry point for creating an onnxruntime
+InferenceSession on the Hexagon NPU via onnxruntime-qnn.
 
-Lifted out of `face_id/face_pipeline.py` so face ID and pose share a single QNN
-entry point rather than two copies that drift. `face_pipeline._qnn_session`
-remains as a thin alias so its CLI and any external caller keep working.
+onnxruntime's QNN support is a dynamically-registered "plugin" execution
+provider (added in the 1.20+ device-based EP API): the provider library must
+be registered by path, then bound to the actual NPU OrtEpDevice via
+SessionOptions.add_provider_for_devices — passing "QNNExecutionProvider" as a
+plain string to InferenceSession(providers=...) silently no-ops and falls
+back to CPU on this onnxruntime version.
 
-The trap this function exists to avoid is documented below and is worth reading
-before touching it: the failure mode is not an error, it is silent slowness.
+Used by both face_id/face_pipeline.py (which keeps a thin _qnn_session alias
+for backward compatibility) and pose/pose_pipeline.py. Falls back to
+CPUExecutionProvider on any failure — callers that need to report the real
+execution mode must use session_mode(), which inspects the session's resolved
+providers, NOT the inputs they built the session from (an ARM64 host with the
+model present can still end up on CPU here, e.g. when the QNN EP fails to
+register).
 """
 
 from __future__ import annotations
 
-from pathlib import Path
 
+def qnn_session(onnx_path, label: str, provider_options: "dict | None" = None):
+    """Create an InferenceSession on the Hexagon NPU, CPU fallback on failure.
 
-def qnn_session(onnx_path: Path, label: str, *, quiet: bool = False):
-    """Create an InferenceSession on the Hexagon NPU via onnxruntime-qnn.
-
-    onnxruntime's QNN support is a dynamically-registered "plugin" execution
-    provider (the device-based EP API added in 1.20+): the provider library must
-    be registered by path, then bound to the actual NPU OrtEpDevice through
-    SessionOptions.add_provider_for_devices.
-
-    Passing "QNNExecutionProvider" as a plain string to
-    InferenceSession(providers=...) **silently no-ops and runs on CPU** on this
-    onnxruntime version. That is the whole reason this helper exists.
-
-    Falls back to CPUExecutionProvider on any failure, because a hub that runs
-    slowly is better than a hub that does not start. The cost of that choice is
-    that a missing model or an unregistered EP looks like "working, just slow" —
-    roughly 45 ms instead of 1.4 ms for pose. Callers MUST surface the resolved
-    provider in their `status()` so the difference is visible; see
-    `resolved_mode()`.
+    provider_options is merged over the default {"backend_path": <htp dll>} —
+    e.g. {"htp_performance_mode": "burst"} pins the HTP clock for
+    latency-critical models (the pose backend uses it; face ID keeps the
+    default power profile it has always run with).
     """
     import onnxruntime as ort
-
-    def _say(msg: str) -> None:
-        if not quiet:
-            print(msg)
 
     try:
         import onnxruntime_qnn as qnn
@@ -45,7 +37,7 @@ def qnn_session(onnx_path: Path, label: str, *, quiet: bool = False):
         try:
             ort.register_execution_provider_library(qnn.get_ep_name(), qnn.get_library_path())
         except Exception:
-            pass  # already registered by a previous call
+            pass  # already registered from a previous qnn_session() call
 
         npu_devices = [
             d for d in ort.get_ep_devices()
@@ -54,26 +46,28 @@ def qnn_session(onnx_path: Path, label: str, *, quiet: bool = False):
         if not npu_devices:
             raise RuntimeError("no QNN NPU device found")
 
+        options = {"backend_path": qnn.get_qnn_htp_path()}
+        if provider_options:
+            options.update(provider_options)
+
         so = ort.SessionOptions()
-        so.add_provider_for_devices(npu_devices, {"backend_path": qnn.get_qnn_htp_path()})
+        so.add_provider_for_devices(npu_devices, options)
         session = ort.InferenceSession(str(onnx_path), sess_options=so)
-        _say(f"  {label} running on: {session.get_providers()[0]}")
+        print(f"  {label} running on: {session.get_providers()[0]}")
         return session
     except Exception as e:
-        _say(f"  [!] QNNExecutionProvider unavailable for {label} ({e}), falling back to CPU ONNX")
+        print(f"  [!] QNNExecutionProvider unavailable for {label} ({e}), falling back to CPU ONNX")
         return ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
 
 
-def resolved_mode(session) -> str:
-    """"npu" or "cpu", from what the session actually bound to.
+def session_mode(session) -> str:
+    """'npu' if the session actually resolved to the QNN EP, else 'cpu'.
 
-    Read this rather than assuming: `qnn_session` degrades silently by design,
-    so the only honest source of truth is the session itself.
+    This is the only reliable way to detect qnn_session()'s silent CPU
+    fallback — inspect what the session ended up with, not what was asked for.
     """
     try:
-        providers = session.get_providers()
+        providers = session.get_providers() or []
+        return "npu" if providers and "QNN" in providers[0] else "cpu"
     except Exception:
-        return "unknown"
-    if not providers:
-        return "unknown"
-    return "cpu" if providers[0] == "CPUExecutionProvider" else "npu"
+        return "cpu"

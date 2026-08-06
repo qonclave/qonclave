@@ -22,15 +22,20 @@ from framework.server import API_PREFIX, create_app  # noqa: E402
 
 
 class _StubPolicy(Policy):
-    """Typed contract: evaluate(event: EdgeEvent, image_path=None)."""
+    """Legacy-dict contract: evaluate(image_path, event: dict).
+
+    Reverted from the typed evaluate(event: EdgeEvent, image_path=None) shape
+    when framework_scaffold merged upstream/main's Policy (2026-08-06) — see
+    the TODO in framework/policy.py.
+    """
 
     name = "stub"
 
     def __init__(self):
         self.seen: list[tuple] = []
 
-    def evaluate(self, event, image_path=None):
-        self.seen.append((event, image_path))
+    def evaluate(self, image_path, event):
+        self.seen.append((image_path, event))
         return Verdict(verified=False, confidence=None, alert="stub")
 
 
@@ -197,14 +202,12 @@ def test_spec_payload_is_decoded_to_the_same_bytes(client):
     assert blobs[0] == blobs[1] == FRAME
 
 
-def test_policy_receives_a_typed_event_and_a_path(client, policy):
-    """The typed contract: an EdgeEvent first, an optional path second."""
-    from qonclave.core.models import EdgeEvent
-
+def test_policy_receives_a_legacy_dict_event_and_a_path(client, policy):
+    """The reverted contract: image_path first, a legacy dict event second."""
     client.post(f"/edge/event?{LEGACY_QUERY}", data=FRAME, content_type="image/jpeg")
-    event, image_path = policy.seen[-1]
-    assert isinstance(event, EdgeEvent)
-    assert event.source_node_id == "unoq-01"
+    image_path, event = policy.seen[-1]
+    assert isinstance(event, dict)
+    assert event.get("device_id") == "unoq-01"
     assert image_path and os.path.exists(image_path)
 
 
@@ -214,8 +217,8 @@ def test_payload_free_event_is_accepted(client, policy):
     resp = client.post(f"/edge/event?{LEGACY_QUERY}")
     assert resp.status_code == 200
     assert resp.get_json()["received"] is True
-    event, image_path = policy.seen[-1]
-    assert event.source_node_id == "unoq-01"
+    image_path, event = policy.seen[-1]
+    assert event.get("device_id") == "unoq-01"
     assert image_path is None
 
 

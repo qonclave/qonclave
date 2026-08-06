@@ -61,6 +61,15 @@
   .enroll-msg.err { color:var(--err); }
   .known-list { margin-top:12px; display:flex; gap:8px; flex-wrap:wrap; }
   .known-list .pill { color:var(--muted); }
+  .known-list .prio-row { display:flex; align-items:center; gap:6px;
+        padding:4px 8px; background:#0f1218; border:1px solid var(--border);
+        border-radius:8px; }
+  .known-list .prio-row input[type=number] { width:64px; padding:5px 7px;
+        background:var(--bg); color:var(--fg); border:1px solid var(--border);
+        border-radius:6px; font-size:13px; }
+  .known-list .prio-row button { padding:5px 10px; background:var(--accent);
+        color:#06101f; border:0; border-radius:6px; cursor:pointer;
+        font-size:12px; font-weight:600; }
   .robot-head { display:flex; align-items:end; justify-content:space-between;
                 gap:16px; flex-wrap:wrap; }
   .robot-fields { display:flex; align-items:end; gap:10px; flex-wrap:wrap; }
@@ -87,6 +96,10 @@
                   text-align:center; }
   .robot-status.ok { color:var(--ok); }
   .robot-status.err { color:var(--err); }
+  .inv-btn { border:0; border-radius:9px; background:var(--accent); color:#fff;
+    padding:10px 16px; font-size:14px; cursor:pointer; white-space:nowrap; }
+  .inv-btn:active { transform:scale(.97); }
+  .inv-btn:disabled { opacity:.45; cursor:default; }
   .recognize-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(110px,1fr));
         gap:10px; margin-top:12px; }
   .recognize-item { background:#0f1218; border:1px solid var(--border);
@@ -96,6 +109,56 @@
   .recognize-item .meta { padding:6px 8px; font-size:11px; }
   .recognize-item .meta .track { color:var(--muted); margin-bottom:4px; }
   .recognize-item .pill { font-size:10px; padding:1px 7px; }
+  .pose-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr));
+        gap:12px; margin-top:12px; }
+  .pose-item { background:#0f1218; border:1px solid var(--border);
+        border-radius:8px; overflow:hidden; }
+  /* Direct child only: the live pose stream. A bare `.pose-item img` also
+     matched the face thumbnail nested in .meta and, being more specific than
+     a lone .pose-face class, sized it to the full tile -- which covered the
+     skeleton completely. */
+  .pose-item > img { width:100%; height:230px; object-fit:contain; display:block;
+        background:#000; }
+  .pose-item .meta { padding:7px 9px; font-size:11px; display:flex;
+        align-items:center; gap:8px; }
+  .pose-item .meta .who { flex:1; min-width:0; }
+  .pose-item .meta .track { color:var(--muted); display:block; margin-bottom:3px; }
+  .pose-item .meta .stats { color:var(--muted); font-size:10px; display:block;
+        margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .pose-item .pill { font-size:10px; padding:1px 7px; }
+  /* Face crop the person was identified from. Sits in the caption row beside
+     the text, NOT overlaid on the stream -- anything drawn over the video
+     hides part of the skeleton, and the lower body is exactly what matters
+     for fall detection. Selector kept specific enough to beat the rule above. */
+  .pose-item .meta .pose-face { width:40px; height:40px; flex:0 0 40px;
+        object-fit:cover; border-radius:6px; border:1px solid var(--border);
+        background:#000; }
+  .posture-settings { display:flex; gap:10px; flex-wrap:wrap; align-items:end;
+        margin:12px 0; padding:10px; background:#0f1218; border-radius:8px; }
+  .posture-settings label { margin:0; }
+  .posture-settings input { display:block; width:105px; margin-top:5px; padding:6px 8px;
+        background:var(--bg); color:var(--fg); border:1px solid var(--border); border-radius:6px; }
+  .posture-settings button { padding:7px 12px; background:var(--accent); border:0;
+        border-radius:6px; cursor:pointer; }
+  .posture-debug { display:grid; grid-template-columns:1fr 1fr; gap:3px 10px;
+        margin-top:7px; color:var(--muted); font-size:10px; }
+  .posture-debug strong { color:var(--fg); }
+  .posture-state.NORMAL { color:var(--ok); }
+  .posture-state.SUSPICIOUS { color:var(--warn); }
+  .posture-state.DANGER { color:var(--err); font-weight:700; }
+  .chat { display:flex; flex-direction:column; gap:12px; margin-top:12px;
+          max-height:420px; overflow-y:auto; }
+  .exchange { border-bottom:1px solid var(--border); padding-bottom:12px; }
+  .exchange:last-child { border-bottom:none; padding-bottom:0; }
+  .exchange .who { font-size:11px; color:var(--muted); text-transform:uppercase;
+                   letter-spacing:.04em; margin-bottom:3px; }
+  .exchange .said { font-size:14px; line-height:1.45; white-space:pre-wrap;
+                    word-break:break-word; }
+  .exchange .said.q { color:var(--accent); }
+  .exchange .exmeta { margin-top:7px; display:flex; gap:8px; flex-wrap:wrap;
+                      align-items:center; font-size:11px; color:var(--muted); }
+  .exchange .exmeta .pill { font-size:10px; padding:1px 7px; }
+  .fallback { color:var(--warn); font-size:11px; margin-top:5px; }
 </style>
 </head>
 <body>
@@ -136,30 +199,74 @@
   </div>
 
   <div class="card" style="margin-bottom:18px;">
-    <label>Live recognition feed <span id="recognizePill" class="pill" style="margin-left:8px;font-size:11px;"></span></label>
+    <label>Edge voice assistant
+      <span id="assistantPill" class="pill" style="margin-left:8px;font-size:11px;">…</span>
+      <span id="assistantCountPill" class="pill" style="margin-left:4px;font-size:11px;"></span>
+    </label>
     <div class="sub" style="margin-bottom:2px;">
-      Crops arriving via POST /recognize from tracked people on the edge, as they come in.
+      Transcribed commands arriving via POST /assistant/query, and what the hub answered.
     </div>
-    <div id="recognizeGrid" class="recognize-grid">
-      <div style="color:var(--muted);font-size:13px;grid-column:1/-1;">No /recognize calls yet.</div>
+    <div id="assistantFeed" class="chat">
+      <div style="color:var(--muted);font-size:13px;">No assistant queries yet.</div>
     </div>
+  </div>
+
+  <div class="card" style="margin-bottom:18px;">
+    <label>Live person tracking <span id="posePill" class="pill" style="margin-left:8px;font-size:11px;"></span></label>
+    <div class="sub" style="margin-bottom:2px;">
+      One tile per tracked person: live skeleton stream, plus the face crop they
+      were identified from. Both come from the same POST /track/analyze sample.
+    </div>
+    <div class="posture-settings">
+      <label>Abnormal seconds<input id="postureAbnormal" type="number" min="0.1" step="0.5"></label>
+      <label>Motionless seconds<input id="postureMotionless" type="number" min="0.1" step="0.5"></label>
+      <label>Movement threshold<input id="postureMovement" type="number" min="0.001" step="0.005"></label>
+      <label>Tilt angle (full)<input id="postureAngle" type="number" min="1" step="5"></label>
+      <label>Tilt angle (partial)<input id="posturePartialAngle" type="number" min="1" step="5"></label>
+      <button id="postureSave" type="button">Apply</button>
+      <span id="postureSettingsMsg" class="sub" style="margin:0"></span>
+    </div>
+    <div id="poseGrid" class="pose-grid">
+      <div style="color:var(--muted);font-size:13px;grid-column:1/-1;">No tracked people yet.</div>
+    </div>
+
+    <details id="recognizeDetails" style="margin-top:14px;">
+      <summary style="cursor:pointer;color:var(--muted);font-size:12px;">
+        Recent recognition samples <span id="recognizePill" class="pill" style="margin-left:6px;font-size:10px;"></span>
+      </summary>
+      <div class="sub" style="margin:8px 0 2px;">
+        Every face crop that arrived, newest first — the raw call history behind the tiles above.
+      </div>
+      <div id="recognizeGrid" class="recognize-grid">
+        <div style="color:var(--muted);font-size:13px;grid-column:1/-1;">No /track/analyze calls yet.</div>
+      </div>
+    </details>
   </div>
 
   <div class="card" style="margin-bottom:18px;">
     <label>Enroll a known face</label>
     <div class="sub" style="margin-bottom:12px;">
       Add a photo to the known-faces database. The next inference run will
-      recognize this person by name.
+      recognize this person by name. The roster below also sets each person's
+      follow priority (1 = highest; the robot follows the lowest number).
+      Tick <em>additional photo</em> to keep an existing person's photos and add
+      another angle — recognition uses the best match across them, so extra
+      angles only help when someone turns away or slumps.
     </div>
     <form id="enrollForm" class="enroll">
       <input id="enrollName" type="text" placeholder="Person's name (e.g. Jane Doe)"
              autocomplete="off" />
       <input id="enrollFile" type="file"
              accept=".jpg,.jpeg,.png,.webp,image/*" />
+      <label class="sub" style="margin:0;display:flex;align-items:center;gap:6px;">
+        <input id="enrollAdditional" type="checkbox" />
+        additional photo (same person)
+      </label>
       <button id="enrollBtn" type="submit">Enroll</button>
     </form>
     <div id="enrollMsg" class="enroll-msg"></div>
     <div id="knownList" class="known-list"></div>
+    <div id="knownListMsg" class="enroll-msg"></div>
   </div>
 
   <div class="card" style="margin-bottom:18px;">
@@ -185,6 +292,97 @@
       <button type="button" class="robot-move robot-backward" data-direction="BACKWARD" aria-label="Move backward">▼</button>
     </div>
     <div id="robotStatus" class="robot-status" role="status" aria-live="polite">Ready</div>
+  </div>
+
+  <div class="card" style="margin-bottom:18px;" id="investigateCard">
+    <div class="robot-head">
+      <div>
+        <label>VLM investigation <span id="invStatePill" class="pill" style="margin-left:8px;font-size:11px;"></span></label>
+        <div class="sub" style="margin:0;">
+          On-demand check: asks the edge for a fresh capture and runs one VLM
+          analysis. Also fires automatically on persistent DANGER posture, or
+          by texting CAPTURE to the hub.
+        </div>
+      </div>
+      <button id="investigateBtn" type="button" class="inv-btn">Capture &amp; analyze</button>
+    </div>
+    <div id="invMsg" class="robot-status" role="status" aria-live="polite"></div>
+    <div id="invResult" style="display:none;margin-top:10px;">
+      <div class="grid">
+        <div>
+          <label>Investigation image</label>
+          <img id="invImage" alt="investigation frame" style="width:100%;border-radius:8px;" />
+        </div>
+        <div>
+          <div class="kv"><span>Classification</span><span id="invClassification">—</span></div>
+          <div class="kv"><span>Confidence</span><span id="invConfidence">—</span></div>
+          <div class="kv"><span>Trigger</span><span id="invTrigger">—</span></div>
+          <div class="kv"><span>Image source</span><span id="invSource">—</span></div>
+          <div class="kv"><span>Event ID</span><span id="invEventId">—</span></div>
+          <div class="kv"><span>SMS sent</span><span id="invSms">—</span></div>
+          <div class="kv"><span>VLM latency</span><span id="invLatency">—</span></div>
+          <div style="margin-top:12px;">
+            <label>Observations &amp; recommended action</label>
+            <div class="reason" id="invReason">—</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:18px;">
+    <div class="robot-head">
+      <div>
+        <label>Modulino Buzzer control</label>
+        <div class="sub" style="margin:0;">Control edge buzzer: choose between custom frequency tone mode or song melody mode.</div>
+      </div>
+    </div>
+    
+    <!-- Target Device Row -->
+    <div style="margin-top:10px; max-width:220px;">
+      <label style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em;">Target Device ID</label>
+      <input id="buzzerDevice" type="text" value="unoq-01" style="width:100%; padding:7px 9px; margin-top:4px; background:#0f1218; color:var(--fg); border:1px solid var(--border); border-radius:6px; font-size:13px;" />
+    </div>
+
+    <!-- Mode 1: Custom Frequency Tone -->
+    <div style="margin-top:14px; padding:12px; background:#14171f; border:1px solid var(--border); border-radius:8px;">
+      <div style="font-size:12px; font-weight:700; color:var(--warn); margin-bottom:8px;">🔊 MODE 1: CUSTOM FREQUENCY TONE</div>
+      <div style="display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end;">
+        <div style="flex:2 1 200px;">
+          <label style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em;">Frequency (<span id="freqVal" style="color:var(--accent); font-weight:bold;">440</span> Hz)</label>
+          <div style="display:flex; gap:8px; align-items:center; margin-top:4px;">
+            <input type="range" id="freqSlider" min="100" max="4000" step="10" value="440" style="flex:1;" />
+            <input type="number" id="buzzerFreq" min="20" max="20000" value="440" style="width:75px; padding:7px 9px; background:#0f1218; color:var(--fg); border:1px solid var(--border); border-radius:6px; font-size:13px;" />
+          </div>
+        </div>
+        <div style="flex:1 1 120px;">
+          <label style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em;">Duration (ms, 0=cont)</label>
+          <input type="number" id="buzzerDuration" min="0" max="60000" step="100" value="0" style="width:100%; padding:7px 9px; margin-top:4px; background:#0f1218; color:var(--fg); border:1px solid var(--border); border-radius:6px; font-size:13px;" />
+        </div>
+      </div>
+      <div style="display:flex; gap:8px; margin-top:10px; flex-wrap:wrap; align-items:center;">
+        <button type="button" onclick="setBuzzerFreq(440)" style="padding:4px 8px; font-size:11px; background:#242833; color:var(--fg); border:1px solid var(--border); border-radius:4px; cursor:pointer;">A4 (440Hz)</button>
+        <button type="button" onclick="setBuzzerFreq(880)" style="padding:4px 8px; font-size:11px; background:#242833; color:var(--fg); border:1px solid var(--border); border-radius:4px; cursor:pointer;">A5 (880Hz)</button>
+        <button type="button" onclick="setBuzzerFreq(1000)" style="padding:4px 8px; font-size:11px; background:#242833; color:var(--fg); border:1px solid var(--border); border-radius:4px; cursor:pointer;">Alarm (1kHz)</button>
+        <button type="button" onclick="setBuzzerFreq(2000)" style="padding:4px 8px; font-size:11px; background:#242833; color:var(--fg); border:1px solid var(--border); border-radius:4px; cursor:pointer;">High (2kHz)</button>
+        <button type="button" id="btnBuzzerStart" onclick="sendBuzzerCommand('start')" style="margin-left:auto; padding:6px 14px; font-weight:700; font-size:12px; background:linear-gradient(135deg, #f5b74f, #ff6b6b); color:#0f1115; border:none; border-radius:6px; cursor:pointer;">▶ PLAY TONE</button>
+      </div>
+    </div>
+
+    <!-- Mode 2: Song Melody & Stop Controls -->
+    <div style="margin-top:12px; display:flex; gap:12px; flex-wrap:wrap; align-items:center;">
+      <div style="flex:1 1 220px; padding:10px 14px; background:#14171f; border:1px solid var(--border); border-radius:8px; display:flex; justify-content:space-between; align-items:center;">
+        <div>
+          <div style="font-size:12px; font-weight:700; color:var(--accent);">🎵 MODE 2: SONG MELODY</div>
+          <div style="font-size:11px; color:var(--muted);">Imagine Dragons - Believer</div>
+        </div>
+        <button type="button" id="btnBuzzerBeliever" onclick="sendBuzzerCommand('believer')" style="padding:8px 14px; font-weight:700; font-size:12px; background:linear-gradient(135deg, #4f9dff, #9b51e0); color:#ffffff; border:none; border-radius:6px; cursor:pointer;">▶ PLAY "BELIEVER"</button>
+      </div>
+      
+      <button type="button" id="btnBuzzerStop" onclick="sendBuzzerCommand('stop')" style="padding:10px 18px; font-weight:700; font-size:13px; background:#242833; color:var(--err); border:2px solid var(--err); border-radius:8px; cursor:pointer;">⏹ STOP BUZZER</button>
+    </div>
+
+    <div id="buzzerStatus" class="robot-status" style="margin-top:10px;" role="status">Ready</div>
   </div>
 
   <div class="card">
@@ -298,6 +496,32 @@ async function refresh() {
 }
 
 async function loadKnownFaces() {
+  // Roster with follow-priority controls. Slugs are server-normalized to
+  // [a-z0-9_], so templating them into innerHTML is safe. Falls back to the
+  // plain pill roster when the app doesn't provide the priorities hooks.
+  try {
+    const r = await fetch("/user/known-person-priorities");
+    if (r.status === 404) return loadKnownFacesLegacy();
+    const j = await r.json();
+    const el = $("knownList");
+    if (!j.people || !j.people.length) {
+      el.innerHTML = '<span class="pill">no faces enrolled yet</span>';
+      return;
+    }
+    el.innerHTML = j.people.map(p => `
+      <span class="prio-row">
+        <span class="pill">${p.identity}</span>
+        <input type="number" min="1" step="1" value="${p.priority}"
+               id="prio-${p.identity}" aria-label="priority for ${p.identity}" />
+        <button type="button" data-slug="${p.identity}">Set</button>
+      </span>`).join("");
+    el.querySelectorAll("button[data-slug]").forEach(btn => {
+      btn.addEventListener("click", () => setKnownPersonPriority(btn.dataset.slug));
+    });
+  } catch (e) { /* leave prior state */ }
+}
+
+async function loadKnownFacesLegacy() {
   try {
     const r = await fetch("/user/known_faces");
     const j = await r.json();
@@ -312,6 +536,28 @@ async function loadKnownFaces() {
   } catch (e) { /* leave prior state */ }
 }
 
+async function setKnownPersonPriority(slug) {
+  const msg = $("knownListMsg");
+  const value = Number(document.getElementById(`prio-${slug}`).value);
+  try {
+    const j = await fetch(`/user/known-person-priorities/${slug}`, {
+      method: "PUT", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({priority: value}),
+    }).then(r => r.json());
+    if (j.ok) {
+      msg.className = "enroll-msg ok";
+      msg.textContent = `Priority ${j.priority} saved for ${j.identity}. The edge picks it up within ~15 s.`;
+      loadKnownFaces();
+    } else {
+      msg.className = "enroll-msg err";
+      msg.textContent = j.error || "Save failed.";
+    }
+  } catch (e) {
+    msg.className = "enroll-msg err";
+    msg.textContent = "Network error — hub unreachable.";
+  }
+}
+
 async function enroll(ev) {
   ev.preventDefault();
   const name = $("enrollName").value.trim();
@@ -323,6 +569,7 @@ async function enroll(ev) {
   const fd = new FormData();
   fd.append("name", name);
   fd.append("image", file);
+  if ($("enrollAdditional").checked) fd.append("additional", "1");
 
   $("enrollBtn").disabled = true;
   msg.className = "enroll-msg"; msg.textContent = "Enrolling…";
@@ -331,8 +578,10 @@ async function enroll(ev) {
     const j = await r.json();
     if (r.ok && j.ok) {
       msg.className = "enroll-msg ok";
-      msg.textContent = `Enrolled "${j.name}"${j.replaced ? " (replaced existing photo)" : ""}. Future inference will recognize them.`;
+      const photos = j.photo_count > 1 ? ` — ${j.photo_count} photos on file` : "";
+      msg.textContent = `Enrolled "${j.name}"${j.replaced ? " (replaced existing photo)" : ""}${photos}. Future inference will recognize them.`;
       $("enrollName").value = ""; $("enrollFile").value = "";
+      $("enrollAdditional").checked = false;
       loadKnownFaces();
     } else {
       msg.className = "enroll-msg err";
@@ -377,6 +626,45 @@ async function sendRobotCommand(direction) {
 document.querySelectorAll(".robot-dpad button").forEach(button => {
   button.addEventListener("click", () => sendRobotCommand(button.dataset.direction));
 });
+
+function setBuzzerFreq(val) {
+  $("buzzerFreq").value = val;
+  $("freqSlider").value = val;
+  $("freqVal").textContent = val;
+}
+$("freqSlider")?.addEventListener("input", (e) => {
+  $("buzzerFreq").value = e.target.value;
+  $("freqVal").textContent = e.target.value;
+});
+$("buzzerFreq")?.addEventListener("input", (e) => {
+  $("freqSlider").value = e.target.value;
+  $("freqVal").textContent = e.target.value;
+});
+
+async function sendBuzzerCommand(action) {
+  const status = $("buzzerStatus");
+  const deviceId = $("buzzerDevice").value.trim() || "unoq-01";
+  const frequency = Number.parseInt($("buzzerFreq").value, 10) || 440;
+  const duration = Number.parseInt($("buzzerDuration").value, 10) || 0;
+
+  status.className = "robot-status";
+  status.textContent = `Sending ${action}...`;
+
+  try {
+    const r = await fetch("/user/buzzer-command", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ device_id: deviceId, action, frequency, duration })
+    });
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.error || "Buzzer command failed");
+    status.className = "robot-status ok";
+    status.textContent = `Buzzer ${action.toUpperCase()} sent to ${j.device_id}`;
+  } catch (e) {
+    status.className = "robot-status err";
+    status.textContent = e.message || "Buzzer command failed";
+  }
+}
 
 $("enrollForm").addEventListener("submit", enroll);
 loadKnownFaces();
@@ -455,43 +743,340 @@ async function refreshLLM() {
   } catch (e) { /* leave prior state */ }
 }
 
-async function refreshRecognizeActivity() {
+const statusClass = (s) => s === "known" ? "ok" : s === "unknown" ? "warn"
+  : s === "no_face" ? "" : s ? "err" : "";
+
+// Raw per-call history, collapsed under the tiles. Takes the already-fetched
+// payload -- refreshPersonTracking() does the one request both views need.
+function renderRecognizeActivity(j) {
+  $("recognizePill").textContent = j.count ? `${j.count} recent` : "idle";
+  $("recognizePill").className = "pill" + (j.count ? " ok" : "");
+
+  // Skip the DOM work entirely while the section is collapsed.
+  if (!$("recognizeDetails").open) return;
+
+  const grid = $("recognizeGrid");
+  if (!j.activity || !j.activity.length) {
+    grid.innerHTML = '<div style="color:var(--muted);font-size:13px;grid-column:1/-1;">No /track/analyze calls yet.</div>';
+    return;
+  }
+  const statusLabel = (a) => a.status === "known" ? a.identity : a.status.replace("_", " ");
+  grid.innerHTML = j.activity.map(a => `
+    <div class="recognize-item">
+      <img src="/user/recognize_activity/${a.id}.jpg" alt="track ${a.track_id} crop" loading="lazy" />
+      <div class="meta">
+        <div class="track">Track ${a.track_id} · ${shortTime(a.received_at)} · ${a.latency_ms}ms</div>
+        <span class="pill ${statusClass(a.status)}">${statusLabel(a)}</span>
+      </div>
+    </div>`).join("");
+}
+
+// Tracks currently rendered as <img> tiles. The MJPEG stream lives in the
+// element itself, so tiles are created/removed only when the set of live
+// tracks changes -- re-rendering the grid every poll would tear down and
+// reopen every stream, which shows as a constant flicker.
+let poseRendered = new Set();
+
+// Newest face-recognition entry per track, so each tile can show the crop the
+// person was actually identified from. Pose-only samples don't feed the
+// activity buffer, so for a resolved track this stays pinned to the crop that
+// resolved it -- which is the useful thing to look at.
+function latestFaceByTrack(activity) {
+  const byTrack = {};
+  for (const a of activity || []) {          // newest first
+    if (!(a.track_id in byTrack)) byTrack[a.track_id] = a;
+  }
+  return byTrack;
+}
+
+// Speech transcripts and model output are free text — escape before innerHTML.
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g,
+  (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+async function refreshAssistant() {
   try {
-    const r = await fetch("/user/recognize_activity?limit=16");
+    const r = await fetch("/user/assistant_activity?limit=12");
     const j = await r.json();
 
-    $("recognizePill").textContent = j.count ? `${j.count} recent` : "idle";
-    $("recognizePill").className = "pill" + (j.count ? " ok" : "");
+    const pill = $("assistantPill");
+    const llm = j.llm || {};
+    if (!llm.enabled) {
+      pill.textContent = "LLM off — templates";
+      pill.className = "pill warn";
+      pill.title = "ASSISTANT_LLM_ENABLED=0 on the hub";
+    } else if (llm.available) {
+      pill.textContent = (llm.model_id || "LLM").split("/").pop();
+      pill.className = "pill ok";
+      pill.title = llm.model_id || "";
+    } else {
+      pill.textContent = "LLM unavailable";
+      pill.className = "pill err";
+      pill.title = llm.error || "model not loaded";
+    }
 
-    const grid = $("recognizeGrid");
+    $("assistantCountPill").textContent = j.count ? `${j.count} recent` : "";
+    $("assistantCountPill").className = "pill";
+
+    const feed = $("assistantFeed");
     if (!j.activity || !j.activity.length) {
-      grid.innerHTML = '<div style="color:var(--muted);font-size:13px;grid-column:1/-1;">No /recognize calls yet.</div>';
+      feed.innerHTML = '<div style="color:var(--muted);font-size:13px;">No assistant queries yet.</div>';
       return;
     }
-    const statusClass = (s) => s === "known" ? "ok" : s === "unknown" ? "warn" : s === "no_face" ? "" : "err";
-    const statusLabel = (a) => a.status === "known" ? a.identity : a.status.replace("_", " ");
-    grid.innerHTML = j.activity.map(a => `
-      <div class="recognize-item">
-        <img src="/user/recognize_activity/${a.id}.jpg" alt="track ${a.track_id} crop" loading="lazy" />
-        <div class="meta">
-          <div class="track">Track ${a.track_id} · ${shortTime(a.received_at)} · ${a.latency_ms}ms</div>
-          <span class="pill ${statusClass(a.status)}">${statusLabel(a)}</span>
-        </div>
-      </div>`).join("");
+    feed.innerHTML = j.activity.map(a => {
+      const srcPill = a.source === "llm"
+        ? '<span class="pill ok">llm</span>'
+        : `<span class="pill warn">${esc(a.tool_used || "template")}</span>`;
+      const llmLatency = a.llm_latency_s != null ? ` · gen ${a.llm_latency_s}s` : "";
+      const fallback = a.fallback_reason
+        ? `<div class="fallback">fell back to template — ${esc(a.fallback_reason)}</div>`
+        : "";
+      return `
+        <div class="exchange">
+          <div class="who">${esc(a.device_id)} asked · ${shortTime(a.received_at)}</div>
+          <div class="said q">${esc(a.query)}</div>
+          <div class="who" style="margin-top:8px;">hub replied</div>
+          <div class="said">${esc(a.response)}</div>
+          ${fallback}
+          <div class="exmeta">${srcPill}<span>${a.latency_ms}ms total${llmLatency}</span></div>
+        </div>`;
+    }).join("");
   } catch (e) {
-    $("recognizePill").textContent = "unreachable";
-    $("recognizePill").className = "pill err";
+    $("assistantPill").textContent = "unreachable";
+    $("assistantPill").className = "pill err";
   }
 }
 
+async function refreshPersonTracking() {
+  let faces = {};
+  try {
+    const [tr, ar] = await Promise.all([
+      fetch("/user/tracks"),
+      fetch("/user/recognize_activity?limit=16"),
+    ]);
+    const j = await tr.json();
+    const act = await ar.json();
+    faces = latestFaceByTrack(act.activity);
+
+    renderRecognizeActivity(act);   // the collapsed raw-history section
+
+    const tracks = j.tracks || {};
+    const ids = Object.keys(tracks);
+
+    $("posePill").textContent = ids.length ? `${ids.length} tracked` : "idle";
+    $("posePill").className = "pill" + (ids.length ? " ok" : "");
+
+    const grid = $("poseGrid");
+    if (!ids.length) {
+      if (poseRendered.size) { grid.innerHTML = ""; poseRendered.clear(); }
+      if (!grid.children.length) {
+        grid.innerHTML = '<div style="color:var(--muted);font-size:13px;grid-column:1/-1;">No tracked people yet.</div>';
+      }
+      return;
+    }
+
+    const wanted = new Set(ids);
+    if (poseRendered.size && [...poseRendered].every(id => wanted.has(id)) && poseRendered.size === wanted.size) {
+      // Same tracks as last poll: refresh captions only, leave streams alone.
+    } else {
+      if (!poseRendered.size) grid.innerHTML = "";
+      for (const id of poseRendered) {
+        if (!wanted.has(id)) document.getElementById(`poseItem-${id}`)?.remove();
+      }
+      for (const id of ids) {
+        if (poseRendered.has(id)) continue;
+        const el = document.createElement("div");
+        el.className = "pose-item";
+        el.id = `poseItem-${id}`;
+        el.innerHTML = `
+          <img src="/user/tracks/${id}/stream.mjpg" alt="track ${id} pose" />
+          <div class="meta">
+            <img class="pose-face" id="poseFace-${id}" alt="" title="face crop this person was identified from" style="display:none;" />
+            <span class="who">
+              <span class="track">Track ${id}</span>
+              <span class="pill" id="posePill-${id}"></span>
+              <span class="stats" id="poseStats-${id}"></span>
+              <span class="posture-debug" id="poseDebug-${id}"></span>
+            </span>
+          </div>`;
+        grid.appendChild(el);
+      }
+      poseRendered = wanted;
+    }
+
+    for (const id of ids) {
+      const t = tracks[id];
+      const face = faces[id];
+      const pill = document.getElementById(`posePill-${id}`);
+      if (!pill) continue;
+
+      const score = t.latest_pose && t.latest_pose.mean_score;
+      const status = t.status || (face && face.status);
+      const name = t.identity || (face && face.identity);
+      pill.textContent = status === "known" ? name : (status || "tracking").replace("_", " ");
+      pill.className = "pill " + statusClass(status);
+
+      const bits = [];
+      if (face && face.status === "known" && face.confidence != null) {
+        bits.push(`face ${(face.confidence * 100).toFixed(0)}%`);
+      }
+      if (score != null) bits.push(`pose ${score.toFixed(2)}`);
+      if (t.history_len) bits.push(`${t.history_len} samples`);
+      document.getElementById(`poseStats-${id}`).textContent = bits.join(" · ");
+
+      const posture = t.posture;
+      const debug = document.getElementById(`poseDebug-${id}`);
+      if (debug && posture) {
+        debug.innerHTML = `
+          <span>Torso <strong>${posture.torso_angle.toFixed(1)}°</strong></span>
+          <span>Movement <strong>${posture.movement}</strong></span>
+          <span>Score <strong>${posture.posture_score}</strong></span>
+          <span>State <strong class="posture-state ${posture.state}">${posture.state}</strong></span>
+          <span>Duration <strong>${posture.duration_seconds.toFixed(1)} sec</strong></span>`;
+      } else if (debug) {
+        debug.innerHTML = '<span style="grid-column:1/-1">Waiting for a valid pose sample…</span>';
+      }
+
+      // Inset the crop this track was identified from, once there is one.
+      const thumb = document.getElementById(`poseFace-${id}`);
+      if (thumb && face) {
+        const src = `/user/recognize_activity/${face.id}.jpg`;
+        if (thumb.dataset.src !== src) { thumb.dataset.src = src; thumb.src = src; }
+        thumb.style.display = "block";
+      }
+    }
+  } catch (e) {
+    $("posePill").textContent = "unreachable";
+    $("posePill").className = "pill err";
+  }
+}
+
+const INV_BUSY_STATES = ["WAITING_FOR_CAPTURE", "VLM_RUNNING"];
+
+async function refreshInvestigation() {
+  try {
+    const j = await fetch("/user/investigation").then(r => r.json());
+    if (!j.available) { $("investigateCard").style.display = "none"; return; }
+
+    const busy = INV_BUSY_STATES.includes(j.state);
+    const pill = $("invStatePill");
+    pill.textContent = j.state + (j.state === "COOLDOWN" && j.cooldown_seconds_left
+      ? ` (${Math.ceil(j.cooldown_seconds_left)}s)` : "");
+    pill.className = "pill " + (busy ? "warn" : j.state === "MONITORING" ? "ok" : "");
+    $("investigateBtn").disabled = busy;
+    if (busy) {
+      $("invMsg").className = "robot-status";
+      $("invMsg").textContent = j.state === "WAITING_FOR_CAPTURE"
+        ? `Waiting for the edge capture (${j.active_event_id || ""})…`
+        : "VLM analyzing…";
+    } else if ($("invMsg").textContent.includes("…")) {
+      $("invMsg").textContent = "";
+    }
+
+    const res = j.last_result;
+    if (!res) return;
+    $("invResult").style.display = "block";
+    const cls = res.classification || "—";
+    const clsPill = cls === "EMERGENCY_LIKELY" ? "err" : cls === "SAFE_LIKELY" ? "ok" : "warn";
+    $("invClassification").innerHTML = `<span class="pill ${clsPill}">${cls}</span>`;
+    $("invConfidence").textContent = fmtConf(res.confidence);
+    $("invTrigger").textContent = res.manual
+      ? (res.source === "manual_sms" ? "SMS (CAPTURE)" : "dashboard")
+      : `posture: ${res.posture_state || "—"} (${res.identity || "—"})`;
+    $("invSource").textContent = res.image_source === "edge_capture"
+      ? "fresh edge capture" : (res.image_source || "—");
+    $("invEventId").textContent = res.event_id || "—";
+    $("invSms").textContent = res.sms_sent ? "yes" : "no";
+    $("invLatency").textContent = res.latency_s != null ? res.latency_s + "s" : "—";
+    const obs = (res.observations || []).join("; ");
+    $("invReason").textContent =
+      (obs || (res.vlm_available ? "no observations" : "(VLM unavailable — classified UNCERTAIN)"))
+      + (res.recommended_action ? ` → ${res.recommended_action}` : "");
+    if (res.frame) {
+      const src = `/user/frames/${res.frame}`;
+      const img = $("invImage");
+      if (img.dataset.src !== src) { img.dataset.src = src; img.src = src + "?ts=" + Date.now(); }
+      img.style.display = "block";
+    } else {
+      $("invImage").style.display = "none";
+    }
+  } catch (_) { /* leave prior state */ }
+}
+
+$("investigateBtn").addEventListener("click", async () => {
+  const msg = $("invMsg");
+  $("investigateBtn").disabled = true;
+  msg.className = "robot-status";
+  msg.textContent = "Requesting capture…";
+  try {
+    const r = await fetch("/user/investigate", { method: "POST" });
+    const j = await r.json();
+    if (j.ok) {
+      msg.className = "robot-status ok";
+      msg.textContent = `Investigation ${j.event_id} started`
+        + (j.capture_requested ? " — capture requested from the edge…" : " — using buffered frame…");
+    } else {
+      msg.className = "robot-status err";
+      msg.textContent = j.error || "Could not start an investigation.";
+    }
+  } catch (e) {
+    msg.className = "robot-status err";
+    msg.textContent = "Network error — hub unreachable.";
+  }
+  refreshInvestigation();
+});
+
+async function loadPostureSettings() {
+  try {
+    const j = await fetch("/user/track-settings").then(r => r.json());
+    if (!j.ok) return;
+    $("postureAbnormal").value = j.settings.abnormal_seconds;
+    $("postureMotionless").value = j.settings.motionless_seconds;
+    $("postureMovement").value = j.settings.movement_threshold;
+    $("postureAngle").value = j.settings.horizontal_angle;
+    $("posturePartialAngle").value = j.settings.partial_angle;
+  } catch (_) {}
+}
+
+$("postureSave").addEventListener("click", async () => {
+  const body = {
+    abnormal_seconds: Number($("postureAbnormal").value),
+    motionless_seconds: Number($("postureMotionless").value),
+    movement_threshold: Number($("postureMovement").value),
+    horizontal_angle: Number($("postureAngle").value),
+    partial_angle: Number($("posturePartialAngle").value),
+  };
+  const msg = $("postureSettingsMsg");
+  try {
+    const j = await fetch("/user/track-settings", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body),
+    }).then(r => r.json());
+    msg.textContent = j.ok ? "Saved" : `Error: ${j.error}`;
+  } catch (_) { msg.textContent = "Unreachable"; }
+});
+
 refresh();
 setInterval(refresh, 2000);
+refreshPersonTracking();
+setInterval(refreshPersonTracking, 2000);
+loadPostureSettings();
 refreshSMS();
 setInterval(refreshSMS, 2000);
 refreshLLM();
 setInterval(refreshLLM, 2000);
-refreshRecognizeActivity();
-setInterval(refreshRecognizeActivity, 1500);
+refreshInvestigation();
+setInterval(refreshInvestigation, 2000);
+refreshAssistant();
+setInterval(refreshAssistant, 1500);
+// refreshRecognizeActivity() from main is this branch's refreshPersonTracking()
+// (renamed when the raw call history moved into the tiles' card); it is already
+// started above, so polling it again here would double the request rate.
+//
+// Expanding the raw-history section renders it immediately rather than
+// waiting for the next poll tick.
+$("recognizeDetails").addEventListener("toggle", () => {
+  if ($("recognizeDetails").open) refreshPersonTracking();
+});
 </script>
 </body>
 </html>

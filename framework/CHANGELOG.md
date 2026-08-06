@@ -33,6 +33,12 @@ and independently under `spec/v1/`.
 - **`sdk/c/`** — the constrained binding: CBOR codec, SHA-256/HMAC, the check-in exchange, and
   placement. Complete and tested on the host; a real device supplies its own three-function port.
   This is the binding a duty-cycled device uses, and it is the more finished of the two.
+- **`qonclave.hub.events.EventStore.note_node()`** — update the latest-seen node without recording
+  a full event. `hub/framework/events.py`'s `note_device()` needs this: a `/track/analyze` sample
+  has no full edge event to record, only a device id worth remembering. Added while merging
+  `hub/`'s independent feature work back into the branch that lifted `events.py` onto `EventStore`
+  — without it, `note_device()` referenced module-level state that no longer existed post-lift, a
+  silent `NameError` waiting on the first `/track/analyze` or `/edge/investigation` call.
 
 ### Changed
 
@@ -55,6 +61,10 @@ and independently under `spec/v1/`.
 
 ### Notes
 
-`hub/` and `edge/` are untouched. `hub/framework/` still runs the working demo; `framework/` is a
-parallel implementation. Pointing `hub/server.py` at `qonclave.hub` is a separate, later change —
-`docs/CONVENTIONS.md` carries the module-by-module map.
+`edge/` is still untouched — nothing under it imports `qonclave.*` yet. `hub/` is no longer fully
+untouched: `hub/framework/adapter.py`, `events.py`, and `transport.py` are thin shims over this
+SDK today. `hub/framework/policy.py` was lifted the same way and then reverted while merging
+`hub/`'s own feature work (2026-08-06) — `docs/CONVENTIONS.md`'s "Where existing code lands"
+section is the current, maintained status of every module, including that revert and what redoing
+it correctly requires. Pointing the rest of `hub/server.py` at `qonclave.hub` remains a separate,
+later change.

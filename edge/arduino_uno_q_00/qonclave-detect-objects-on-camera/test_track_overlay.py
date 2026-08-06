@@ -64,6 +64,18 @@ def test_multiple_tracks_each_get_a_box():
     assert not np.array_equal(plain[115:185, 115:185], annotated[115:185, 115:185])
 
 
+def test_highlighted_track_is_drawn_differently():
+    frame = _make_frame_jpeg()
+    tracks = [{"track_id": 4, "bounding_box_xyxy": (20, 20, 100, 120)}]
+    plain = _decode(draw_track_overlay(frame, tracks, {}))
+    highlighted = _decode(draw_track_overlay(frame, tracks, {}, highlight_track_id=4))
+    # Same geometry, different color: the box region must differ.
+    assert not np.array_equal(plain, highlighted)
+    # Highlighting a non-existent id changes nothing vs. the default drawing.
+    other = _decode(draw_track_overlay(frame, tracks, {}, highlight_track_id=99))
+    assert np.array_equal(plain, other)
+
+
 def test_undecodable_frame_returns_input_unchanged():
     garbage = b"not a jpeg"
     out = draw_track_overlay(garbage, [{"track_id": 1, "bounding_box_xyxy": (0, 0, 10, 10)}], {})

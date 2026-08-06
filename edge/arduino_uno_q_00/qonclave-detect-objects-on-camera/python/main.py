@@ -22,30 +22,23 @@ from arduino.app_peripherals.camera import IPCamera, V4LCamera
 import json
 from basic_auth import BasicAuthMiddleware
 from file_camera import FileCamera
-from hub_protocol import build_edge_event, command_expired, normalize_command
-from placement import EscalationPolicy
+from follow_target_selector import FollowTargetSelector
 from identity_map import IdentityMap
+from investigation_approach import describe as describe_approach, plan_approach
 from led_display import person_display_bitmap
 from mqtt_client import EdgeMQTTClient
+from analysis_client import AnalysisClient
 from person_centering import PersonCenteringController, horizontal_bearing_degrees
 from person_tracker import PersonTracker
-from analysis_client import AnalysisClient
-from track_crop import (
-  FACE_MIN_SIZE_PX, FACE_MIN_VISIBLE_RATIO, POSE_MIN_SIZE_PX,
-  POSE_MIN_VISIBLE_RATIO, accepts, crop_persons, remove_crop_locally,
-  save_crop_locally,
-)
-from track_overlay import draw_track_overlay
+from priority_sync import PriorityMapClient
+from track_crop import crop_persons, remove_crop_locally, save_crop_locally
+from track_overlay import draw_track_overlay_bgr, encode_jpeg
 
 load_dotenv()
 
 log = Logger("qonclave.edge")
 
 DEVICE_ID = os.environ.get("DEVICE_ID", "unoq-01")
-# Spec ingest path — the `servers` base path in spec/v1/openapi/hub.yaml plus
-# /events. The hub also still serves the pre-spec /edge/event, so this can be
-# pointed back if a hub in the field has not been updated yet.
-HUB_EVENTS_PATH = os.environ.get("HUB_EVENTS_PATH", "/api/v1/events")
 HUB_DISCOVERY_ENABLED = os.environ.get("HUB_DISCOVERY_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
 HUB_MDNS_NAME = os.environ.get("HUB_MDNS_NAME", "qonclave-hub.local").strip()
 HUB_IP = os.environ.get("HUB_IP", "192.168.18.62").strip()
@@ -86,17 +79,17 @@ def get_hub_base_url() -> str:
 
   # Attempt UDP LAN broadcast discovery on port 8888
   try:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-    sock.settimeout(1.5)
-    sock.sendto(json.dumps({"probe": "qonclave-hub"}).encode("utf-8"), ("255.255.255.255", 8888))
-    data, addr = sock.recvfrom(1024)
-    msg = json.loads(data.decode("utf-8", errors="ignore"))
-    if isinstance(msg, dict) and msg.get("service") == "qonclave-hub":
-      _resolved_hub_host = addr[0]
-      _discovery_method = "UDP Broadcast"
-      log.info(f"Discovered Qonclave Hub via UDP LAN Broadcast at: {_resolved_hub_host}")
-      return f"http://{_resolved_hub_host}:{HUB_PORT}"
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+      sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+      sock.settimeout(1.5)
+      sock.sendto(json.dumps({"probe": "qonclave-hub"}).encode("utf-8"), ("255.255.255.255", 8888))
+      data, addr = sock.recvfrom(1024)
+      msg = json.loads(data.decode("utf-8", errors="ignore"))
+      if isinstance(msg, dict) and msg.get("service") == "qonclave-hub":
+        _resolved_hub_host = addr[0]
+        _discovery_method = "UDP Broadcast"
+        log.info(f"Discovered Qonclave Hub via UDP LAN Broadcast at: {_resolved_hub_host}")
+        return f"http://{_resolved_hub_host}:{HUB_PORT}"
   except Exception:
     log.debug(f"UDP LAN discovery timed out; falling back to HUB_IP '{HUB_IP}'")
 
@@ -217,11 +210,11 @@ if CAMERA_SOURCE == "ip":
   camera = IPCamera(url=IP_CAMERA_URL, username=IP_CAMERA_USERNAME,
                     password=IP_CAMERA_PASSWORD, fps=IP_CAMERA_FPS)
 elif CAMERA_SOURCE == "file":
-  VIDEO_FILE_PATH = os.environ.get("VIDEO_FILE_PATH", "/app/media/sample.mp4")
+  VIDEO_FILE_PATH = os.environ.get("VIDEO_FILE_PATH", "/app/media/walking_front_view.mp4")
   if not VIDEO_FILE_PATH:
     raise RuntimeError("CAMERA_SOURCE=file requires VIDEO_FILE_PATH to be set")
   VIDEO_FILE_LOOP = os.environ.get("VIDEO_FILE_LOOP", "true").strip().lower() not in ("0", "false", "no")
-  VIDEO_FILE_FPS = int(os.environ.get("VIDEO_FILE_FPS", "10"))
+  VIDEO_FILE_FPS = int(os.environ.get("VIDEO_FILE_FPS", "25"))
   camera = FileCamera(VIDEO_FILE_PATH, loop=VIDEO_FILE_LOOP, fps=VIDEO_FILE_FPS)
 else:
   # VIDEO_DEVICE is set by arduino-app-cli when it detects a local USB
@@ -239,15 +232,119 @@ if WEB_UI_USERNAME and WEB_UI_PASSWORD:
 else:
   log.warning("WEB_UI_USERNAME/WEB_UI_PASSWORD not set: Web UI is running WITHOUT authentication.")
 
-# --- Live preview with track-ID overlay: send_detections_to_ui redraws each
-# tracked person's box + "Track N: <name/status>" label onto the current
-# frame (track_overlay.draw_track_overlay) and caches it here; /track-preview
-# streams that cache as MJPEG. /camera-preview is the page the frontend
-# iframe actually loads (an <img> pointed at /track-preview) -- kept as its
-# own indirection so what the preview shows can change without an index.html
-# edit.
+# --- Live preview with track-ID overlay ------------------------------------
+# The preview runs at camera rate, not detection rate: every frame the
+# detection brick pulls from the camera is also handed to a publisher thread
+# (via the capture() tee below), which draws the last-known track boxes on it
+# and publishes it for /track-preview to stream as MJPEG. Detection (~1.5 Hz
+# on this board) only refreshes which boxes get drawn -- video smoothness no
+# longer waits on inference, matching how the stock EI runner UI behaves.
+# /camera-preview is the page the frontend iframe actually loads (an <img>
+# pointed at /track-preview) -- kept as its own indirection so what the
+# preview shows can change without an index.html edit.
 _latest_track_preview: bytes | None = None
-_track_preview_lock = threading.Lock()
+# Bumped on every publish so a streaming client can tell "new frame" from "same
+# frame again" without comparing bytes, and woken the moment a frame lands
+# rather than on a fixed tick -- a timed poll both delayed each new frame by up
+# to its interval and re-sent unchanged ones in between.
+_track_preview_seq = 0
+_track_preview_cond = threading.Condition()
+# A gap much longer than a frame interval means the camera stalled. Re-send the
+# last frame then: it keeps the MJPEG connection alive, and gives the generator
+# a yield point at which a client that has gone away can be noticed instead of
+# blocking its worker thread forever.
+_PREVIEW_KEEPALIVE_SEC = 2.0
+# Cap on published preview fps; frames above the cap are skipped before any
+# encode work happens. Bounds the encode cost (~10ms/frame on this board) and
+# per-client bandwidth while staying far above the ~1.5 fps detection rate.
+PREVIEW_MAX_FPS = float(os.environ.get("PREVIEW_MAX_FPS", "15"))
+
+# Last-known overlay state, written by send_detections_to_ui, read by the
+# publisher thread. Boxes older than the max age are dropped rather than pinned
+# onto live video -- e.g. when the person leaves or the runner stalls.
+_overlay_state_lock = threading.Lock()
+_overlay_tracks: list = []
+_overlay_labels: dict = {}
+# Track id of the current follow target (None when there isn't a visible
+# one); its preview box is drawn in the highlight color.
+_overlay_target_id = None
+_overlay_updated_at = 0.0
+_OVERLAY_MAX_AGE_SEC = 3.0
+
+# Latest raw camera frame, written by the capture() tee on the brick's camera
+# loop thread. Latest-wins: the publisher skips frames it can't keep up with.
+_camera_frame = None
+_camera_frame_seq = 0
+_camera_frame_cond = threading.Condition()
+
+# Cap on frames handed to the detection brick (and so to the EI runner). The
+# runner decodes, re-encodes, and writes to disk every frame it receives but
+# infers at only ~1.5/s on this board, so frames beyond that burn a large slice
+# of gst + node CPU on work that is thrown away. 3 fps stays comfortably above
+# the inference rate (measured: gating to 3 does not lower detections/sec)
+# while cutting the wasted decode work. 0 disables the gate.
+RUNNER_MAX_FPS = float(os.environ.get("RUNNER_MAX_FPS", "3"))
+_next_runner_frame_at = 0.0
+
+_original_capture = camera.capture
+
+def _capture_tee(*args, **kwargs):
+  """camera.capture wrapper: publish every frame to the preview thread, but
+  pass only RUNNER_MAX_FPS of them through to the detection brick. Returning
+  None takes the brick's normal no-frame path (brief sleep, poll again). The
+  brick stays the camera's only reader; runs on its camera-loop thread only,
+  so the gate state needs no lock."""
+  global _camera_frame, _camera_frame_seq, _next_runner_frame_at
+  frame = _original_capture(*args, **kwargs)
+  if frame is None:
+    return None
+  with _camera_frame_cond:
+    _camera_frame = frame
+    _camera_frame_seq += 1
+    _camera_frame_cond.notify_all()
+  if RUNNER_MAX_FPS > 0:
+    now = time.monotonic()
+    if now < _next_runner_frame_at:
+      return None
+    _next_runner_frame_at = now + 1.0 / RUNNER_MAX_FPS
+  return frame
+
+camera.capture = _capture_tee
+
+def _preview_publisher():
+  global _latest_track_preview, _track_preview_seq
+  last_seq = 0
+  min_interval = 1.0 / PREVIEW_MAX_FPS if PREVIEW_MAX_FPS > 0 else 0.0
+  next_publish_at = 0.0
+  while True:
+    with _camera_frame_cond:
+      _camera_frame_cond.wait_for(lambda: _camera_frame_seq != last_seq)
+      frame = _camera_frame
+      last_seq = _camera_frame_seq
+    now = time.monotonic()
+    if now < next_publish_at:
+      continue
+    next_publish_at = now + min_interval
+    with _overlay_state_lock:
+      tracks = _overlay_tracks
+      labels = _overlay_labels
+      target_id = _overlay_target_id
+      overlay_fresh = (now - _overlay_updated_at) <= _OVERLAY_MAX_AGE_SEC
+    if tracks and overlay_fresh:
+      # Copy: the brick's camera loop may still be JPEG-encoding this same
+      # array for the runner, and drawing mutates it.
+      jpeg = draw_track_overlay_bgr(frame.copy(), tracks, labels,
+                                    highlight_track_id=target_id)
+    else:
+      jpeg = encode_jpeg(frame)
+    if jpeg is None:
+      continue
+    with _track_preview_cond:
+      _latest_track_preview = jpeg
+      _track_preview_seq += 1
+      _track_preview_cond.notify_all()
+
+threading.Thread(target=_preview_publisher, name="PreviewPublisher", daemon=True).start()
 
 def _camera_preview_page(_request):
   return HTMLResponse(
@@ -258,12 +355,20 @@ def _camera_preview_page(_request):
   )
 
 def _track_preview_mjpeg():
+  """Stream each published preview frame once, as soon as it is published.
+
+  Each client tracks the sequence number it last sent, so several viewers can
+  stream independently and none of them re-sends a frame another one consumed.
+  """
+  last_seq = -1
   while True:
-    with _track_preview_lock:
+    with _track_preview_cond:
+      _track_preview_cond.wait_for(
+        lambda: _track_preview_seq != last_seq, timeout=_PREVIEW_KEEPALIVE_SEC)
       frame = _latest_track_preview
+      last_seq = _track_preview_seq
     if frame:
       yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
-    time.sleep(0.1)
 
 def _track_preview_stream(_request):
   return StreamingResponse(_track_preview_mjpeg(), media_type="multipart/x-mixed-replace; boundary=frame")
@@ -284,9 +389,14 @@ def _send_current_hub_status():
 
 ui.on_message("request_icons", lambda sid, data: (ui.send_message("sync_icons", message=icon_cache), _send_current_hub_status()))
 
+# Assigned further down (needs the follow-priority env block); predefined so
+# the health-monitor thread below can already reference it safely.
+priority_client = None
+
 def _monitor_hub_health():
   global _hub_online, _resolved_hub_host, _discovery_method
   while True:
+    was_online = _hub_online
     try:
       url = f"{get_hub_base_url()}/health"
       resp = requests.get(url, timeout=3)
@@ -295,6 +405,12 @@ def _monitor_hub_health():
       _hub_online = False
       _resolved_hub_host = None
       _discovery_method = "Searching..." if HUB_DISCOVERY_ENABLED else "Static IP (Discovery Disabled)"
+    if _hub_online and not was_online and priority_client is not None:
+      # Hub just came (back) online: refresh the known-person priority map
+      # now instead of waiting out the refresh interval. Off-thread so a
+      # slow/failed fetch can't delay the next health check.
+      threading.Thread(target=priority_client.refresh_now,
+                       name="PriorityMapRefresh", daemon=True).start()
     _send_current_hub_status()
     time.sleep(5.0)
 
@@ -312,6 +428,7 @@ def _execute_robot_command(message):
   direction = str(message.get("direction", "")).strip().upper()
   if direction == "STOP":
     Bridge.call("stop_robot")
+    person_centering.note_motion()
     return {"ok": True, "direction": "STOP"}
 
   if direction not in ROBOT_DIRECTIONS:
@@ -324,6 +441,15 @@ def _execute_robot_command(message):
   started = Bridge.call("move_robot", direction, magnitude)
   if started is False:
     raise RuntimeError("Orientation sensor is not ready")
+  # Blank centering for this move's estimated duration plus the pipeline
+  # latency window, whatever the source (auto-centering, web UI, hub MQTT).
+  # Small turns finish between detection callbacks, so waiting to *observe*
+  # robot_motion_active would miss exactly the moves that cause ping-pong.
+  if direction in {"LEFT", "RIGHT"}:
+    est_duration = magnitude * person_centering.estimated_ms_per_degree / 1000.0
+  else:
+    est_duration = float(magnitude)  # FORWARD/BACKWARD magnitude is seconds
+  person_centering.note_motion(est_duration)
   return {
     "ok": True,
     "direction": direction,
@@ -344,6 +470,42 @@ def handle_robot_move(sid, message):
 
 ui.on_message("robot_move", handle_robot_move)
 
+def _execute_buzzer_command(message):
+  if not isinstance(message, dict):
+    raise ValueError("Buzzer command must be an object")
+
+  action = str(message.get("action", "")).strip().lower()
+  frequency = int(message.get("frequency", 440))
+  duration = int(message.get("duration", 0))
+
+  if action in ("believer", "song"):
+    Bridge.call("play_believer")
+    return {"ok": True, "action": "believer", "song": "Believer - Imagine Dragons"}
+  elif action in ("start", "tone"):
+    if "frequency" in message:
+      Bridge.call("trigger_buzzer", frequency, duration)
+    else:
+      Bridge.call("play_believer")
+    return {"ok": True, "action": action, "frequency": frequency, "duration": duration}
+  elif action in ("stop", "notone"):
+    Bridge.call("stop_buzzer")
+    return {"ok": True, "action": action}
+  else:
+    raise ValueError(f"Unsupported buzzer action: {action or '(empty)'}")
+
+def handle_buzzer(sid, message):
+  try:
+    status = _execute_buzzer_command(message)
+    ui.send_message("buzzer_status", message=status)
+  except (TypeError, ValueError) as e:
+    log.warning(f"Rejected buzzer command from UI client {sid}: {e}")
+    ui.send_message("buzzer_status", message={"ok": False, "error": str(e)})
+  except Exception as e:
+    log.error(f"Buzzer command failed: {e}")
+    ui.send_message("buzzer_status", message={"ok": False, "error": "MCU buzzer command failed"})
+
+ui.on_message("buzzer", handle_buzzer)
+
 # 1. Listen for Potentiometer Knob adjustments from MCU (sketch.ino)
 def handle_knob_change(percentage_str):
   try:
@@ -356,24 +518,42 @@ def handle_knob_change(percentage_str):
 Bridge.provide("on_knob_change", handle_knob_change)
 green_bmp = _get_bitmap_entry("green")
 if green_bmp:
-  Bridge.call("set_custom_led_array", "".join("1" if val else "0" for r in green_bmp for val in r[:12]))
+  try:
+    Bridge.call("set_custom_led_array", "".join("1" if val else "0" for r in green_bmp for val in r[:12]))
+  except Exception as e:
+    # The MCU bridge can still be coming online after a container restart.
+    # LED initialization is cosmetic and must not take down video analysis.
+    log.warning(f"Initial LED update unavailable; continuing without it: {e}")
 
 # --- Hub event forwarding: notify the Qonclave hub when a person is detected ---
 
+# Periodic person-detected escalation to POST /edge/event. Each of those
+# escalations runs the hub's VLM, so this is effectively "send images for the
+# hub's model every N seconds while a person is visible".
+#
+# PERIODIC REASONING IS OFF. The VLM now runs only event-driven: a posture
+# investigation, the dashboard button, or a CAPTURE SMS. Interval-driven
+# frames competed with those for the same single-threaded VLM, so a real
+# collapse could queue behind a routine "person is visible" frame -- and the
+# routine frame carried no posture context to reason about anyway.
+#
+# HUB_PERIODIC_REASONING_ENABLED is the authoritative switch and defaults to
+# off. It overrides the interval knobs below, so a stale .env on the board
+# cannot silently re-enable the periodic path; set it to 1 (and give
+# HUB_EVENT_INTERVAL_SEC a positive value) to bring it back.
+HUB_PERIODIC_REASONING_ENABLED = os.environ.get(
+  "HUB_PERIODIC_REASONING_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
+HUB_EVENT_ENABLED = os.environ.get("HUB_EVENT_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
+PERSON_CONFIDENCE_THRESHOLD = float(os.environ.get("PERSON_CONFIDENCE_THRESHOLD", "0.7"))
+HUB_EVENT_HYSTERESIS_SEC = float(os.environ.get("HUB_EVENT_HYSTERESIS_SEC", "10"))
+_raw_interval = os.environ.get("HUB_EVENT_INTERVAL_SEC", "").strip()
+if _raw_interval:
+  HUB_EVENT_INTERVAL_SEC = max(0.0, float(_raw_interval))
+else:
+  HUB_EVENT_INTERVAL_SEC = HUB_EVENT_HYSTERESIS_SEC if HUB_EVENT_ENABLED else 0.0
+if not HUB_PERIODIC_REASONING_ENABLED:
+  HUB_EVENT_INTERVAL_SEC = 0.0
 HUB_EVENT_TIMEOUT_SEC = float(os.environ.get("HUB_EVENT_TIMEOUT_SEC", "5"))
-
-# Placement: where a detection gets verified. The env vars keep their names so
-# existing deployments are unaffected, but the decision is no longer a threshold
-# comparison inlined at the call site — see python/placement.py.
-escalation_policy = EscalationPolicy(
-  confidence_threshold=float(os.environ.get("PERSON_CONFIDENCE_THRESHOLD", "0.7")),
-  min_interval_s=float(os.environ.get("HUB_EVENT_HYSTERESIS_SEC", "10")),
-  deadline_ms=int(os.environ.get("HUB_EVENT_DEADLINE_MS", "3000")),
-  battery_floor_pct=(
-    float(os.environ["ESCALATION_BATTERY_FLOOR_PCT"])
-    if os.environ.get("ESCALATION_BATTERY_FLOOR_PCT") else None
-  ),
-)
 ESCALATION_DIR = os.environ.get("ESCALATION_DIR", "/app/escalations")
 ESCALATION_MAX_FILES = int(os.environ.get("ESCALATION_MAX_FILES", "100"))
 
@@ -393,85 +573,155 @@ person_centering = PersonCenteringController(
   minimum_interval_seconds=float(os.environ.get("PERSON_CENTER_MIN_INTERVAL_SEC", "0.75")),
   estimated_ms_per_degree=float(os.environ.get("PERSON_CENTER_ESTIMATED_MS_PER_DEGREE", "12")),
   settle_seconds=float(os.environ.get("PERSON_CENTER_SETTLE_SEC", "0.35")),
+  # Bearings arriving within this window after any robot motion ends come from
+  # frames captured while the camera was still moving (detection pipeline
+  # latency is ~1s on this board) and are discarded rather than acted on.
+  post_motion_blank_seconds=float(os.environ.get("PERSON_CENTER_POST_MOTION_BLANK_SEC", "1.5")),
+  turn_gain=float(os.environ.get("PERSON_CENTER_TURN_GAIN", "0.7")),
 )
+
+# --- Investigation approach: when the hub opens an investigation (posture
+# SUSPICIOUS/DANGER) it asks this device for one frame. Before capturing, the
+# robot turns to face the target and drives forward briefly so the VLM gets a
+# close-up instead of a distant smudge. See python/investigation_approach.py.
+#
+# The whole approach must finish inside the hub's capture timeout
+# (QONCLAVE_INVESTIGATION_CAPTURE_TIMEOUT_SEC, 10s) or the hub gives up and
+# uses a buffered crop -- discarding the very frame this exists to produce.
+# The budget is deliberately well under it to leave room for the upload.
+INVESTIGATION_APPROACH_ENABLED = os.environ.get(
+  "INVESTIGATION_APPROACH_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
+INVESTIGATION_APPROACH_FORWARD_SEC = int(
+  os.environ.get("INVESTIGATION_APPROACH_FORWARD_SEC", "1"))
+INVESTIGATION_APPROACH_TOLERANCE_DEGREES = float(
+  os.environ.get("INVESTIGATION_APPROACH_TOLERANCE_DEGREES", "8"))
+INVESTIGATION_APPROACH_MAX_TURN_DEGREES = float(
+  os.environ.get("INVESTIGATION_APPROACH_MAX_TURN_DEGREES", "45"))
+INVESTIGATION_APPROACH_SETTLE_SEC = float(
+  os.environ.get("INVESTIGATION_APPROACH_SETTLE_SEC", "0.6"))
+INVESTIGATION_APPROACH_BUDGET_SEC = float(
+  os.environ.get("INVESTIGATION_APPROACH_BUDGET_SEC", "6"))
+# A bearing older than this is not trusted to aim a turn. Detection runs at
+# ~1.5 Hz, so anything past a couple of frames may describe where the person
+# WAS; the approach then skips the turn rather than turning the wrong way.
+INVESTIGATION_APPROACH_BEARING_MAX_AGE_SEC = float(
+  os.environ.get("INVESTIGATION_APPROACH_BEARING_MAX_AGE_SEC", "3"))
+
+# --- Known-person priority following: prefer recognized people (lowest hub
+# priority number wins), hold a missing known target for a grace period
+# instead of chasing an unknown, and only then fall back to the
+# longest-established unknown track. See python/follow_target_selector.py.
+FOLLOW_KNOWN_GRACE_FRAMES = int(os.environ.get("FOLLOW_KNOWN_GRACE_FRAMES", "10"))
+FOLLOW_PRIORITY_REFRESH_SEC = float(os.environ.get("FOLLOW_PRIORITY_REFRESH_SEC", "15"))
+FOLLOW_PRIORITY_TIMEOUT_SEC = float(os.environ.get("FOLLOW_PRIORITY_TIMEOUT_SEC", "3"))
 
 # --- Per-track analysis: sample each tracked person's crop to the hub's
-# POST /track/analyze endpoint (not the motor-following pipeline above). One
-# crop, one request, fanned out hub-side to whichever analyzers are due.
+# POST /track/analyze endpoint (not the motor-following pipeline above).
+# One crop per request, fanned out hub-side to the requested analyzers:
+# face resolves who each track_id is (until known, then never again), pose
+# runs continuously at ~4 Hz for fall detection.
 TRACK_RECOGNITION_ENABLED = os.environ.get("TRACK_RECOGNITION_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
+TRACK_ANALYZERS = tuple(
+  a.strip() for a in os.environ.get("TRACK_ANALYZERS", "face,pose").split(",") if a.strip()
+)
 TRACK_CROP_PADDING = float(os.environ.get("TRACK_CROP_PADDING", "0.25"))
 TRACK_CROP_PADDING_TOP = float(os.environ.get("TRACK_CROP_PADDING_TOP", "0.8"))
+TRACK_CROP_MIN_SIZE_PX = int(os.environ.get("TRACK_CROP_MIN_SIZE_PX", "40"))
+TRACK_CROP_MIN_VISIBLE_RATIO = float(os.environ.get("TRACK_CROP_MIN_VISIBLE_RATIO", "0.85"))
+TRACK_CROP_POSE_MIN_BOX_HEIGHT_PX = int(os.environ.get("TRACK_CROP_POSE_MIN_BOX_HEIGHT_PX", "100"))
+TRACK_CROP_POSE_MIN_VISIBLE_RATIO = float(os.environ.get("TRACK_CROP_POSE_MIN_VISIBLE_RATIO", "0.5"))
 TRACK_CROPS_DIR = os.environ.get("TRACK_CROPS_DIR", "/app/track_crops")
-TRACK_ANALYZERS = tuple(
-  a.strip().lower() for a in os.environ.get("TRACK_ANALYZERS", "face,pose").split(",") if a.strip()
-)
-RECOGNITION_SAMPLE_INTERVAL_SEC = float(os.environ.get("RECOGNITION_SAMPLE_INTERVAL_SEC", "1.0"))
+FACE_SAMPLE_INTERVAL_SEC = float(os.environ.get("FACE_SAMPLE_INTERVAL_SEC", "0.5"))
 POSE_SAMPLE_INTERVAL_SEC = float(os.environ.get("POSE_SAMPLE_INTERVAL_SEC", "0.25"))
-RECOGNITION_REQUEST_TIMEOUT_SEC = float(os.environ.get("RECOGNITION_REQUEST_TIMEOUT_SEC", "5"))
+ANALYSIS_REQUEST_TIMEOUT_SEC = float(os.environ.get("ANALYSIS_REQUEST_TIMEOUT_SEC", "5"))
 
 identity_map = IdentityMap()
+follow_selector = FollowTargetSelector(grace_frames=FOLLOW_KNOWN_GRACE_FRAMES)
+priority_client = PriorityMapClient(
+  get_hub_base_url=get_hub_base_url,
+  refresh_sec=FOLLOW_PRIORITY_REFRESH_SEC,
+  timeout_sec=FOLLOW_PRIORITY_TIMEOUT_SEC,
+  logger=log,
+)
+priority_client.start()
 analysis_client = AnalysisClient(
   get_hub_base_url=get_hub_base_url,
-  timeout_sec=RECOGNITION_REQUEST_TIMEOUT_SEC,
-  face_interval_sec=RECOGNITION_SAMPLE_INTERVAL_SEC,
+  timeout_sec=ANALYSIS_REQUEST_TIMEOUT_SEC,
+  face_interval_sec=FACE_SAMPLE_INTERVAL_SEC,
   pose_interval_sec=POSE_SAMPLE_INTERVAL_SEC,
   analyzers=TRACK_ANALYZERS,
   logger=log,
+  device_id=DEVICE_ID,
 )
-# track_id -> latest pose sub-object, for the Web UI.
-_latest_pose: dict = {}
 
-# Track_ids from the *current* frame, so a /track/analyze response that arrives
-# after its track was dropped (hub was slow, person already left) is ignored
-# instead of resurrecting a stale identity.
+# Track_ids from the *current* frame, so a /track/analyze response that
+# arrives after its track was dropped (hub was slow, person already left) is
+# ignored instead of resurrecting a stale identity.
 _live_track_ids: set = set()
 _live_track_ids_lock = threading.Lock()
 _last_logged_identity_snapshot: dict = {}
+
+# Latest pose sub-result per live track, for the Web UI's pose_status
+# message. The full keypoint time series lives on the hub (track_store);
+# the edge only mirrors the newest status/score.
+_latest_pose: dict = {}
+_latest_pose_lock = threading.Lock()
 
 
 def _on_analysis_result(track_id: int, result: dict, latency_s: float):
   with _live_track_ids_lock:
     is_live = track_id in _live_track_ids
-  if not is_live:
-    log.debug(f"Ignoring /track/analyze result for track {track_id}: no longer active ({latency_s * 1000:.0f}ms round trip)")
-    return
   face = result.get("face")
+  # A positive face match is safe to retain for its own numeric track ID even
+  # when crop/HTTP work completed after the detector's grace window. Without
+  # this exception, the hub can prove Track 1 is Alice while the edge discards
+  # that result and continues sending weaker face samples for Track 1.
+  known_face = bool(face and face.get("status") == "known")
+  if not is_live and not identity_map.is_recent(track_id) and not known_face:
+    log.debug(f"Ignoring /track/analyze result for track {track_id}: outside inactive grace period ({latency_s * 1000:.0f}ms round trip)")
+    return
   if face:
     identity_map.merge(track_id, face)
   pose = result.get("pose")
   if pose:
-    _latest_pose[track_id] = pose
+    with _latest_pose_lock:
+      _latest_pose[track_id] = {
+        "status": pose.get("status"),
+        "mean_score": pose.get("mean_score"),
+      }
 
 
-def _crop_and_analyze(claims: dict, frame: bytes):
-  # ONE background thread per detection callback, decoding the frame ONCE for
-  # every due track. The previous shape was one thread and one cv2.imdecode per
-  # track per sample; at 4 Hz across several tracks that is real CPU on the
-  # UNO Q, and it is the cost the pose cadence would otherwise multiply.
-  #
-  # analysis_client.claim() already reserved every track in `claims` before this
-  # thread started, so it is safe to take as long as it needs here.
-  boxes = {track_id: box for track_id, (box, _analyzers) in claims.items()}
+def _crop_and_analyze(frame: bytes, due_map: dict):
+  # ONE background thread per detection callback: decode the frame once,
+  # crop every due track from it, and post each crop. This used to be one
+  # thread (and one cv2.imdecode) per track per sample -- at pose's 4 Hz
+  # cadence across N tracks that decode cost is real on the UNO Q.
+  # analysis_client.claim() already reserved every track in due_map before
+  # this thread was started, so it's safe to take as long as it needs here.
   crops = crop_persons(
-    frame, boxes,
+    frame, {tid: box for tid, (box, _due, _identity) in due_map.items()},
     padding=TRACK_CROP_PADDING,
     padding_top=TRACK_CROP_PADDING_TOP,
-    # The loosest of the two analyzers' thresholds, because `accepts()` has
-    # already decided per track that at least one of them wants this crop.
-    min_size_px=min(FACE_MIN_SIZE_PX, POSE_MIN_SIZE_PX),
-    min_visible_ratio=min(FACE_MIN_VISIBLE_RATIO, POSE_MIN_VISIBLE_RATIO),
+    face_min_size_px=TRACK_CROP_MIN_SIZE_PX,
+    face_min_visible_ratio=TRACK_CROP_MIN_VISIBLE_RATIO,
+    pose_min_box_height_px=TRACK_CROP_POSE_MIN_BOX_HEIGHT_PX,
+    pose_min_visible_ratio=TRACK_CROP_POSE_MIN_VISIBLE_RATIO,
   )
-
-  for track_id, (_box, analyzers) in claims.items():
-    cropped = crops.get(track_id)
-    if cropped is None:
-      log.debug(f"Rejected crop for track {track_id}: too small or badly clipped")
+  for track_id, (_box, due, known_identity) in due_map.items():
+    entry = crops.get(track_id)
+    # Send only the analyzers that are both due AND accept this crop's
+    # geometry (e.g. a small-but-visible person samples face, not pose).
+    analyzers = due & entry["analyzers_ok"] if entry else set()
+    if not analyzers:
+      log.debug(f"Rejected crop for track {track_id}: too small or badly clipped for all due analyzers")
       analysis_client.release(track_id)
       continue
-    crop_jpeg, person_box = cropped
-    save_crop_locally(track_id, crop_jpeg, TRACK_CROPS_DIR)
-    analysis_client.send_claimed(track_id, crop_jpeg, analyzers,
-                                 _on_analysis_result, person_box=person_box)
+    save_crop_locally(track_id, entry["jpeg"], TRACK_CROPS_DIR)
+    analysis_client.send_claimed(
+      track_id, entry["jpeg"], analyzers, _on_analysis_result,
+      person_box=entry["person_box"],
+      known_identity=known_identity,
+    )
 
 
 def _log_identity_map_if_changed(snapshot: dict):
@@ -484,9 +734,71 @@ def _log_identity_map_if_changed(snapshot: dict):
     log.info(f"Track {track_id} — {label}")
 
 
-# Guards the placement decision + commit, so two detection callbacks cannot
-# both decide to escalate in the same interval window.
+_last_follow_signature = None
+
+
+def _follow_desc(sig) -> str:
+  _state, track_id, identity, priority, _missing = sig
+  if track_id is None:
+    return "no target"
+  if identity:
+    return f"{identity} track {track_id} (known priority {priority})"
+  return f"unknown track {track_id}"
+
+
+def _log_follow_state_if_changed(selection: dict):
+  """Log follow transitions only, never unchanged per-frame state (model:
+  _log_identity_map_if_changed). Grace ticks change missing_frames, so each
+  one logs its own 'Holding ... n/N frames' line, as the spec asks."""
+  global _last_follow_signature
+  sig = (selection["state"], selection["track_id"], selection["identity"],
+         selection["priority"], selection["missing_frames"])
+  if sig == _last_follow_signature:
+    return
+  prev = _last_follow_signature
+  _last_follow_signature = sig
+
+  state = selection["state"]
+  if state == "known_target_missing":
+    log.info(
+      f"Holding known target {selection['identity']}: "
+      f"missing {selection['missing_frames']}/{selection['grace_frames']} frames"
+    )
+  elif state == "fallback_unknown" and selection["reason"] == "grace_expired_fallback":
+    log.info(f"Known-target grace expired: falling back to unknown track {selection['track_id']}")
+  else:
+    log.info(
+      f"Follow target changed: {_follow_desc(prev) if prev else 'none'} -> "
+      f"{_follow_desc(sig)} [{selection['reason']}]"
+    )
+
+
 _hub_event_lock = threading.Lock()
+_last_hub_event_at = 0.0
+
+# Newest bearing to the follow target, published by the detection callback and
+# read by the investigation-capture thread (which has no frame of its own to
+# measure from). (track_id, angle_degrees, monotonic timestamp) or None.
+_follow_bearing_lock = threading.Lock()
+_follow_bearing: tuple[int, float, float] | None = None
+
+
+def _note_follow_bearing(track_id: int, angle_degrees: float):
+  global _follow_bearing
+  with _follow_bearing_lock:
+    _follow_bearing = (track_id, angle_degrees, time.monotonic())
+
+
+def _recent_follow_bearing(max_age_seconds: float) -> tuple[int, float] | None:
+  """(track_id, bearing) if fresh enough to aim a turn at, else None."""
+  with _follow_bearing_lock:
+    snapshot = _follow_bearing
+  if snapshot is None:
+    return None
+  track_id, angle, measured_at = snapshot
+  if time.monotonic() - measured_at > max_age_seconds:
+    return None
+  return track_id, angle
 
 
 def _prune_escalation_frames():
@@ -518,7 +830,7 @@ def _save_escalation_frame(confidence: float, frame: bytes, timestamp: str):
     with open(f"{base_path}.json", "w") as f:
       json.dump({
         "timestamp": timestamp,
-        "threshold": escalation_policy.confidence_threshold,
+        "threshold": PERSON_CONFIDENCE_THRESHOLD,
         "confidence": confidence,
       }, f)
     _prune_escalation_frames()
@@ -526,31 +838,28 @@ def _save_escalation_frame(confidence: float, frame: bytes, timestamp: str):
     log.error(f"Failed to save escalation frame locally: {e}")
 
 
-def _post_person_event(confidence: float, frame: bytes, decided_at: float):
-  url = f"{get_hub_base_url()}{HUB_EVENTS_PATH}"
-  # How much of the deadline this tier already spent. The hub subtracts from
-  # what is left rather than re-planning against the original budget.
-  elapsed_ms = int((time.monotonic() - decided_at) * 1000)
-  event = build_edge_event(
-    node_id=DEVICE_ID,
-    trigger="person_detected",
-    confidence=confidence,
-    frame=frame,
-    metadata={
-      "edge_model": "video_object_detection",
-      "threshold": escalation_policy.confidence_threshold,
-    },
-    task=escalation_policy.task_descriptor(elapsed_ms=elapsed_ms),
-  )
+def _post_person_event(confidence: float, frame: bytes):
+  url = f"{get_hub_base_url()}/edge/event"
+  params = {
+    "device_id": DEVICE_ID,
+    "event_id": f"{DEVICE_ID}-{uuid.uuid4().hex[:8]}",
+    "event_type": "person_detected",
+    "edge_model": "video_object_detection",
+    "edge_confidence": confidence,
+  }
   try:
-    resp = requests.post(url, json=event, timeout=HUB_EVENT_TIMEOUT_SEC)
+    resp = requests.post(url, params=params, data=frame,
+                         headers={"Content-Type": "image/jpeg"},
+                         timeout=HUB_EVENT_TIMEOUT_SEC)
     log.info(f"Hub event sent (person, confidence={confidence:.2f}) -> {resp.status_code} {resp.text[:200]}")
   except requests.RequestException as e:
     log.error(f"Failed to send hub event to {url}: {e}")
 
 
 def maybe_notify_hub(detections: dict, frame: bytes | None):
-  if not frame:
+  # HUB_EVENT_INTERVAL_SEC is forced to 0 unless periodic reasoning is
+  # explicitly enabled, so this is the disabled path by default.
+  if HUB_EVENT_INTERVAL_SEC <= 0 or not frame:
     return
 
   person_detections = detections.get("person", [])
@@ -558,22 +867,19 @@ def maybe_notify_hub(detections: dict, frame: bytes | None):
     return
 
   best_confidence = max(d.get("confidence", 0.0) for d in person_detections)
+  if best_confidence <= PERSON_CONFIDENCE_THRESHOLD:
+    return
 
-  # Placement, not a threshold comparison. `decide` is side-effect free, so the
-  # interval clock only starts once the escalation is actually committed to.
+  global _last_hub_event_at
   with _hub_event_lock:
-    decision = escalation_policy.decide(confidence=best_confidence)
-    if not decision.escalates:
-      log.debug(f"Keeping detection on the edge: {decision.reason}")
+    now = time.monotonic()
+    if now - _last_hub_event_at < HUB_EVENT_INTERVAL_SEC:
       return
-    decided_at = time.monotonic()
-    escalation_policy.committed(decided_at)
+    _last_hub_event_at = now
 
-  log.info(f"Escalating to {decision.tier}: {decision.reason}")
   timestamp = datetime.now(UTC).isoformat()
   threading.Thread(target=_save_escalation_frame, args=(best_confidence, frame, timestamp), daemon=True).start()
-  threading.Thread(target=_post_person_event,
-                   args=(best_confidence, frame, decided_at), daemon=True).start()
+  threading.Thread(target=_post_person_event, args=(best_confidence, frame), daemon=True).start()
 
 
 # Register a callback for when all objects are detected
@@ -587,73 +893,77 @@ def send_detections_to_ui(detections: dict, frame: bytes | None = None):
 
   for dropped_id in identity_map.prune(active_track_ids):
     analysis_client.forget(dropped_id)
-    _latest_pose.pop(dropped_id, None)
     remove_crop_locally(dropped_id, TRACK_CROPS_DIR)
+    with _latest_pose_lock:
+      _latest_pose.pop(dropped_id, None)
 
   if TRACK_RECOGNITION_ENABLED and frame:
-    # Boxes are reported in camera.resolution space, so the visibility check
-    # below measures against that rather than decoding the frame to find out.
-    frame_w, frame_h = camera.resolution
-    # Decide per track on this thread — it is only dict lookups — then hand the
-    # whole batch to ONE background thread that decodes the frame once.
-    claims = {}
+    due_map = {}
     for track in person_tracks:
       track_id = track["track_id"]
-      due = analysis_client.analyzers_due(track_id, identity_map.is_known(track_id))
-      if not due:
-        continue
-
-      box = track["bounding_box_xyxy"]
-      # Send the crop if EITHER analyzer would take it; the hub skips whichever
-      # one it is too poor for. Face thresholds alone would drop a fallen person
-      # near the frame edge — exactly the event pose exists to catch.
-      wanted = set()
-      if "face" in due and accepts(box, frame_w, frame_h, FACE_MIN_SIZE_PX, FACE_MIN_VISIBLE_RATIO):
-        wanted.add("face")
-      if "pose" in due and accepts(box, frame_w, frame_h, POSE_MIN_SIZE_PX, POSE_MIN_VISIBLE_RATIO):
-        wanted.add("pose")
-      if not wanted:
-        continue
-
+      identity = identity_map.get(track_id)
+      due = analysis_client.analyzers_due(track_id, identity["status"] == "known")
+      if due:
+        known_identity = identity["name"] if identity["status"] == "known" else None
+        due_map[track_id] = (track["bounding_box_xyxy"], due, known_identity)
+    if due_map:
       # Claim synchronously (cheap) so a frame arriving before the crop/encode
-      # work finishes cannot also decide to sample this track.
-      analysis_client.claim(track_id, wanted)
-      claims[track_id] = (box, wanted)
-
-    if claims:
+      # work below finishes can't also decide to sample these tracks; the
+      # actual decode/crop/encode/save/POSTs all happen off this
+      # detection-callback thread, on one background thread for the whole
+      # frame (decode once, crop all due tracks).
+      for track_id, (_box, due, _known_identity) in due_map.items():
+        analysis_client.claim(track_id, due)
       threading.Thread(
-        target=_crop_and_analyze, args=(claims, frame),
-        name="Analyze", daemon=True,
+        target=_crop_and_analyze, args=(frame, due_map),
+        name="TrackAnalyze", daemon=True,
       ).start()
 
+  identity_snapshot = {tid: identity_map.get(tid) for tid in active_track_ids}
   if person_tracks:
-    identity_snapshot = {tid: identity_map.get(tid) for tid in active_track_ids}
     _log_identity_map_if_changed(identity_snapshot)
     ui.send_message("identity_map", message=identity_snapshot)
-    pose_snapshot = {tid: _latest_pose[tid] for tid in active_track_ids if tid in _latest_pose}
+    with _latest_pose_lock:
+      pose_snapshot = {tid: _latest_pose[tid] for tid in active_track_ids if tid in _latest_pose}
     if pose_snapshot:
       ui.send_message("pose_status", message=pose_snapshot)
 
-  if frame:
-    global _latest_track_preview
-    if person_tracks:
-      labels = {
-        tid: f"Track {tid}: {entry['name']}" if entry["status"] == "known"
-             else f"Track {tid}: {entry['status'].replace('_', ' ').capitalize()}"
-        for tid, entry in identity_snapshot.items()
-      }
-      preview_frame = draw_track_overlay(frame, person_tracks, labels)
-    else:
-      preview_frame = frame
-    with _track_preview_lock:
-      _latest_track_preview = preview_frame
+  # Pick this frame's follow target. Runs unconditionally -- an empty frame
+  # still ticks the known-target grace counter. Motor commands below only
+  # ever come from selection["track"], which is a track from THIS frame's
+  # person_tracks or None (during grace / no target), so a stale bounding box
+  # structurally cannot produce a turn.
+  selection = follow_selector.select(
+    person_tracks, identity_snapshot, priority_client.snapshot())
+  target_track = selection["track"]
+  _log_follow_state_if_changed(selection)
+  ui.send_message("follow_status",
+                  message={k: v for k, v in selection.items() if k != "track"})
 
+  # Refresh the overlay the camera-rate preview publisher draws; the frames
+  # themselves no longer come from this callback (see _preview_publisher).
+  global _overlay_tracks, _overlay_labels, _overlay_target_id, _overlay_updated_at
   if person_tracks:
-    # A person is actively tracked: show its position on the LED matrix
-    # instead of the usual object icon. Pick the most-established track so a
-    # briefly-flickering new detection doesn't steal the display.
-    tracked = max(person_tracks, key=lambda t: t["frames_tracked"])
-    cx, cy = tracked["centroid"]
+    labels = {
+      tid: f"Track {tid}: {entry['name']}" if entry["status"] == "known"
+           else f"Track {tid}: {entry['status'].replace('_', ' ').capitalize()}"
+      for tid, entry in identity_snapshot.items()
+    }
+    if target_track is not None:
+      tid = selection["track_id"]
+      suffix = (f" [FOLLOWING, P{selection['priority']}]"
+                if selection["priority"] is not None else " [FOLLOWING]")
+      labels[tid] = labels.get(tid, f"Track {tid}") + suffix
+  else:
+    labels = {}
+  with _overlay_state_lock:
+    _overlay_tracks = person_tracks
+    _overlay_labels = labels
+    _overlay_target_id = target_track["track_id"] if target_track is not None else None
+    _overlay_updated_at = time.monotonic()
+
+  if target_track is not None:
+    cx, cy = target_track["centroid"]
     frame_w, frame_h = camera.resolution
     angle_to_center = horizontal_bearing_degrees(
       (cx, cy), frame_w, frame_h,
@@ -661,13 +971,16 @@ def send_detections_to_ui(detections: dict, frame: bytes | None = None):
       dual_lens_stacked=CAMERA_DUAL_LENS_STACKED,
       dual_lens_fov_degrees=CAMERA_DUAL_LENS_FOV_DEGREES,
     )
-    tracked["angle_to_center_degrees"] = angle_to_center
+    target_track["angle_to_center_degrees"] = angle_to_center
+    # Publish for the investigation-capture thread, which needs to know which
+    # way to turn before its close-up but never sees a frame itself.
+    _note_follow_bearing(target_track["track_id"], angle_to_center)
     log.debug(
-      f"Tracking person {tracked['track_id']}: angle_to_center={angle_to_center:.2f}°, "
-      f"motion={tracked['direction']}"
+      f"Tracking person {target_track['track_id']}: angle_to_center={angle_to_center:.2f}°, "
+      f"motion={target_track['direction']}"
     )
     ui.send_message("person_tracking_status", message={
-      "track_id": tracked["track_id"],
+      "track_id": target_track["track_id"],
       "angle_to_center_degrees": angle_to_center,
       "centered": abs(angle_to_center) <= person_centering.tolerance_degrees,
       "centroid": [cx, cy],
@@ -675,9 +988,14 @@ def send_detections_to_ui(detections: dict, frame: bytes | None = None):
 
     try:
       motion_active = Bridge.call("robot_motion_active")
-      turn = None if motion_active else person_centering.command_for(
-        angle_to_center, tracked["track_id"]
-      )
+      if motion_active:
+        # Backup for moves note_motion() didn't see start (e.g. a long manual
+        # move still running): keep extending the blank window while the MCU
+        # reports motion, so bearings from these frames are also discarded.
+        person_centering.note_motion()
+        turn = None
+      else:
+        turn = person_centering.command_for(angle_to_center, target_track["track_id"])
       if turn:
         status = _execute_robot_command({
           "direction": turn.direction,
@@ -696,6 +1014,15 @@ def send_detections_to_ui(detections: dict, frame: bytes | None = None):
     except Exception as e:
       log.error(f"Person auto-centering command failed: {e}")
 
+  if person_tracks:
+    # A person is visible: show a position on the LED matrix instead of the
+    # usual object icon. Prefer the follow target; with no current target
+    # (e.g. mid-grace) fall back to the most-established track for DISPLAY
+    # only -- it feeds no bearings and no motor commands.
+    display_track = (target_track if target_track is not None
+                     else max(person_tracks, key=lambda t: t["frames_tracked"]))
+    cx, cy = display_track["centroid"]
+    frame_w, frame_h = camera.resolution
     if CAMERA_DUAL_LENS_STACKED:
       cy = frame_h - cy  # rear (top half) -> bottom rows, front (bottom half) -> top rows
     bitmap = person_display_bitmap((cx, cy), frame_w, frame_h)
@@ -729,26 +1056,178 @@ detection_stream.on_detect_all(send_detections_to_ui)
 
 # --- Hub->edge command channel: connect to the MQTT broker and listen for
 # commands the hub pushes to this device.
+
+def _wait_for_motion_idle(deadline: float) -> bool:
+  """Block until the MCU reports motion finished, or the deadline passes.
+
+  Returns True if motion actually ended in time. The MCU runs turns
+  closed-loop on the IMU with its own deadline, so a commanded duration is an
+  estimate, not a promise -- polling is what makes the following capture
+  reliably sharp instead of hopefully sharp."""
+  while time.monotonic() < deadline:
+    try:
+      if not Bridge.call("robot_motion_active"):
+        return True
+    except Exception as e:
+      # No motion feedback available: fall back to the commanded timing
+      # rather than spinning here until the deadline.
+      log.warning(f"robot_motion_active unavailable while approaching: {e}")
+      return False
+    time.sleep(0.05)
+  return False
+
+
+def _approach_target_before_capture(event_id: str, requested: bool):
+  """Turn to face the tracked person and drive forward briefly, so the
+  investigation frame is a close-up rather than a distant smudge.
+
+  ``requested`` is the hub's ``approach`` flag: true for posture-triggered
+  events, false for operator-requested checks (which want the scene as it is
+  and have no flagged person to approach).
+
+  Every failure here is non-fatal: the capture still happens from wherever
+  the robot ended up. A worse photo is recoverable, a skipped investigation
+  is not."""
+  if not INVESTIGATION_APPROACH_ENABLED or not requested:
+    return
+
+  recent = _recent_follow_bearing(INVESTIGATION_APPROACH_BEARING_MAX_AGE_SEC)
+  bearing = recent[1] if recent else None
+  steps = plan_approach(
+    bearing,
+    forward_seconds=INVESTIGATION_APPROACH_FORWARD_SEC,
+    tolerance_degrees=INVESTIGATION_APPROACH_TOLERANCE_DEGREES,
+    max_turn_degrees=INVESTIGATION_APPROACH_MAX_TURN_DEGREES,
+    ms_per_degree=person_centering.estimated_ms_per_degree,
+    settle_seconds=INVESTIGATION_APPROACH_SETTLE_SEC,
+    budget_seconds=INVESTIGATION_APPROACH_BUDGET_SEC,
+  )
+  log.info(
+    f"Investigation {event_id}: approaching "
+    f"{'track ' + str(recent[0]) if recent else 'target (no recent bearing)'} "
+    f"-> {describe_approach(steps)}"
+  )
+
+  budget_ends = time.monotonic() + INVESTIGATION_APPROACH_BUDGET_SEC
+  for step in steps:
+    try:
+      _execute_robot_command({
+        "direction": step.direction,
+        "magnitude": step.magnitude,
+      })
+    except Exception as e:
+      log.error(f"Investigation {event_id}: approach step "
+                f"{step.direction} {step.magnitude} failed: {e}")
+      break
+    # Each step's own estimate, never past the overall budget: a turn whose
+    # closed-loop correction runs long must not eat the forward step's time.
+    step_deadline = min(budget_ends, time.monotonic() + step.estimated_seconds
+                        + INVESTIGATION_APPROACH_SETTLE_SEC)
+    if not _wait_for_motion_idle(step_deadline):
+      # Either no feedback or the step overran; sleep out whatever budget
+      # this step was owed so the capture isn't taken mid-move.
+      time.sleep(max(0.0, min(step_deadline, budget_ends) - time.monotonic()))
+
+  if steps:
+    # Guarantee the wheels are stopped (a step may have overrun its estimate),
+    # THEN let the chassis stop rocking and the camera pipeline emit a frame
+    # from the new position -- only after that is _camera_frame worth reading.
+    try:
+      Bridge.call("stop_robot")
+    except Exception as e:
+      log.warning(f"Investigation {event_id}: stop_robot after approach "
+                  f"failed: {e}")
+    time.sleep(INVESTIGATION_APPROACH_SETTLE_SEC)
+
+
+def _capture_investigation_image(command: dict):
+  """Answer a capture_investigation_image command: approach the person, then
+  grab the freshest raw camera frame (full resolution, not a person crop) and
+  POST it back to the hub's /edge/investigation with the event_id. Failures
+  are logged only -- the hub falls back to its buffered evidence frames after
+  its capture timeout."""
+  event_id = str(command.get("event_id") or "")
+  # Absent flag defaults to approaching: the command's normal source is a
+  # posture event, and an older hub sends no flag at all.
+  _approach_target_before_capture(event_id, bool(command.get("approach", True)))
+  with _camera_frame_cond:
+    frame = _camera_frame
+  jpeg = encode_jpeg(frame) if frame is not None else None
+  if jpeg is None:
+    log.warning(f"Investigation {event_id}: no camera frame available to capture")
+    return
+  try:
+    url = f"{get_hub_base_url()}/edge/investigation"
+    resp = requests.post(
+      url,
+      data={
+        "event_id": event_id,
+        "device_id": DEVICE_ID,
+        "status": "capture_complete",
+        "track_id": str(command.get("track_id") or ""),
+      },
+      files={"image": (f"{event_id}.jpg", jpeg, "image/jpeg")},
+      timeout=HUB_EVENT_TIMEOUT_SEC,
+    )
+    log.info(f"Investigation {event_id}: capture sent -> {resp.status_code} {resp.text[:200]}")
+  except requests.RequestException as e:
+    log.error(f"Investigation {event_id}: failed to send capture to {url}: {e}")
+
+
 def _handle_hub_command(command: dict):
   log.info(f"Received hub command: {command}")
-
-  if command_expired(command):
-    log.warning(f"Dropping expired hub command: {command}")
+  if not isinstance(command, dict):
+    log.warning(f"Ignoring invalid hub command format: {command}")
     return
 
-  normalized = normalize_command(command)
-  if normalized is None or normalized.get("action") != "robot_move":
+  # The hub sends the same value under both "type" and "command"; accept either
+  # so an older hub build still reaches the right branch.
+  cmd_type = str(command.get("type") or command.get("command") or "").strip().lower()
+  action = str(command.get("action", "")).strip().lower()
+
+  if cmd_type == "capture_investigation_image":
+    # Off-thread: the MQTT callback must not block on the approach (which
+    # drives the robot for ~1s) plus camera + HTTP work.
+    threading.Thread(
+      target=_capture_investigation_image, args=(command,),
+      name="InvestigationCapture", daemon=True,
+    ).start()
+    return
+
+  if cmd_type == "robot_move":
+    try:
+      status = _execute_robot_command(command)
+      log.info(f"Executed hub robot command: {status}")
+      ui.send_message("robot_move_status", message=status)
+    except (TypeError, ValueError) as e:
+      log.warning(f"Rejected hub robot command: {e}")
+    except Exception as e:
+      log.error(f"Hub robot command failed: {e}")
+  elif cmd_type == "buzzer" or action in ("start", "stop", "tone", "notone", "believer", "song"):
+    try:
+      status = _execute_buzzer_command(command)
+      log.info(f"Executed hub buzzer command: {status}")
+      ui.send_message("buzzer_status", message=status)
+    except (TypeError, ValueError) as e:
+      log.warning(f"Rejected hub buzzer command: {e}")
+    except Exception as e:
+      log.error(f"Hub buzzer command failed: {e}")
+  else:
     log.warning(f"Ignoring unsupported hub command: {command}")
-    return
 
-  try:
-    status = _execute_robot_command(normalized)
-    log.info(f"Executed hub robot command: {status}")
-    ui.send_message("robot_move_status", message=status)
-  except (TypeError, ValueError) as e:
-    log.warning(f"Rejected hub robot command: {e}")
-  except Exception as e:
-    log.error(f"Hub robot command failed: {e}")
+if HUB_EVENT_INTERVAL_SEC > 0:
+  log.info(f"Periodic hub reasoning ENABLED: one frame per "
+           f"{HUB_EVENT_INTERVAL_SEC}s while a person is visible")
+else:
+  log.info("Periodic hub reasoning disabled -- the VLM runs event-driven only "
+           "(posture investigation, dashboard button, CAPTURE SMS)")
+log.info(
+  f"Investigation approach: "
+  + (f"forward {INVESTIGATION_APPROACH_FORWARD_SEC}s after facing the target "
+     f"(within {INVESTIGATION_APPROACH_MAX_TURN_DEGREES:.0f} deg), "
+     f"{INVESTIGATION_APPROACH_BUDGET_SEC}s budget"
+     if INVESTIGATION_APPROACH_ENABLED else "disabled (capture in place)")
+)
 
 mqtt_client = EdgeMQTTClient(
   device_id=DEVICE_ID,

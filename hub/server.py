@@ -60,6 +60,10 @@ PORT = int(os.environ.get("QONCLAVE_PORT", "8000"))
 MQTT_HOST = os.environ.get("QONCLAVE_MQTT_HOST", "127.0.0.1")
 MQTT_PORT = int(os.environ.get("QONCLAVE_MQTT_PORT", "1883"))
 MQTT_ENABLED = os.environ.get("QONCLAVE_MQTT_ENABLED", "1") == "1"
+# Set to 0 to make POST /assistant/query serve canned template replies instead
+# of generating with the LLM. Only affects the assistant; the Policy's own LLM
+# use (SMS reasoning) and /health reporting are untouched.
+ASSISTANT_LLM_ENABLED = os.environ.get("ASSISTANT_LLM_ENABLED", "1") == "1"
 
 vlm = VLMBackend()
 llm = LLMBackend()
@@ -67,9 +71,10 @@ mqtt = MQTTBus(host=MQTT_HOST, port=MQTT_PORT, enabled=MQTT_ENABLED)
 face_id = FaceIdentityBackend()
 pose = PoseBackend()
 sms = SMSBus()
-policy = SecurityPolicy(vlm, face_id, sms, llm)
+policy = SecurityPolicy(vlm, face_id, sms, llm, mqtt=mqtt)
 app = create_app(policy=policy, vlm=vlm, mqtt=mqtt, sms=sms, face_id=face_id,
-                 static_dir=STATIC_DIR, llm=llm, pose=pose)
+                 static_dir=STATIC_DIR, llm=llm, pose=pose,
+                 assistant_llm=llm if ASSISTANT_LLM_ENABLED else None)
 
 
 def main():
@@ -99,6 +104,8 @@ def main():
     log.info("Face ID    : %s", face_id.status())
     log.info("Pose       : %s", pose.status())
     log.info("SMS status : %s", sms.status())
+    log.info("Assistant  : %s", "LLM" if ASSISTANT_LLM_ENABLED else
+             "template replies (ASSISTANT_LLM_ENABLED=0)")
     if os.environ.get("QONCLAVE_WARMUP") == "1":
         log.info("QONCLAVE_WARMUP=1 -> loading VLM + LLM + face ID + pose models now...")
         vlm.warmup()
@@ -109,8 +116,15 @@ def main():
         log.info("LLM status after warmup: %s", llm.status())
         log.info("Face ID status after warmup: %s", face_id.status())
         log.info("Pose status after warmup: %s", pose.status())
-    log.info("Edge  : POST /api/v1/events (or /edge/event) | POST /track/analyze")
+    elif ASSISTANT_LLM_ENABLED:
+        # Load Qwen3-4B before serving: the first voice query would otherwise
+        # pay the load time and blow past the edge's HUB_TIMEOUT_SEC.
+        log.info("Assistant LLM enabled -> loading the LLM now...")
+        llm.warmup()
+        log.info("LLM status after warmup: %s", llm.status())
+    log.info("Edge  : POST /api/v1/events (or /edge/event) | POST /track/analyze (per-track-id face ID + pose)")
     log.info("SMS   : POST /sms  (Twilio inbound-reply webhook)")
+    log.info("Voice : POST /assistant/query  (edge assistant)")
     log.info("User  : GET /user/dashboard | GET /user/events | GET /user/latest.jpg")
     log.info("        GET /user/network | GET /user/devices")
     log.info("        GET /user/tracks | GET /user/tracks/<id>.jpg")

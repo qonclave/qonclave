@@ -1,9 +1,23 @@
 """
-icons.py — Level 2 Central Hub Caching, Request-Driven Tracking, & Boot-Time LLM Warming.
+icons.py — Level 2 Central Hub cache for the edge's 12x8 LED matrix icons.
 
-Implements a 30-minute (1800s) TTL age-out across all dynamically requested object icons.
-Tracks object request history from edge devices and runs Boot-Time LLM Cache Warming
-on historically requested objects when the server boots.
+Icons are rendered by a deterministic local generator; the VLM is NOT involved.
+
+It used to be: each cache miss ran a VLM query asking for a JSON bitmap, and a
+boot-time thread pre-warmed every label the cache had ever seen. Both were
+removed because they cost the one thing this hub cannot spare:
+
+  * The VLM is single-instance and serialized (vlm.py takes a lock around
+    generation), and it is shared with posture investigations. Icon synthesis
+    therefore delayed emergency reasoning -- boot warming worst of all, firing
+    dozens of queries in the minutes right after a restart.
+  * It never worked anyway. The icon prompt failed in prompt processing
+    (GenieXError -201201, empty result) and fell through to the deterministic
+    generator below, so the bitmaps on the LED matrix were already these.
+
+Paying an emergency-reasoning delay for output that was being thrown away is
+the trade this module no longer makes. The 30-minute TTL is kept so cached
+entries still age out and refresh, which is now instant and offline.
 """
 
 from __future__ import annotations
@@ -24,19 +38,31 @@ _cache_lock = threading.Lock()
 _hub_icon_cache: dict[str, dict[str, Any]] = {}
 
 
-def _get_fallback_10x6(label: str) -> list[list[int]]:
-    """Deterministic fallback generator for 10x6 grid when VLM is offline or busy."""
-    h = sum(ord(c) * (i + 1) for i, c in enumerate(label))
+def _render_10x6(label: str) -> list[list[int]]:
+    """Deterministic 10x6 silhouette for a label. Instant, offline, stable:
+    the same label always renders the same bitmap, so a TTL refresh is a
+    no-op rather than a fresh guess.
+
+    Each row's left half is 5 bits taken from a rolling hash of the label and
+    mirrored, so distinct labels get distinct shapes. (The previous version
+    branched on ``hash % 2`` and so had only TWO possible outputs for every
+    label in existence -- a 'dog' and a 'skateboard' lit identical pixels.)
+    """
+    h = 0
+    for i, ch in enumerate(label):
+        h = (h * 131 + ord(ch) * (i + 1)) & 0xFFFFFFFF
+
     grid = [[0] * 10 for _ in range(6)]
-    # Draw an interesting symmetrical silhouette pattern based on hash
-    for r in range(1, 5):
-        for c in range(2, 5):
-            if (h + r * c) % 2 == 0 or r == 1 or r == 4:
+    for r in range(6):
+        row_bits = (h >> (r * 5)) & 0x1F  # 5 bits -> the left half of this row
+        for c in range(5):
+            if (row_bits >> (4 - c)) & 1:
                 grid[r][c] = 1
-                grid[r][9 - c] = 1  # symmetry
-    # Center fill
-    grid[2][4] = grid[2][5] = 1
-    grid[3][4] = grid[3][5] = 1
+                grid[r][9 - c] = 1  # mirror: silhouettes read as symmetrical
+    # A filled core so every icon reads as one solid object on an 8x12 matrix
+    # rather than scattered pixels, whatever the hash produced around it.
+    for r in (2, 3):
+        grid[r][4] = grid[r][5] = 1
     return grid
 
 
@@ -53,49 +79,9 @@ def _wrap_10x6_to_12x8(grid_10x6: list[list[int]]) -> list[list[int]]:
     return grid_12x8[:8]
 
 
-def _ensure_blank_image() -> str:
-    """Creates a temporary blank image for VLM text-prompts when no camera frame is provided.
-
-    Must be large enough for the vision encoder's patch embedding — a 1x1
-    JPEG produces an empty result during prompt processing (GenieXError
-    -201201) instead of a usable (if content-free) image.
-    """
-    tmp_path = os.path.join(os.path.dirname(__file__), "..", "scratch_blank.jpg")
-    if not os.path.exists(tmp_path):
-        try:
-            from PIL import Image
-            Image.new("RGB", (224, 224), color=(255, 255, 255)).save(tmp_path, "JPEG")
-        except Exception:
-            pass
-    return tmp_path
-
-
-def _synthesize_icon(label: str, vlm: Any, image_path: str | None = None) -> list[list[int]]:
-    """Uses local VLM reasoning to generate a 10x6 silhouette and wraps to 12x8."""
-    img = image_path if (image_path and os.path.exists(image_path)) else _ensure_blank_image()
-    prompt = (
-        f"You are an expert LED matrix icon designer. Generate a centered 10x6 binary grid "
-        f"silhouette representing a '{label}'. Output ONLY a valid JSON array of 6 rows, "
-        f"each row containing exactly 10 integers (0 for OFF, 1 for ON). Example for 'box': "
-        f"[[0,1,1,1,1,1,1,1,1,0],[0,1,0,0,0,0,0,0,1,0],[0,1,0,0,0,0,0,0,1,0],[0,1,0,0,0,0,0,0,1,0],[0,1,0,0,0,0,0,0,1,0],[0,1,1,1,1,1,1,1,1,0]]"
-    )
-
-    grid_10x6 = None
-    if vlm and getattr(vlm, "is_available", lambda: False)():
-        try:
-            res = vlm.structured_query(img, prompt=prompt, max_new_tokens=256)
-            parsed = res.get("parsed")
-            if isinstance(parsed, list) and len(parsed) >= 6 and all(isinstance(r, list) and len(r) >= 10 for r in parsed[:6]):
-                grid_10x6 = [[1 if val else 0 for val in row[:10]] for row in parsed[:6]]
-                log.info("VLM successfully generated 10x6 silhouette for '%s'", label)
-        except Exception as e:
-            log.warning("VLM icon synthesis failed for '%s': %s", label, e)
-
-    if not grid_10x6:
-        log.info("Using fallback silhouette generator for '%s'", label)
-        grid_10x6 = _get_fallback_10x6(label)
-
-    return _wrap_10x6_to_12x8(grid_10x6)
+def render_icon(label: str) -> list[list[int]]:
+    """The 12x8 bitmap for a label."""
+    return _wrap_10x6_to_12x8(_render_10x6(label))
 
 
 def load_cache() -> None:
@@ -140,8 +126,8 @@ def save_cache() -> None:
             log.error("Failed to save %s: %s", HUB_CACHE_FILE, e)
 
 
-def get_or_generate_icon(label: str, vlm: Any, image_path: str | None = None) -> dict[str, Any]:
-    """Retrieves an icon from Level 2 cache or synthesizes a new one if expired/missing."""
+def get_or_generate_icon(label: str) -> dict[str, Any]:
+    """Retrieves an icon from the Level 2 cache, rendering it if expired/missing."""
     label = label.lower().strip()
     if not label:
         label = "clear"
@@ -158,8 +144,8 @@ def get_or_generate_icon(label: str, vlm: Any, image_path: str | None = None) ->
                 log.debug("Level 2 Hub cache hit for '%s' (age: %.1f s)", label, age)
                 return entry
 
-    log.info("Level 2 Hub cache miss/expired for '%s'; synthesizing via VLM...", label)
-    bitmap = _synthesize_icon(label, vlm, image_path)
+    log.info("Level 2 Hub cache miss/expired for '%s'; rendering locally", label)
+    bitmap = render_icon(label)
 
     with _cache_lock:
         _hub_icon_cache[label] = {
@@ -172,36 +158,8 @@ def get_or_generate_icon(label: str, vlm: Any, image_path: str | None = None) ->
     return _hub_icon_cache[label]
 
 
-def start_boot_warming(vlm: Any) -> None:
-    """Starts background Boot-Time LLM Cache Warming for historically requested object classes."""
-    def _warm_thread():
-        time.sleep(3.0)  # Wait for server startup
-        log.info("Starting Boot-Time LLM Cache Warming on historically requested objects...")
-        load_cache()
-        
-        to_warm = []
-        with _cache_lock:
-            now = time.time()
-            for label, entry in _hub_icon_cache.items():
-                if not entry.get("permanent", False):
-                    age = now - entry.get("updated_at", 0.0)
-                    if age > TTL_SECONDS or entry.get("updated_at", 0.0) == 0.0:
-                        to_warm.append(label)
-
-        if not to_warm:
-            log.info("No expired/unwarmed objects in Level 2 cache history. Boot-Time warming complete.")
-            return
-
-        log.info("Boot-Time LLM Cache Warming will refresh %d object(s): %s", len(to_warm), ", ".join(to_warm))
-        for label in to_warm:
-            log.info("Warming icon for '%s'...", label)
-            bmp = _synthesize_icon(label, vlm)
-            with _cache_lock:
-                if label in _hub_icon_cache:
-                    _hub_icon_cache[label]["bitmap"] = bmp
-                    _hub_icon_cache[label]["updated_at"] = time.time()
-            save_cache()
-            time.sleep(1.0)  # Gentle pacing
-        log.info("Boot-Time LLM Cache Warming successfully completed for %d object(s).", len(to_warm))
-
-    threading.Thread(target=_warm_thread, name="HubBootWarming", daemon=True).start()
+# Boot-time cache warming is gone with the VLM path. Pre-rendering labels
+# nobody has asked for yet buys nothing now that a miss is a microsecond of
+# local arithmetic, and as a VLM loop it was the worst offender: dozens of
+# queries in the minutes right after a restart, each one able to delay a
+# posture investigation waiting on the same serialized model.

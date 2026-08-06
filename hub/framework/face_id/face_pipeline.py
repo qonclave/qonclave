@@ -44,6 +44,61 @@ MEDIAPIPE_MODEL_PATH = MODELS_DIR / "blaze_face_full_range.tflite"
 
 THRESHOLD = 0.3   # cosine similarity threshold for same/different person
 
+# Several photos may be enrolled for one person -- a frontal shot matches
+# poorly once someone turns away or slumps, which is exactly when a fall
+# monitor needs to keep recognizing them. Two layouts express "these are the
+# same person", and both map to ONE identity:
+#
+#   known_faces/jogendra.jpg          -> jogendra
+#   known_faces/jogendra__2.jpg       -> jogendra   (flat, double underscore)
+#   known_faces/jogendra/side.jpg     -> jogendra   (one directory per person)
+#
+# The separator is a DOUBLE underscore because _slugify_name collapses every
+# run of non-alphanumerics to a single "_", so no slug can ever contain "__".
+# A single underscore therefore stays part of the name: "jogendra_1.jpg" is a
+# person called jogendra_1, not a second photo of jogendra.
+PHOTO_SEPARATOR = "__"
+
+
+def identity_for_path(path: Path, db_dir: Path) -> str:
+    """The enrolled person a known-face image belongs to.
+
+    A file inside a per-person subdirectory takes that directory's name;
+    otherwise the filename stem up to PHOTO_SEPARATOR. This is the single
+    definition of the layout -- _load_db enrolls by it and known_names()
+    reports by it, so the two can't drift apart.
+
+    Lowercased, because the point of grouping is that files a human names by
+    hand end up as one person: "Jogendra__1.jpg" and "jogendra__2.jpg" are the
+    same man, and a case difference splitting them back into two identities
+    would defeat the whole mechanism. This also matches _slugify_name, so a
+    hand-dropped file and a dashboard enrollment agree on the name.
+    """
+    try:
+        parts = path.relative_to(db_dir).parts
+    except ValueError:
+        parts = (path.name,)
+    if len(parts) > 1:
+        return parts[0].lower()
+    return path.stem.split(PHOTO_SEPARATOR, 1)[0].lower()
+
+
+def match_scores(known: dict, embedding) -> dict:
+    """Best cosine similarity to each enrolled person, across all their photos.
+
+    BEST, not mean: averaging a frontal and a profile embedding produces a
+    template that matches neither pose well, so extra photos would make
+    recognition worse. Taking the maximum means each photo can independently
+    rescue a match -- adding one can only ever help.
+
+    Accepts a 1-D embedding per person (the pre-grouping cache format) as well
+    as a 2-D stack, so an existing .embeddings_*.npy stays readable.
+    """
+    return {
+        name: float(np.max(np.atleast_2d(np.asarray(embs)) @ embedding))
+        for name, embs in known.items()
+    }
+
 # ── CavaFace: CPU (qai-hub-models) ───────────────────────────────────────────
 
 def _build_cavaface_cpu():
@@ -63,15 +118,20 @@ def _embed_cpu(app, face_img: Image.Image) -> np.ndarray:
 
 # ── CavaFace: NPU (onnxruntime-qnn + QNNExecutionProvider) ───────────────────
 
-# Moved to framework/qnn_session.py so face ID and pose share one QNN entry
-# point instead of two copies that drift. Kept as an alias because this module's
-# own CLI calls it, and so does anything that imported it directly.
 try:
-    from ..qnn_session import qnn_session as _qnn_session  # noqa: F401
-except ImportError:  # running this file directly as a script
-    import sys as _sys
-    _sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from qnn_session import qnn_session as _qnn_session  # type: ignore  # noqa: F401
+    from ..qnn_session import qnn_session as _shared_qnn_session
+except ImportError:  # run directly as a script (python face_pipeline.py ...)
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from qnn_session import qnn_session as _shared_qnn_session
+
+
+def _qnn_session(onnx_path: Path, label: str):
+    """Thin alias kept for this module's own callers/CLI. The real
+    implementation — including why passing "QNNExecutionProvider" as a plain
+    string to InferenceSession(providers=...) silently no-ops and falls back
+    to CPU — lives in the shared hub/framework/qnn_session.py, used by both
+    face ID and pose."""
+    return _shared_qnn_session(onnx_path, label)
 
 
 def _build_cavaface_npu():
@@ -389,31 +449,55 @@ def _cache_path(db_dir: Path, use_npu: bool) -> Path:
 
 
 def _load_db(detector, model, db_dir: Path, use_npu: bool) -> dict:
-    """Load embeddings from cache if up to date, else recompute and save."""
+    """Load embeddings from cache if up to date, else recompute and save.
+
+    Returns {person: 2-D array of that person's photo embeddings}. Grouping is
+    by identity_for_path, so several photos of one person collapse to a single
+    entry instead of competing as separate identities -- which matters beyond
+    accuracy: downstream state (posture timers, follow priorities) is keyed by
+    identity, and a match flip-flopping between "jogendra" and "jogendra_1"
+    resets those timers mid-collapse.
+    """
     exts      = {".jpg", ".jpeg", ".png", ".webp"}
     img_paths = sorted(p for p in db_dir.rglob("*") if p.suffix.lower() in exts)
     cache     = _cache_path(db_dir, use_npu)
 
-    # Check if cache is still valid: exists and newer than all images
+    expected = {identity_for_path(p, db_dir) for p in img_paths}
+
+    # Cache is valid only if it is newer than every image AND describes the
+    # same set of people. The mtime check alone is not enough: renaming or
+    # regrouping files (jogendra_1.jpg -> jogendra__2.jpg) can preserve mtimes,
+    # which would keep serving the old identities indefinitely -- silently, and
+    # under the exact names downstream posture timers are keyed by.
     if cache.exists():
         cache_mtime = cache.stat().st_mtime
         if all(p.stat().st_mtime <= cache_mtime for p in img_paths):
             data = np.load(str(cache), allow_pickle=True).item()
-            print(f"  Loaded {len(data)} embeddings from cache (instant)")
-            return data
+            if set(data) == expected:
+                # A cache written before grouping holds one 1-D embedding per
+                # person; normalize so callers always see the same shape.
+                data = {name: np.atleast_2d(np.asarray(embs))
+                        for name, embs in data.items()}
+                print(f"  Loaded {len(data)} embeddings from cache (instant)")
+                return data
+            print(f"  Cache lists {sorted(set(data))} but known_faces/ implies "
+                  f"{sorted(expected)}; rebuilding")
 
     # Recompute
     print(f"  Computing embeddings for {len(img_paths)} known face(s)...")
-    known = {}
+    grouped: dict = {}
     for img_path in img_paths:
         emb = get_embedding(detector, model, str(img_path), use_npu)
         if emb is not None:
-            known[img_path.stem] = emb
-            print(f"    enrolled: {img_path.stem}")
+            person = identity_for_path(img_path, db_dir)
+            grouped.setdefault(person, []).append(emb)
+            print(f"    enrolled: {person} <- {img_path.name}")
 
+    known = {name: np.atleast_2d(np.stack(embs)) for name, embs in grouped.items()}
     if known:
         np.save(str(cache), known)
-        print(f"  Saved to cache: {cache.name}")
+        print(f"  Saved to cache: {cache.name} "
+              f"({len(known)} person(s), {len(img_paths)} photo(s))")
 
     return known
 
@@ -435,7 +519,7 @@ def mode_identify(detector, model, unknown_path: str, db_dir: str, use_npu: bool
 
     print(f"\nDetected {len(faces)} face(s):")
     for i, f in enumerate(faces, 1):
-        scores    = {name: float(np.dot(emb, f["embedding"])) for name, emb in known.items()}
+        scores    = match_scores(known, f["embedding"])
         best_name = max(scores, key=scores.get)
         best_score = scores[best_name]
 

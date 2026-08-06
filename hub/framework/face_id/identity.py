@@ -22,7 +22,15 @@ Public API:
     result = face_id.identify(image_path)   # -> dict (single, best face)
     result = face_id.identify_all(image_path)  # -> dict (one entry per face)
     face_id.enroll(name, image_path)        # -> dict; add a known face
+    face_id.enroll(name, path, additional=True)  # -> dict; extra photo, same person
     face_id.known_names()                   # -> list[str]; enrolled people
+    face_id.photos_for(name)                # -> list[Path]; that person's photos
+
+A person may be enrolled from several photos (different angles), which all
+resolve to one identity -- see face_pipeline.identity_for_path for the two
+supported layouts. This matters beyond accuracy: posture timers and follow
+priorities are keyed by identity, so two files for one person must not read
+as two people.
 """
 
 from __future__ import annotations
@@ -173,8 +181,7 @@ class FaceIdentityBackend:
                 "latency_s": latency, "error": "no known faces enrolled",
             }
 
-        import numpy as np
-        scores = {name: float(np.dot(emb, unknown_emb)) for name, emb in known.items()}
+        scores = fp.match_scores(known, unknown_emb)
         best_name = max(scores, key=scores.get)
         best_score = scores[best_name]
         identified = best_score > threshold
@@ -226,8 +233,6 @@ class FaceIdentityBackend:
                 }
             latency = round(time.time() - t0, 3)
 
-        import numpy as np
-
         results = []
         for f in faces:
             emb = f["embedding"]
@@ -238,7 +243,7 @@ class FaceIdentityBackend:
                     "detector_score": round(f["score"], 4),
                 })
                 continue
-            scores = {name: float(np.dot(kemb, emb)) for name, kemb in known.items()}
+            scores = fp.match_scores(known, emb)
             best_name = max(scores, key=scores.get)
             best_score = scores[best_name]
             identified = best_score > threshold
@@ -265,13 +270,27 @@ class FaceIdentityBackend:
 
     # --- enrollment -----------------------------------------------------------
     def known_names(self) -> list[str]:
-        """Names currently enrolled in known_faces_dir (one photo -> one name),
-        derived from filenames the same way _load_db() enrolls them."""
+        """People currently enrolled in known_faces_dir.
+
+        Grouped by fp.identity_for_path -- the same rule _load_db() enrolls by,
+        so the roster can never disagree with what inference can actually
+        match. Several photos of one person report as one name.
+        """
         d = self.known_faces_dir
         if not d.is_dir():
             return []
-        return sorted({p.stem for p in d.iterdir()
+        return sorted({fp.identity_for_path(p, d) for p in d.rglob("*")
                        if p.is_file() and p.suffix.lower() in ENROLL_EXTS})
+
+    def photos_for(self, name: str) -> list[Path]:
+        """Every enrolled photo belonging to one person, oldest filename first."""
+        d = self.known_faces_dir
+        if not d.is_dir():
+            return []
+        slug = _slugify_name(name)
+        return sorted(p for p in d.rglob("*")
+                      if p.is_file() and p.suffix.lower() in ENROLL_EXTS
+                      and fp.identity_for_path(p, d) == slug)
 
     def _invalidate_db_cache(self):
         """Drop the cached embeddings so the next identify() rebuilds the DB
@@ -285,15 +304,20 @@ class FaceIdentityBackend:
             except OSError as e:
                 log.warning("could not remove embeddings cache %s: %s", cache, e)
 
-    def enroll(self, name: str, image_path: str) -> dict:
+    def enroll(self, name: str, image_path: str, additional: bool = False) -> dict:
         """
         Add a person to known_faces_dir from an uploaded image so subsequent
         inference recognizes them. Validates that a face is actually detectable
         (when the model is available) before saving, then invalidates the
         embeddings cache. Always returns a dict; never raises for the caller.
 
+        additional=False (default) replaces this person's existing photo.
+        additional=True keeps it and files the new one as ``slug__N.ext``, so
+        one person can be enrolled from several angles -- recognition takes the
+        best match across them, so an extra photo can only help.
+
         {"ok": bool, "name": str|None, "slug": str|None, "path": str|None,
-         "replaced": bool, "error": str|None}
+         "replaced": bool, "photo_count": int, "error": str|None}
         """
         slug = _slugify_name(name)
         if not slug:
@@ -328,35 +352,50 @@ class FaceIdentityBackend:
                                  "use a clear, front-facing image"}
 
         self.known_faces_dir.mkdir(parents=True, exist_ok=True)
+        existing_photos = self.photos_for(slug)
 
-        # One photo per person: a re-enroll replaces any prior photo for this
-        # slug (possibly under a different extension) so there's no stale copy.
         replaced = False
-        for existing in self.known_faces_dir.iterdir():
-            if (existing.is_file() and existing.suffix.lower() in ENROLL_EXTS
-                    and existing.stem == slug):
+        if additional:
+            dest = self._next_photo_path(slug, ext, existing_photos)
+        else:
+            # Replace every photo this person already has, whatever extension
+            # or index, so no stale image survives a re-enroll.
+            for old in existing_photos:
                 try:
-                    existing.unlink()
+                    old.unlink()
                     replaced = True
                 except OSError as e:
                     return {"ok": False, "name": name, "slug": slug, "path": None,
-                            "replaced": False,
+                            "replaced": False, "photo_count": len(existing_photos),
                             "error": f"could not replace existing photo: {e}"}
+            dest = self.known_faces_dir / f"{slug}{ext}"
 
-        dest = self.known_faces_dir / f"{slug}{ext}"
         try:
             with open(src, "rb") as fin, open(dest, "wb") as fout:
                 fout.write(fin.read())
         except OSError as e:
             log.exception("enroll() save failed")
             return {"ok": False, "name": name, "slug": slug, "path": None,
-                    "replaced": replaced, "error": f"could not save photo: {e}"}
+                    "replaced": replaced, "photo_count": len(self.photos_for(slug)),
+                    "error": f"could not save photo: {e}"}
 
         self._invalidate_db_cache()
-        log.info("Enrolled known face: %s -> %s%s", name, dest.name,
-                 " (replaced existing)" if replaced else "")
+        count = len(self.photos_for(slug))
+        log.info("Enrolled known face: %s -> %s (%d photo(s))%s", name, dest.name,
+                 count, " (replaced existing)" if replaced else "")
         return {"ok": True, "name": name, "slug": slug, "path": str(dest),
-                "replaced": replaced, "error": None}
+                "replaced": replaced, "photo_count": count, "error": None}
+
+    def _next_photo_path(self, slug: str, ext: str, existing: list[Path]) -> Path:
+        """``slug__N`` for the lowest free N, so adding a photo never silently
+        overwrites one already enrolled under a different extension."""
+        taken = {p.stem for p in existing}
+        if slug not in taken:
+            return self.known_faces_dir / f"{slug}{ext}"
+        n = 2
+        while f"{slug}{fp.PHOTO_SEPARATOR}{n}" in taken:
+            n += 1
+        return self.known_faces_dir / f"{slug}{fp.PHOTO_SEPARATOR}{n}{ext}"
 
     def close(self):
         with self._lock:

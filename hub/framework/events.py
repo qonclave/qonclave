@@ -24,6 +24,13 @@ def record_event(event: dict, frame_name: str | None):
     default_store.record(event, frame_name)
 
 
+def note_device(device_id: str | None):
+    """Record the most recently seen edge device outside of record_event().
+    Lets samples that skip /edge/event (e.g. /track/analyze) keep the hub's
+    notion of "the device" fresh so MQTT commands have a target."""
+    default_store.note_node(device_id)
+
+
 def recent_events(limit: int | None = None) -> tuple[list[dict], str | None]:
     return default_store.recent(limit)
 

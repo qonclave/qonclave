@@ -49,6 +49,18 @@ class EventStore:
             if node_id:
                 self._latest_node_id = node_id
 
+    def note_node(self, node_id: str | None) -> None:
+        """Update the latest-seen node without recording a full event.
+
+        For samples that skip record() entirely — a /track/analyze crop has no
+        edge event, only a track_id — but should still keep latest_node_id()
+        fresh so an operator action with no explicit target (an SMS reply, a
+        dashboard command) still reaches the right device.
+        """
+        if node_id:
+            with self._lock:
+                self._latest_node_id = node_id
+
     def recent(self, limit: int | None = None) -> tuple[list[dict[str, Any]], str | None]:
         with self._lock:
             return list(self._events)[: (limit or self.maxlen)], self._latest_frame
