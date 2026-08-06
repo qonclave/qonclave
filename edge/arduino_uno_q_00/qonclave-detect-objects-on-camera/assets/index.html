@@ -113,6 +113,28 @@ SPDX-License-Identifier: MPL-2.0
           </div>
 
           <div class="container container-right">
+            <section class="buzzer-console" aria-labelledby="buzzer-console-title">
+              <div class="robot-console-header">
+                <h2 id="buzzer-console-title" class="recent-scans-title">Modulino Buzzer control</h2>
+              </div>
+              <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 8px;">
+                <div style="display: flex; gap: 8px; align-items: center;">
+                  <label for="edgeBuzzerFreq" style="font-size: 12px; color: #8b93a1;">Freq (Hz):</label>
+                  <input id="edgeBuzzerFreq" type="number" min="20" max="20000" step="10" value="440" style="width: 70px; padding: 4px 6px; background: #0f1218; color: #e6e8ec; border: 1px solid #2a2e37; border-radius: 4px; font-size: 12px;" />
+                  <label for="edgeBuzzerDur" style="font-size: 12px; color: #8b93a1;">Dur (ms):</label>
+                  <input id="edgeBuzzerDur" type="number" min="0" max="60000" step="100" value="0" style="width: 70px; padding: 4px 6px; background: #0f1218; color: #e6e8ec; border: 1px solid #2a2e37; border-radius: 4px; font-size: 12px;" />
+                </div>
+                <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                  <button type="button" id="btnEdgeBuzzerBeliever" style="flex: 1; padding: 8px; font-weight: bold; font-size: 12px; background: linear-gradient(135deg, #4f9dff, #9b51e0); color: #ffffff; border: none; border-radius: 6px; cursor: pointer;">🎵 "BELIEVER"</button>
+                  <button type="button" id="btnEdgeBuzzerTone" style="flex: 1; padding: 8px; font-weight: bold; font-size: 12px; background: linear-gradient(135deg, #f5b74f, #ff6b6b); color: #0f1115; border: none; border-radius: 6px; cursor: pointer;">▶ TONE</button>
+                  <button type="button" id="btnEdgeBuzzerStop" style="padding: 8px 12px; font-weight: bold; font-size: 12px; background: #242833; color: #ff6b6b; border: 1px solid #ff6b6b; border-radius: 6px; cursor: pointer;">⏹ STOP</button>
+                </div>
+                <p id="edgeBuzzerStatus" class="robot-status" role="status" aria-live="polite">Ready</p>
+              </div>
+            </section>
+          </div>
+
+          <div class="container container-right">
             <div class="feedback-section">
               <div style="display: flex; align-items: center; justify-content: space-between;">
                 <h2 class="recent-scans-title" style="margin: 0">12x8 LED Matrix Display</h2>
