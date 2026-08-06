@@ -55,6 +55,9 @@ hub/track_frames/
 hub/icons_cache.json
 hub/scratch_blank.jpg
 
+# Hub per-deployment known-person follow priorities (dashboard-edited runtime state)
+hub/apps/security/known_person_priorities.json
+
 # Edge escalation frames saved locally on threshold-triggered detections
 edge/**/escalations/
 

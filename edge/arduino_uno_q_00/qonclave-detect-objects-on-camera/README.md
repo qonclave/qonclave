@@ -195,6 +195,35 @@ Configurable via environment variables:
 | `POSE_SAMPLE_INTERVAL_SEC` | `0.25` | Seconds between pose samples per live track (raise it if the UNO Q's CPU struggles) |
 | `ANALYSIS_REQUEST_TIMEOUT_SEC` | `5` | HTTP request timeout per `/track/analyze` call |
 
+## Known-Person Priority Following
+
+The auto-centering target is chosen by `python/follow_target_selector.py`, which prefers
+recognized people over unknowns. Selection order: the visible known person with the
+**lowest hub-stored priority number** (1 = highest; edit priorities from the hub
+dashboard's roster) → the previously selected known person, held for
+`FOLLOW_KNOWN_GRACE_FRAMES` detection frames while briefly missing (the robot does
+**not** chase an unknown during that grace, and never turns from a stale bounding box —
+motor commands only ever come from a current-frame track) → the longest-established
+unknown track → no target. Equal priorities keep the current target, then prefer more
+`frames_tracked`, then the lower `track_id`. A track that disappears and comes back with
+a *new* id must be re-confirmed by face recognition before it is followed again.
+
+Priorities live on the hub (`GET /user/known-person-priorities`, per enrolled face
+slug); `python/priority_sync.py` mirrors them every `FOLLOW_PRIORITY_REFRESH_SEC` on a
+background thread, keeps the last good map while the hub is unreachable, and re-fetches
+immediately when the hub comes back online. A recognized person absent from the map
+defaults to priority 100. The current follow state is pushed to the Web UI as the
+`follow_status` message, and the followed track's preview box turns green with a
+`[FOLLOWING, P<n>]` label suffix.
+
+Configurable via environment variables:
+
+| Var | Default | Meaning |
+|-----|---------|---------|
+| `FOLLOW_KNOWN_GRACE_FRAMES` | `10` | Detection frames a missing known target is held before unknown fallback (~1.5 frames/sec on this board, so 10 ≈ 6.7 s) |
+| `FOLLOW_PRIORITY_REFRESH_SEC` | `15` | Seconds between hub priority-map refreshes |
+| `FOLLOW_PRIORITY_TIMEOUT_SEC` | `3` | HTTP timeout per priority-map fetch |
+
 ## LED Matrix Person Position Display
 
 ### MCU serial diagnostics

@@ -22,12 +22,14 @@ from arduino.app_peripherals.camera import IPCamera, V4LCamera
 import json
 from basic_auth import BasicAuthMiddleware
 from file_camera import FileCamera
+from follow_target_selector import FollowTargetSelector
 from identity_map import IdentityMap
 from led_display import person_display_bitmap
 from mqtt_client import EdgeMQTTClient
 from analysis_client import AnalysisClient
 from person_centering import PersonCenteringController, horizontal_bearing_degrees
 from person_tracker import PersonTracker
+from priority_sync import PriorityMapClient
 from track_crop import crop_persons, remove_crop_locally, save_crop_locally
 from track_overlay import draw_track_overlay_bgr, encode_jpeg
 
@@ -262,6 +264,9 @@ PREVIEW_MAX_FPS = float(os.environ.get("PREVIEW_MAX_FPS", "15"))
 _overlay_state_lock = threading.Lock()
 _overlay_tracks: list = []
 _overlay_labels: dict = {}
+# Track id of the current follow target (None when there isn't a visible
+# one); its preview box is drawn in the highlight color.
+_overlay_target_id = None
 _overlay_updated_at = 0.0
 _OVERLAY_MAX_AGE_SEC = 3.0
 
@@ -322,11 +327,13 @@ def _preview_publisher():
     with _overlay_state_lock:
       tracks = _overlay_tracks
       labels = _overlay_labels
+      target_id = _overlay_target_id
       overlay_fresh = (now - _overlay_updated_at) <= _OVERLAY_MAX_AGE_SEC
     if tracks and overlay_fresh:
       # Copy: the brick's camera loop may still be JPEG-encoding this same
       # array for the runner, and drawing mutates it.
-      jpeg = draw_track_overlay_bgr(frame.copy(), tracks, labels)
+      jpeg = draw_track_overlay_bgr(frame.copy(), tracks, labels,
+                                    highlight_track_id=target_id)
     else:
       jpeg = encode_jpeg(frame)
     if jpeg is None:
@@ -381,9 +388,14 @@ def _send_current_hub_status():
 
 ui.on_message("request_icons", lambda sid, data: (ui.send_message("sync_icons", message=icon_cache), _send_current_hub_status()))
 
+# Assigned further down (needs the follow-priority env block); predefined so
+# the health-monitor thread below can already reference it safely.
+priority_client = None
+
 def _monitor_hub_health():
   global _hub_online, _resolved_hub_host, _discovery_method
   while True:
+    was_online = _hub_online
     try:
       url = f"{get_hub_base_url()}/health"
       resp = requests.get(url, timeout=3)
@@ -392,6 +404,12 @@ def _monitor_hub_health():
       _hub_online = False
       _resolved_hub_host = None
       _discovery_method = "Searching..." if HUB_DISCOVERY_ENABLED else "Static IP (Discovery Disabled)"
+    if _hub_online and not was_online and priority_client is not None:
+      # Hub just came (back) online: refresh the known-person priority map
+      # now instead of waiting out the refresh interval. Off-thread so a
+      # slow/failed fetch can't delay the next health check.
+      threading.Thread(target=priority_client.refresh_now,
+                       name="PriorityMapRefresh", daemon=True).start()
     _send_current_hub_status()
     time.sleep(5.0)
 
@@ -516,6 +534,14 @@ person_centering = PersonCenteringController(
   turn_gain=float(os.environ.get("PERSON_CENTER_TURN_GAIN", "0.7")),
 )
 
+# --- Known-person priority following: prefer recognized people (lowest hub
+# priority number wins), hold a missing known target for a grace period
+# instead of chasing an unknown, and only then fall back to the
+# longest-established unknown track. See python/follow_target_selector.py.
+FOLLOW_KNOWN_GRACE_FRAMES = int(os.environ.get("FOLLOW_KNOWN_GRACE_FRAMES", "10"))
+FOLLOW_PRIORITY_REFRESH_SEC = float(os.environ.get("FOLLOW_PRIORITY_REFRESH_SEC", "15"))
+FOLLOW_PRIORITY_TIMEOUT_SEC = float(os.environ.get("FOLLOW_PRIORITY_TIMEOUT_SEC", "3"))
+
 # --- Per-track analysis: sample each tracked person's crop to the hub's
 # POST /track/analyze endpoint (not the motor-following pipeline above).
 # One crop per request, fanned out hub-side to the requested analyzers:
@@ -537,6 +563,14 @@ POSE_SAMPLE_INTERVAL_SEC = float(os.environ.get("POSE_SAMPLE_INTERVAL_SEC", "0.2
 ANALYSIS_REQUEST_TIMEOUT_SEC = float(os.environ.get("ANALYSIS_REQUEST_TIMEOUT_SEC", "5"))
 
 identity_map = IdentityMap()
+follow_selector = FollowTargetSelector(grace_frames=FOLLOW_KNOWN_GRACE_FRAMES)
+priority_client = PriorityMapClient(
+  get_hub_base_url=get_hub_base_url,
+  refresh_sec=FOLLOW_PRIORITY_REFRESH_SEC,
+  timeout_sec=FOLLOW_PRIORITY_TIMEOUT_SEC,
+  logger=log,
+)
+priority_client.start()
 analysis_client = AnalysisClient(
   get_hub_base_url=get_hub_base_url,
   timeout_sec=ANALYSIS_REQUEST_TIMEOUT_SEC,
@@ -625,6 +659,45 @@ def _log_identity_map_if_changed(snapshot: dict):
   for track_id, entry in sorted(snapshot.items()):
     label = entry["name"] if entry["status"] == "known" else entry["status"].replace("_", " ").capitalize()
     log.info(f"Track {track_id} — {label}")
+
+
+_last_follow_signature = None
+
+
+def _follow_desc(sig) -> str:
+  _state, track_id, identity, priority, _missing = sig
+  if track_id is None:
+    return "no target"
+  if identity:
+    return f"{identity} track {track_id} (known priority {priority})"
+  return f"unknown track {track_id}"
+
+
+def _log_follow_state_if_changed(selection: dict):
+  """Log follow transitions only, never unchanged per-frame state (model:
+  _log_identity_map_if_changed). Grace ticks change missing_frames, so each
+  one logs its own 'Holding ... n/N frames' line, as the spec asks."""
+  global _last_follow_signature
+  sig = (selection["state"], selection["track_id"], selection["identity"],
+         selection["priority"], selection["missing_frames"])
+  if sig == _last_follow_signature:
+    return
+  prev = _last_follow_signature
+  _last_follow_signature = sig
+
+  state = selection["state"]
+  if state == "known_target_missing":
+    log.info(
+      f"Holding known target {selection['identity']}: "
+      f"missing {selection['missing_frames']}/{selection['grace_frames']} frames"
+    )
+  elif state == "fallback_unknown" and selection["reason"] == "grace_expired_fallback":
+    log.info(f"Known-target grace expired: falling back to unknown track {selection['track_id']}")
+  else:
+    log.info(
+      f"Follow target changed: {_follow_desc(prev) if prev else 'none'} -> "
+      f"{_follow_desc(sig)} [{selection['reason']}]"
+    )
 
 
 _hub_event_lock = threading.Lock()
@@ -747,8 +820,8 @@ def send_detections_to_ui(detections: dict, frame: bytes | None = None):
         name="TrackAnalyze", daemon=True,
       ).start()
 
+  identity_snapshot = {tid: identity_map.get(tid) for tid in active_track_ids}
   if person_tracks:
-    identity_snapshot = {tid: identity_map.get(tid) for tid in active_track_ids}
     _log_identity_map_if_changed(identity_snapshot)
     ui.send_message("identity_map", message=identity_snapshot)
     with _latest_pose_lock:
@@ -756,28 +829,42 @@ def send_detections_to_ui(detections: dict, frame: bytes | None = None):
     if pose_snapshot:
       ui.send_message("pose_status", message=pose_snapshot)
 
+  # Pick this frame's follow target. Runs unconditionally -- an empty frame
+  # still ticks the known-target grace counter. Motor commands below only
+  # ever come from selection["track"], which is a track from THIS frame's
+  # person_tracks or None (during grace / no target), so a stale bounding box
+  # structurally cannot produce a turn.
+  selection = follow_selector.select(
+    person_tracks, identity_snapshot, priority_client.snapshot())
+  target_track = selection["track"]
+  _log_follow_state_if_changed(selection)
+  ui.send_message("follow_status",
+                  message={k: v for k, v in selection.items() if k != "track"})
+
   # Refresh the overlay the camera-rate preview publisher draws; the frames
   # themselves no longer come from this callback (see _preview_publisher).
-  global _overlay_tracks, _overlay_labels, _overlay_updated_at
+  global _overlay_tracks, _overlay_labels, _overlay_target_id, _overlay_updated_at
   if person_tracks:
     labels = {
       tid: f"Track {tid}: {entry['name']}" if entry["status"] == "known"
            else f"Track {tid}: {entry['status'].replace('_', ' ').capitalize()}"
       for tid, entry in identity_snapshot.items()
     }
+    if target_track is not None:
+      tid = selection["track_id"]
+      suffix = (f" [FOLLOWING, P{selection['priority']}]"
+                if selection["priority"] is not None else " [FOLLOWING]")
+      labels[tid] = labels.get(tid, f"Track {tid}") + suffix
   else:
     labels = {}
   with _overlay_state_lock:
     _overlay_tracks = person_tracks
     _overlay_labels = labels
+    _overlay_target_id = target_track["track_id"] if target_track is not None else None
     _overlay_updated_at = time.monotonic()
 
-  if person_tracks:
-    # A person is actively tracked: show its position on the LED matrix
-    # instead of the usual object icon. Pick the most-established track so a
-    # briefly-flickering new detection doesn't steal the display.
-    tracked = max(person_tracks, key=lambda t: t["frames_tracked"])
-    cx, cy = tracked["centroid"]
+  if target_track is not None:
+    cx, cy = target_track["centroid"]
     frame_w, frame_h = camera.resolution
     angle_to_center = horizontal_bearing_degrees(
       (cx, cy), frame_w, frame_h,
@@ -785,13 +872,13 @@ def send_detections_to_ui(detections: dict, frame: bytes | None = None):
       dual_lens_stacked=CAMERA_DUAL_LENS_STACKED,
       dual_lens_fov_degrees=CAMERA_DUAL_LENS_FOV_DEGREES,
     )
-    tracked["angle_to_center_degrees"] = angle_to_center
+    target_track["angle_to_center_degrees"] = angle_to_center
     log.debug(
-      f"Tracking person {tracked['track_id']}: angle_to_center={angle_to_center:.2f}°, "
-      f"motion={tracked['direction']}"
+      f"Tracking person {target_track['track_id']}: angle_to_center={angle_to_center:.2f}°, "
+      f"motion={target_track['direction']}"
     )
     ui.send_message("person_tracking_status", message={
-      "track_id": tracked["track_id"],
+      "track_id": target_track["track_id"],
       "angle_to_center_degrees": angle_to_center,
       "centered": abs(angle_to_center) <= person_centering.tolerance_degrees,
       "centroid": [cx, cy],
@@ -806,7 +893,7 @@ def send_detections_to_ui(detections: dict, frame: bytes | None = None):
         person_centering.note_motion()
         turn = None
       else:
-        turn = person_centering.command_for(angle_to_center, tracked["track_id"])
+        turn = person_centering.command_for(angle_to_center, target_track["track_id"])
       if turn:
         status = _execute_robot_command({
           "direction": turn.direction,
@@ -825,6 +912,15 @@ def send_detections_to_ui(detections: dict, frame: bytes | None = None):
     except Exception as e:
       log.error(f"Person auto-centering command failed: {e}")
 
+  if person_tracks:
+    # A person is visible: show a position on the LED matrix instead of the
+    # usual object icon. Prefer the follow target; with no current target
+    # (e.g. mid-grace) fall back to the most-established track for DISPLAY
+    # only -- it feeds no bearings and no motor commands.
+    display_track = (target_track if target_track is not None
+                     else max(person_tracks, key=lambda t: t["frames_tracked"]))
+    cx, cy = display_track["centroid"]
+    frame_w, frame_h = camera.resolution
     if CAMERA_DUAL_LENS_STACKED:
       cy = frame_h - cy  # rear (top half) -> bottom rows, front (bottom half) -> top rows
     bitmap = person_display_bitmap((cx, cy), frame_w, frame_h)

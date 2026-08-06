@@ -20,6 +20,7 @@ from framework.llm import LLMBackend
 from framework.sms_bus import SMSBus
 from framework.face_id.identity import FaceIdentityBackend
 from .investigation import InvestigationManager
+from .known_person_priorities import KnownPersonPriorityStore
 from .posture import PostureStateMachine
 
 log = logging.getLogger("qonclave.hub")
@@ -74,6 +75,10 @@ class SecurityPolicy(Policy):
                  mqtt=None):
         self.vlm = vlm
         self.face_id = face_id
+        # Follow priorities for enrolled people (1 = highest), exposed to the
+        # framework routes via the known_person_priorities hooks below.
+        self.person_priorities = KnownPersonPriorityStore(
+            known_names=(self.face_id.known_names if self.face_id else None))
         self.sms = sms
         self.llm = llm
         self.posture = PostureStateMachine()
@@ -117,6 +122,14 @@ class SecurityPolicy(Policy):
         """Dashboard button: capture a fresh frame and run one VLM check.
         The result lands in investigation_status() for the dashboard to show."""
         return self.investigation.trigger_manual(source="dashboard")
+
+    def known_person_priorities(self):
+        """Hook for GET /user/known-person-priorities."""
+        return self.person_priorities.list_people()
+
+    def update_known_person_priority(self, slug, priority):
+        """Hook for PUT /user/known-person-priorities/<slug>."""
+        return self.person_priorities.set_priority(slug, priority)
 
     def track_settings(self):
         return self.posture.settings_dict()

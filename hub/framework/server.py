@@ -39,6 +39,11 @@ Endpoints:
                                page — curl/API only)
     GET  /user/known_faces    names currently enrolled for face-ID
     POST /user/known_faces     enroll a known face (multipart 'image' + 'name')
+    GET  /user/known-person-priorities         enrolled people + follow
+                               priority (404 unless the policy provides the
+                               known_person_priorities hook)
+    PUT  /user/known-person-priorities/<slug>  set one person's priority
+                               (JSON body {"priority": <positive int>})
     GET  /user/recognize_activity        recent face-analyzer calls (JSON)
     GET  /user/recognize_activity/<id>.jpg  the crop for one of those calls
     GET  /user/tracks         per-track identity + latest pose + history length
@@ -66,6 +71,7 @@ import uuid
 from flask import Flask, Response, jsonify, redirect, request, send_from_directory
 
 from . import discovery, events, icons, recognize_activity, track_store, transport
+from .face_id.identity import _slugify_name
 from .llm import LLMBackend
 from .mqtt_bus import MQTTBus
 from .policy import Policy
@@ -850,6 +856,36 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
 
         log.info("Enrolled '%s' (slug=%s) from %s", name, result.get("slug"), client)
         return jsonify({**result, "names": face_id.known_names()})
+
+    # --- /user/known-person-priorities: follow priorities for enrolled ------
+    # people. App-agnostic: the policy opts in by providing the hooks
+    # (precedent: /user/investigation); 404 when it doesn't.
+    @app.get("/user/known-person-priorities")
+    def list_known_person_priorities():
+        fn = getattr(policy, "known_person_priorities", None)
+        if fn is None:
+            return jsonify({"error": "app has no known-person priorities"}), 404
+        return jsonify({"people": fn()})
+
+    @app.put("/user/known-person-priorities/<slug>")
+    def update_known_person_priority(slug):
+        fn = getattr(policy, "update_known_person_priority", None)
+        if fn is None:
+            return jsonify({"ok": False,
+                            "error": "app has no known-person priorities"}), 404
+        # Same normalization as enrollment, so the path param always matches
+        # the stored slug — and traversal characters collapse to '_'.
+        slug = _slugify_name(slug)
+        body = request.get_json(silent=True) or {}
+        try:
+            result = fn(slug, body.get("priority"))
+        except (TypeError, ValueError) as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        if result is None:
+            return jsonify({"ok": False, "error": "person not enrolled"}), 404
+        log.info("PUT /user/known-person-priorities/%s -> %s from %s",
+                 slug, result["priority"], request.remote_addr)
+        return jsonify({"ok": True, **result})
 
     # --- app pages (served from the app's own static_dir) -------------------
     @app.get("/user/dashboard")

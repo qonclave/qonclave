@@ -57,6 +57,15 @@
   .enroll-msg.err { color:var(--err); }
   .known-list { margin-top:12px; display:flex; gap:8px; flex-wrap:wrap; }
   .known-list .pill { color:var(--muted); }
+  .known-list .prio-row { display:flex; align-items:center; gap:6px;
+        padding:4px 8px; background:#0f1218; border:1px solid var(--border);
+        border-radius:8px; }
+  .known-list .prio-row input[type=number] { width:64px; padding:5px 7px;
+        background:var(--bg); color:var(--fg); border:1px solid var(--border);
+        border-radius:6px; font-size:13px; }
+  .known-list .prio-row button { padding:5px 10px; background:var(--accent);
+        color:#06101f; border:0; border-radius:6px; cursor:pointer;
+        font-size:12px; font-weight:600; }
   .robot-head { display:flex; align-items:end; justify-content:space-between;
                 gap:16px; flex-wrap:wrap; }
   .robot-fields { display:flex; align-items:end; gap:10px; flex-wrap:wrap; }
@@ -205,7 +214,8 @@
     <label>Enroll a known face</label>
     <div class="sub" style="margin-bottom:12px;">
       Add a photo to the known-faces database. The next inference run will
-      recognize this person by name.
+      recognize this person by name. The roster below also sets each person's
+      follow priority (1 = highest; the robot follows the lowest number).
     </div>
     <form id="enrollForm" class="enroll">
       <input id="enrollName" type="text" placeholder="Person's name (e.g. Jane Doe)"
@@ -216,6 +226,7 @@
     </form>
     <div id="enrollMsg" class="enroll-msg"></div>
     <div id="knownList" class="known-list"></div>
+    <div id="knownListMsg" class="enroll-msg"></div>
   </div>
 
   <div class="card" style="margin-bottom:18px;">
@@ -390,6 +401,32 @@ async function refresh() {
 }
 
 async function loadKnownFaces() {
+  // Roster with follow-priority controls. Slugs are server-normalized to
+  // [a-z0-9_], so templating them into innerHTML is safe. Falls back to the
+  // plain pill roster when the app doesn't provide the priorities hooks.
+  try {
+    const r = await fetch("/user/known-person-priorities");
+    if (r.status === 404) return loadKnownFacesLegacy();
+    const j = await r.json();
+    const el = $("knownList");
+    if (!j.people || !j.people.length) {
+      el.innerHTML = '<span class="pill">no faces enrolled yet</span>';
+      return;
+    }
+    el.innerHTML = j.people.map(p => `
+      <span class="prio-row">
+        <span class="pill">${p.identity}</span>
+        <input type="number" min="1" step="1" value="${p.priority}"
+               id="prio-${p.identity}" aria-label="priority for ${p.identity}" />
+        <button type="button" data-slug="${p.identity}">Set</button>
+      </span>`).join("");
+    el.querySelectorAll("button[data-slug]").forEach(btn => {
+      btn.addEventListener("click", () => setKnownPersonPriority(btn.dataset.slug));
+    });
+  } catch (e) { /* leave prior state */ }
+}
+
+async function loadKnownFacesLegacy() {
   try {
     const r = await fetch("/user/known_faces");
     const j = await r.json();
@@ -402,6 +439,28 @@ async function loadKnownFaces() {
       ? j.names.map(n => `<span class="pill">${n}</span>`).join("")
       : '<span class="pill">no faces enrolled yet</span>';
   } catch (e) { /* leave prior state */ }
+}
+
+async function setKnownPersonPriority(slug) {
+  const msg = $("knownListMsg");
+  const value = Number(document.getElementById(`prio-${slug}`).value);
+  try {
+    const j = await fetch(`/user/known-person-priorities/${slug}`, {
+      method: "PUT", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({priority: value}),
+    }).then(r => r.json());
+    if (j.ok) {
+      msg.className = "enroll-msg ok";
+      msg.textContent = `Priority ${j.priority} saved for ${j.identity}. The edge picks it up within ~15 s.`;
+      loadKnownFaces();
+    } else {
+      msg.className = "enroll-msg err";
+      msg.textContent = j.error || "Save failed.";
+    }
+  } catch (e) {
+    msg.className = "enroll-msg err";
+    msg.textContent = "Network error — hub unreachable.";
+  }
 }
 
 async function enroll(ev) {

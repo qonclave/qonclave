@@ -17,20 +17,25 @@ import cv2
 import numpy as np
 
 _BOX_COLOR = (0, 200, 255)  # BGR: amber, matches this app's AI-badge color family
+_HIGHLIGHT_COLOR = (80, 220, 80)  # BGR: green, marks the followed track
 _LABEL_TEXT_COLOR = (20, 20, 20)
 _FONT = cv2.FONT_HERSHEY_SIMPLEX
 _FONT_SCALE = 0.6
 _FONT_THICKNESS = 2
 
 
-def _draw_tracks(frame: np.ndarray, tracks: list[dict], labels: dict) -> None:
-    """Draw each track's box + label onto frame, in place."""
+def _draw_tracks(frame: np.ndarray, tracks: list[dict], labels: dict,
+                 highlight_track_id=None) -> None:
+    """Draw each track's box + label onto frame, in place. The track matching
+    highlight_track_id (the current follow target) gets the green highlight
+    color instead of the default amber."""
     for track in tracks:
         track_id = track["track_id"]
         x1, y1, x2, y2 = (int(v) for v in track["bounding_box_xyxy"])
         label = labels.get(track_id, f"Track {track_id}")
+        color = _HIGHLIGHT_COLOR if track_id == highlight_track_id else _BOX_COLOR
 
-        cv2.rectangle(frame, (x1, y1), (x2, y2), _BOX_COLOR, 2)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
 
         (text_w, text_h), _ = cv2.getTextSize(label, _FONT, _FONT_SCALE, _FONT_THICKNESS)
         label_bottom = max(text_h + 6, y1)
@@ -38,7 +43,7 @@ def _draw_tracks(frame: np.ndarray, tracks: list[dict], labels: dict) -> None:
             frame,
             (x1, label_bottom - text_h - 8),
             (x1 + text_w + 8, label_bottom),
-            _BOX_COLOR,
+            color,
             -1,
         )
         cv2.putText(
@@ -47,13 +52,15 @@ def _draw_tracks(frame: np.ndarray, tracks: list[dict], labels: dict) -> None:
         )
 
 
-def draw_track_overlay(frame_jpeg: bytes, tracks: list[dict], labels: dict) -> bytes:
+def draw_track_overlay(frame_jpeg: bytes, tracks: list[dict], labels: dict,
+                       highlight_track_id=None) -> bytes:
     """Return frame_jpeg re-encoded with each track's box + label drawn.
 
     tracks: this frame's person_tracks (each needs at least "track_id" and
         "bounding_box_xyxy").
     labels: track_id -> display text (e.g. "Track 4: Jogendra"). A track
         missing from labels still gets a box, labeled "Track <id>".
+    highlight_track_id: the follow target's id, drawn green (see _draw_tracks).
 
     Returns the original bytes unchanged if the frame can't be decoded, so a
     corrupt/unexpected frame never breaks the preview stream.
@@ -61,19 +68,20 @@ def draw_track_overlay(frame_jpeg: bytes, tracks: list[dict], labels: dict) -> b
     frame = cv2.imdecode(np.frombuffer(frame_jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
     if frame is None:
         return frame_jpeg
-    _draw_tracks(frame, tracks, labels)
+    _draw_tracks(frame, tracks, labels, highlight_track_id)
     ok, encoded = cv2.imencode(".jpg", frame)
     return encoded.tobytes() if ok else frame_jpeg
 
 
-def draw_track_overlay_bgr(frame_bgr: np.ndarray, tracks: list[dict], labels: dict) -> bytes | None:
+def draw_track_overlay_bgr(frame_bgr: np.ndarray, tracks: list[dict], labels: dict,
+                           highlight_track_id=None) -> bytes | None:
     """Like draw_track_overlay, but from a decoded BGR frame: skips the JPEG
     decode, which matters on the camera-rate preview path.
 
     Draws onto frame_bgr in place -- pass a copy if the caller (or another
     thread) still needs the original pixels. Returns None if encoding fails.
     """
-    _draw_tracks(frame_bgr, tracks, labels)
+    _draw_tracks(frame_bgr, tracks, labels, highlight_track_id)
     ok, encoded = cv2.imencode(".jpg", frame_bgr)
     return encoded.tobytes() if ok else None
 
