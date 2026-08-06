@@ -9,6 +9,7 @@
 #include "Arduino_LED_Matrix.h"
 #include "Arduino_RouterBridge.h"
 #include "src/BNO08xOrientation.h"
+#include "src/DebugSerial.h"
 #include "src/MotorController.h"
 #include "src/BuzzerController.h"
 
@@ -88,8 +89,8 @@ bool buzzer_active() {
 }
 
 void setup() {
-  Serial.begin(115200);
-  if (Serial) Serial.println("[IMU] Starting BNO08x diagnostics");
+  QONCLAVE_DEBUG_BEGIN(115200);
+  QONCLAVE_DEBUG(if (Serial) Serial.println("[IMU] Starting BNO08x diagnostics"));
 
   motors.begin();
   buzzer.begin();
@@ -122,14 +123,16 @@ void loop() {
       millis() - lastImuStatusAt >= 250) {
     lastImuSample = imuSample;
     lastImuStatusAt = millis();
-    Serial.print("[IMU] angle_deg=");
-    Serial.print(orientation.angleDegrees(), 2);
-    Serial.print(" sample=");
-    Serial.println(imuSample);
+    QONCLAVE_DEBUG(
+      Serial.print("[IMU] angle_deg=");
+      Serial.print(orientation.angleDegrees(), 2);
+      Serial.print(" sample=");
+      Serial.println(imuSample);
+    );
   } else if (Serial && !orientation.ready() &&
              millis() - lastImuStatusAt >= 2000) {
     lastImuStatusAt = millis();
-    Serial.println("[IMU] ERROR sensor not connected; retrying");
+    QONCLAVE_DEBUG(Serial.println("[IMU] ERROR sensor not connected; retrying"));
   }
 
   if (millis() - lastKnobReadAt >= 15) {
@@ -142,7 +145,9 @@ void loop() {
 
     if (abs(percentage - lastSentPercentage) >= 2) {
       lastSentPercentage = percentage;
-      Bridge.call("on_knob_change", String(percentage));
+      // Temporarily disabled: Bridge.call() waits indefinitely for a reply and
+      // can stall the sketch if the Linux-side handler is unavailable.
+      // Bridge.call("on_knob_change", String(percentage));
     }
   }
 

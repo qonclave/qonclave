@@ -115,6 +115,21 @@ ui.on_message('hub_status', async status => {
     }
   }
 });
+ui.on_message('follow_status', async s => {
+  const el = document.getElementById('followStatus');
+  if (!el || !s) return;
+  let text;
+  if (s.state === 'following') {
+    text = `Following: ${s.identity} (Track ${s.track_id}${s.priority != null ? `, P${s.priority}` : ''})`;
+  } else if (s.state === 'known_target_missing') {
+    text = `Holding for ${s.identity} (${s.missing_frames}/${s.grace_frames} frames)`;
+  } else if (s.state === 'fallback_unknown') {
+    text = `Following unknown (Track ${s.track_id})`;
+  } else {
+    text = 'No target';
+  }
+  el.textContent = text;
+});
 ui.on_message('robot_move_status', async status => {
   const statusElement = document.getElementById('robotStatus');
   if (!statusElement || !status) return;

@@ -29,6 +29,7 @@ env/
 # nested under hub/framework/face_id/.
 **/models/*
 !hub/framework/face_id/models/README.txt
+!hub/framework/pose/models/README.txt
 
 # OS / editor
 .DS_Store
@@ -47,9 +48,15 @@ hub/framework/face_id/known_faces/.embeddings_*.npy
 # Hub runtime uploads (camera frames received from edge devices)
 hub/uploads/
 
+# Hub per-track annotated pose frames (gated by QONCLAVE_TRACK_FRAMES_ENABLED)
+hub/track_frames/
+
 # Hub runtime-generated icon cache + VLM placeholder image
 hub/icons_cache.json
 hub/scratch_blank.jpg
+
+# Hub per-deployment known-person follow priorities (dashboard-edited runtime state)
+hub/apps/security/known_person_priorities.json
 
 # Edge escalation frames saved locally on threshold-triggered detections
 edge/**/escalations/

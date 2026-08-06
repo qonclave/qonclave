@@ -4,7 +4,8 @@
 
 """
 identity_map.py -- per-track identity bookkeeping for the hub's face
-recognition results (POST /recognize), fed by RecognitionClient/main.py.
+recognition results (POST /track/analyze's "face" sub-object), fed by
+AnalysisClient/main.py.
 
 Implements a "never lose information" rule: known > unknown > no_face >
 unidentified/error/unavailable, and a track's status can only move up that
@@ -28,6 +29,7 @@ away, a brief occlusion) never erase it.
 from __future__ import annotations
 
 import threading
+import time
 
 UNIDENTIFIED = "unidentified"
 KNOWN = "known"
@@ -51,15 +53,20 @@ _STATUS_RANK = {
 
 class IdentityMap:
     """Thread-safe: recognition responses arrive on background HTTP threads
-    (see recognition_client.py) while main.py reads/prunes it from the
+    (see analysis_client.py) while main.py reads/prunes it from the
     detection callback thread."""
 
-    def __init__(self):
+    def __init__(self, inactive_grace_sec: float = 5.0, clock=time.monotonic):
         self._entries: dict[int, dict] = {}
         self._lock = threading.Lock()
+        self._inactive_grace_sec = inactive_grace_sec
+        self._clock = clock
+        # Track presence is recorded independently of face results so a known
+        # response that arrives just after a detector gap is still accepted.
+        self._last_seen_at: dict[int, float] = {}
 
     def merge(self, track_id: int, result: dict) -> None:
-        """Apply one hub /recognize response to track_id -- see module
+        """Apply one hub face-analyzer result to track_id -- see module
         docstring for the full upgrade-only rule."""
         entry = {
             "name": result.get("identity", UNKNOWN),
@@ -83,15 +90,32 @@ class IdentityMap:
     def is_known(self, track_id: int) -> bool:
         return self.get(track_id)["status"] == KNOWN
 
+    def is_recent(self, track_id: int) -> bool:
+        """Whether track_id was active within the same-ID grace window."""
+        now = self._clock()
+        with self._lock:
+            last_seen = self._last_seen_at.get(track_id)
+            return (last_seen is not None
+                    and now - last_seen <= self._inactive_grace_sec)
+
     def prune(self, active_track_ids) -> list[int]:
         """Drop entries for tracks that are no longer active (the tracker
         dropped them). Returns the dropped track_ids so callers can also
         clean up per-track state elsewhere (e.g. saved crop files)."""
         active = set(active_track_ids)
+        now = self._clock()
         with self._lock:
-            dropped = [tid for tid in self._entries if tid not in active]
+            for tid in active:
+                self._last_seen_at[tid] = now
+            tracked_ids = set(self._entries) | set(self._last_seen_at)
+            dropped = [
+                tid for tid in tracked_ids
+                if tid not in active
+                and now - self._last_seen_at.get(tid, now) >= self._inactive_grace_sec
+            ]
             for tid in dropped:
-                del self._entries[tid]
+                self._entries.pop(tid, None)
+                self._last_seen_at.pop(tid, None)
         return dropped
 
     def snapshot(self) -> dict:

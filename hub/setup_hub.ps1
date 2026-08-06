@@ -41,9 +41,14 @@
       -Warmup           pre-load the VLM model at server start (default: off, loads lazily on first request)
       -SkipFaceId       don't install face ID at all (hub still runs; face-ID
                         reports "not_enabled")
+      -SkipPose         don't export the pose model (hub still runs; pose
+                        reports "unavailable")
+      -HrnetPoseJobId   reuse an already-completed AI Hub compile job for the
+                        pose model instead of recompiling.
       -AiHubToken       Qualcomm AI Hub token for the ARM64 NPU model export.
-                        Omitted on ARM64, framework/face_id/setup/setup_npu.ps1 prompts for it
-                        interactively. Free at https://workbench.aihub.qualcomm.com
+                        When omitted, this script prompts once and reuses the
+                        token for both face-ID and pose setup. Free at
+                        https://workbench.aihub.qualcomm.com
                         (Account -> Settings -> API Token).
       -MediaPipeFaceJobId / -CavaFaceJobId
                         reuse already-completed AI Hub compile jobs instead of
@@ -64,9 +69,11 @@ param(
     [switch]$NoRun,
     [switch]$Warmup,
     [switch]$SkipFaceId,
+    [switch]$SkipPose,
     [string]$AiHubToken = '',
     [string]$MediaPipeFaceJobId = '',
     [string]$CavaFaceJobId = '',
+    [string]$HrnetPoseJobId = '',
     [switch]$Internal,
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$ServerArgs
@@ -108,6 +115,17 @@ $PipIndexArgs = if ($Internal) {
 function Write-Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
 function Write-Ok($msg)   { Write-Host "    [ok] $msg" -ForegroundColor Green }
 function Write-Warn($msg) { Write-Host "    [!]  $msg" -ForegroundColor Yellow }
+
+function Request-AiHubToken([string]$CurrentToken) {
+    if ($CurrentToken) { return $CurrentToken }
+
+    Write-Host ""
+    Write-Host "Qualcomm AI Hub token required for model export/download." -ForegroundColor Cyan
+    Write-Host "Get your token: https://workbench.aihub.qualcomm.com (Account -> Settings -> API Token)" -ForegroundColor Cyan
+    $token = Read-Host "Enter your AI Hub API token"
+    if (-not $token) { throw "No AI Hub token provided." }
+    return $token
+}
 
 # --- 0. Sanity: this must be an ARM64 machine, running from inside a checkout
 Write-Step "Checking machine architecture"
@@ -435,6 +453,11 @@ if ($SkipFaceId) {
         Write-Ok "face ID already installed in this venv, skipping"
         Write-Host "        (re-run hub\framework\face_id\setup\setup.ps1 -PythonPath `"$VenvPython`" to force)"
     } else {
+        # Prompt in the parent so the same token can be forwarded to pose
+        # setup later in this run instead of each child script prompting.
+        if ($osArch -match 'ARM64') {
+            $AiHubToken = Request-AiHubToken $AiHubToken
+        }
         $faceArgs = @{ PythonPath = $VenvPython }
         if ($AiHubToken)         { $faceArgs.Token              = $AiHubToken }
         if ($MediaPipeFaceJobId) { $faceArgs.MediaPipeFaceJobId = $MediaPipeFaceJobId }
@@ -456,6 +479,54 @@ if ($SkipFaceId) {
         } catch {
             Write-Warn "face ID setup failed ($($_.Exception.Message)) - hub will report face-ID as not_enabled."
             Write-Warn "Re-run it directly: hub\framework\face_id\setup\setup.ps1 -PythonPath `"$VenvPython`""
+        } finally {
+            Pop-Location
+        }
+    }
+}
+
+# --- 6c. Export the pose model into the SAME package tree --------------------
+# hub/server.py imports framework.pose.pose in-process; the runtime deps
+# (onnxruntime, onnxruntime-qnn, cv2, numpy) are already in this venv, so
+# pose setup is only the AI Hub model export + per-host context-binary bake.
+# Pose is NPU-only, so this step is ARM64-only (elsewhere the hub reports
+# pose as unavailable by design).
+Write-Step "Setting up pose estimation (HRNetPose)"
+if ($SkipPose) {
+    Write-Ok "-SkipPose set - skipping (hub will report pose as unavailable)"
+} elseif (-not ($osArch -match 'ARM64')) {
+    Write-Ok "non-ARM64 host - skipping (pose runs on Snapdragon hubs only)"
+} else {
+    $PoseSetup  = Join-Path $RepoDir 'hub\framework\pose\setup\setup_pose.ps1'
+    $PoseModels = Join-Path $RepoDir 'hub\framework\pose\models'
+
+    # Idempotency probe: the export is the slow, token-needing part; if the
+    # model is already present, only offer the re-run hint.
+    if (Test-Path (Join-Path $PoseModels 'hrnet_pose.onnx')) {
+        Write-Ok "pose model already present, skipping"
+        Write-Host "        (re-run hub\framework\pose\setup\setup_pose.ps1 -PythonPath `"$VenvPython`" to force)"
+    } else {
+        $AiHubToken = Request-AiHubToken $AiHubToken
+        $poseArgs = @{ PythonPath = $VenvPython }
+        if ($AiHubToken)     { $poseArgs.Token          = $AiHubToken }
+        if ($HrnetPoseJobId) { $poseArgs.HrnetPoseJobId = $HrnetPoseJobId }
+        if ($Internal)       { $poseArgs.Internal       = $true }
+
+        # Non-fatal, same policy as face ID: the hub runs fine without pose
+        # (it degrades to "unavailable"), and this step can need an AI Hub
+        # token / network round-trip.
+        Push-Location (Split-Path $PoseSetup -Parent)
+        try {
+            & $PoseSetup @poseArgs
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warn "pose setup exited $LASTEXITCODE - hub will report pose as unavailable."
+                Write-Warn "Re-run it directly: hub\framework\pose\setup\setup_pose.ps1 -PythonPath `"$VenvPython`""
+            } else {
+                Write-Ok "pose model installed"
+            }
+        } catch {
+            Write-Warn "pose setup failed ($($_.Exception.Message)) - hub will report pose as unavailable."
+            Write-Warn "Re-run it directly: hub\framework\pose\setup\setup_pose.ps1 -PythonPath `"$VenvPython`""
         } finally {
             Pop-Location
         }

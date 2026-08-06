@@ -48,6 +48,7 @@ from framework.vlm import VLMBackend  # noqa: E402
 from framework.llm import LLMBackend  # noqa: E402
 from framework.mqtt_bus import MQTTBus  # noqa: E402
 from framework.face_id.identity import FaceIdentityBackend  # noqa: E402
+from framework.pose.pose import PoseBackend  # noqa: E402
 from framework.sms_bus import SMSBus  # noqa: E402
 from apps.security.policy import SecurityPolicy  # noqa: E402
 
@@ -68,10 +69,12 @@ vlm = VLMBackend()
 llm = LLMBackend()
 mqtt = MQTTBus(host=MQTT_HOST, port=MQTT_PORT, enabled=MQTT_ENABLED)
 face_id = FaceIdentityBackend()
+pose = PoseBackend()
 sms = SMSBus()
-policy = SecurityPolicy(vlm, face_id, sms, llm)
-app = create_app(policy=policy, vlm=vlm, mqtt=mqtt, sms=sms, face_id=face_id, static_dir=STATIC_DIR,
-                 llm=llm, assistant_llm=llm if ASSISTANT_LLM_ENABLED else None)
+policy = SecurityPolicy(vlm, face_id, sms, llm, mqtt=mqtt)
+app = create_app(policy=policy, vlm=vlm, mqtt=mqtt, sms=sms, face_id=face_id,
+                 static_dir=STATIC_DIR, llm=llm, pose=pose,
+                 assistant_llm=llm if ASSISTANT_LLM_ENABLED else None)
 
 
 def main():
@@ -99,24 +102,27 @@ def main():
     log.info("LLM status : %s", llm.status())
     log.info("MQTT status: %s", mqtt.status())
     log.info("Face ID    : %s", face_id.status())
+    log.info("Pose       : %s", pose.status())
     log.info("SMS status : %s", sms.status())
     log.info("Assistant  : %s", "LLM" if ASSISTANT_LLM_ENABLED else
              "template replies (ASSISTANT_LLM_ENABLED=0)")
     if os.environ.get("QONCLAVE_WARMUP") == "1":
-        log.info("QONCLAVE_WARMUP=1 -> loading VLM + LLM + face ID models now...")
+        log.info("QONCLAVE_WARMUP=1 -> loading VLM + LLM + face ID + pose models now...")
         vlm.warmup()
         llm.warmup()
         face_id.warmup()
+        pose.warmup()
         log.info("VLM status after warmup: %s", vlm.status())
         log.info("LLM status after warmup: %s", llm.status())
         log.info("Face ID status after warmup: %s", face_id.status())
+        log.info("Pose status after warmup: %s", pose.status())
     elif ASSISTANT_LLM_ENABLED:
         # Load Qwen3-4B before serving: the first voice query would otherwise
         # pay the load time and blow past the edge's HUB_TIMEOUT_SEC.
         log.info("Assistant LLM enabled -> loading the LLM now...")
         llm.warmup()
         log.info("LLM status after warmup: %s", llm.status())
-    log.info("Edge  : POST /edge/event | POST /recognize (per-track-id face ID)")
+    log.info("Edge  : POST /edge/event | POST /track/analyze (per-track-id face ID + pose)")
     log.info("SMS   : POST /sms  (Twilio inbound-reply webhook)")
     log.info("Voice : POST /assistant/query  (edge assistant)")
     log.info("User  : GET /user/dashboard | GET /user/events | GET /user/latest.jpg")

@@ -15,6 +15,13 @@ paho-mqtt>=2.0
 # conditionally at runtime; the hub still runs if credentials are absent.
 twilio>=9.0
 
+# NOTE: opencv (cv2) + numpy are NOT listed here either. They arrive with the
+# ARM64 face-ID/pose setup (hub/framework/face_id/wheels/, setup_hub.ps1) and
+# are imported conditionally: framework/pose/ needs them for inference and for
+# the skeleton overlay behind /user/tracks/<id>.jpg and its MJPEG stream. On a
+# bare x86 install pose already reports "unavailable", so the overlay simply
+# never runs -- the rest of the hub is unaffected.
+
 # Optional, only for the sample tooling in hub/samples/:
 #   Pillow  -> regenerate synthetic samples (make_samples.py)
 #   requests -> send a sample to a running hub (send_sample.py)

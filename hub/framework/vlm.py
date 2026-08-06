@@ -59,15 +59,21 @@ def extract_json(text: str) -> dict:
         return obj if isinstance(obj, dict) else {}
     except (ValueError, TypeError):
         pass
-    # fall back to the first {...} span
+    # Fall back to scanning for a balanced {...} object. Naively slicing from
+    # the first "{" to the last "}" breaks if the model emits more than one
+    # brace span (e.g. a trailing example or aside) - raw_decode() at each
+    # "{" instead parses only the balanced object starting there, skipping to
+    # the next "{" candidate on failure.
+    decoder = json.JSONDecoder()
     start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end != -1 and end > start:
+    while start != -1:
         try:
-            obj = json.loads(text[start:end + 1])
-            return obj if isinstance(obj, dict) else {}
+            obj, _end = decoder.raw_decode(text, start)
+            if isinstance(obj, dict):
+                return obj
         except (ValueError, TypeError):
-            return {}
+            pass
+        start = text.find("{", start + 1)
     return {}
 
 
@@ -291,6 +297,11 @@ class VLMBackend:
         parsed = extract_json(result.get("text") or "")
         log.info("VLM structured_query (%.2fs): parsed=%s",
                  result.get("latency_s") or 0.0, parsed)
+        if not parsed and result.get("text"):
+            # A silent {} turns into a policy fallback downstream; the raw
+            # text is the only way to see WHY (truncation, fences, prose).
+            log.warning("VLM structured_query parse failed; raw output: %r",
+                        result["text"][:500])
         return {
             "available": True,
             "text": result.get("text"),

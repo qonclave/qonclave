@@ -106,3 +106,16 @@ class Policy(ABC):
              "latency_s": float|None, "from": str|None}
         """
         return None
+
+    def analyze_track(self, track_id: int, image_bytes: bytes, face: dict | None,
+                      pose: dict | None) -> dict | None:
+        """Optional app-specific analysis for a per-person tracking sample."""
+        return None
+
+    def track_settings(self) -> dict | None:
+        """Optional UI-tunable settings for app-specific track analysis."""
+        return None
+
+    def update_track_settings(self, values: dict) -> dict | None:
+        """Validate and apply app-specific track-analysis settings."""
+        return None
