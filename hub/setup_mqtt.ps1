@@ -34,17 +34,45 @@ function Write-Ok($msg)   { Write-Host "    [ok] $msg" -ForegroundColor Green }
 function Write-Warn($msg) { Write-Host "    [!]  $msg" -ForegroundColor Yellow }
 
 function Get-Python {
-    # Resolve a usable Python 3 interpreter. This script is standalone (it
-    # doesn't create/use the hub's geniex-env venv), so just pick whatever
-    # Python 3 is already on the box.
+    # Resolve a usable Python 3 interpreter, ignoring Windows Store app execution aliases (\WindowsApps\).
+    function Test-UsablePython($exe) {
+        if (-not $exe -or ($exe -match '\\WindowsApps\\')) { return $false }
+        if (-not (Test-Path $exe)) { return $false }
+        $ver = (& $exe -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>$null)
+        return ($LASTEXITCODE -eq 0 -and $ver)
+    }
+
+    # 1. py launcher (if present)
     if (Get-Command py -ErrorAction SilentlyContinue) {
         $p = (& py -3 -c "import sys; print(sys.executable)" 2>$null)
-        if ($LASTEXITCODE -eq 0 -and $p) { return $p.Trim() }
+        if ($LASTEXITCODE -eq 0 -and $p -and (Test-UsablePython $p.Trim())) {
+            return $p.Trim()
+        }
     }
-    foreach ($name in @('python', 'python3')) {
-        $cmd = Get-Command $name -ErrorAction SilentlyContinue
-        if ($cmd) { return $cmd.Source }
+
+    # 2. Well-known Python install paths
+    $roots = @(
+        "$env:LOCALAPPDATA\Programs\Python",
+        "$env:ProgramFiles\Python*",
+        "${env:ProgramFiles(Arm)}\Python*",
+        "C:\Python*"
+    )
+    foreach ($root in $roots) {
+        if ($root -and (Test-Path $root)) {
+            foreach ($f in (Get-ChildItem -Path $root -Filter python.exe -Depth 1 -ErrorAction SilentlyContinue |
+                            Select-Object -ExpandProperty FullName)) {
+                if (Test-UsablePython $f) { return $f }
+            }
+        }
     }
+
+    # 3. Check all python / python3 executables on PATH, excluding WindowsApps
+    foreach ($name in @('python.exe', 'python3.exe')) {
+        foreach ($c in (Get-Command $name -All -ErrorAction SilentlyContinue)) {
+            if ($c.Source -and (Test-UsablePython $c.Source)) { return $c.Source }
+        }
+    }
+
     return $null
 }
 

@@ -208,6 +208,61 @@
     <div id="robotStatus" class="robot-status" role="status" aria-live="polite">Ready</div>
   </div>
 
+  <div class="card" style="margin-bottom:18px;">
+    <div class="robot-head">
+      <div>
+        <label>Modulino Buzzer control</label>
+        <div class="sub" style="margin:0;">Control edge buzzer: choose between custom frequency tone mode or song melody mode.</div>
+      </div>
+    </div>
+    
+    <!-- Target Device Row -->
+    <div style="margin-top:10px; max-width:220px;">
+      <label style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em;">Target Device ID</label>
+      <input id="buzzerDevice" type="text" value="unoq-01" style="width:100%; padding:7px 9px; margin-top:4px; background:#0f1218; color:var(--fg); border:1px solid var(--border); border-radius:6px; font-size:13px;" />
+    </div>
+
+    <!-- Mode 1: Custom Frequency Tone -->
+    <div style="margin-top:14px; padding:12px; background:#14171f; border:1px solid var(--border); border-radius:8px;">
+      <div style="font-size:12px; font-weight:700; color:var(--warn); margin-bottom:8px;">🔊 MODE 1: CUSTOM FREQUENCY TONE</div>
+      <div style="display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end;">
+        <div style="flex:2 1 200px;">
+          <label style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em;">Frequency (<span id="freqVal" style="color:var(--accent); font-weight:bold;">440</span> Hz)</label>
+          <div style="display:flex; gap:8px; align-items:center; margin-top:4px;">
+            <input type="range" id="freqSlider" min="100" max="4000" step="10" value="440" style="flex:1;" />
+            <input type="number" id="buzzerFreq" min="20" max="20000" value="440" style="width:75px; padding:7px 9px; background:#0f1218; color:var(--fg); border:1px solid var(--border); border-radius:6px; font-size:13px;" />
+          </div>
+        </div>
+        <div style="flex:1 1 120px;">
+          <label style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em;">Duration (ms, 0=cont)</label>
+          <input type="number" id="buzzerDuration" min="0" max="60000" step="100" value="0" style="width:100%; padding:7px 9px; margin-top:4px; background:#0f1218; color:var(--fg); border:1px solid var(--border); border-radius:6px; font-size:13px;" />
+        </div>
+      </div>
+      <div style="display:flex; gap:8px; margin-top:10px; flex-wrap:wrap; align-items:center;">
+        <button type="button" onclick="setBuzzerFreq(440)" style="padding:4px 8px; font-size:11px; background:#242833; color:var(--fg); border:1px solid var(--border); border-radius:4px; cursor:pointer;">A4 (440Hz)</button>
+        <button type="button" onclick="setBuzzerFreq(880)" style="padding:4px 8px; font-size:11px; background:#242833; color:var(--fg); border:1px solid var(--border); border-radius:4px; cursor:pointer;">A5 (880Hz)</button>
+        <button type="button" onclick="setBuzzerFreq(1000)" style="padding:4px 8px; font-size:11px; background:#242833; color:var(--fg); border:1px solid var(--border); border-radius:4px; cursor:pointer;">Alarm (1kHz)</button>
+        <button type="button" onclick="setBuzzerFreq(2000)" style="padding:4px 8px; font-size:11px; background:#242833; color:var(--fg); border:1px solid var(--border); border-radius:4px; cursor:pointer;">High (2kHz)</button>
+        <button type="button" id="btnBuzzerStart" onclick="sendBuzzerCommand('start')" style="margin-left:auto; padding:6px 14px; font-weight:700; font-size:12px; background:linear-gradient(135deg, #f5b74f, #ff6b6b); color:#0f1115; border:none; border-radius:6px; cursor:pointer;">▶ PLAY TONE</button>
+      </div>
+    </div>
+
+    <!-- Mode 2: Song Melody & Stop Controls -->
+    <div style="margin-top:12px; display:flex; gap:12px; flex-wrap:wrap; align-items:center;">
+      <div style="flex:1 1 220px; padding:10px 14px; background:#14171f; border:1px solid var(--border); border-radius:8px; display:flex; justify-content:space-between; align-items:center;">
+        <div>
+          <div style="font-size:12px; font-weight:700; color:var(--accent);">🎵 MODE 2: SONG MELODY</div>
+          <div style="font-size:11px; color:var(--muted);">Imagine Dragons - Believer</div>
+        </div>
+        <button type="button" id="btnBuzzerBeliever" onclick="sendBuzzerCommand('believer')" style="padding:8px 14px; font-weight:700; font-size:12px; background:linear-gradient(135deg, #4f9dff, #9b51e0); color:#ffffff; border:none; border-radius:6px; cursor:pointer;">▶ PLAY "BELIEVER"</button>
+      </div>
+      
+      <button type="button" id="btnBuzzerStop" onclick="sendBuzzerCommand('stop')" style="padding:10px 18px; font-weight:700; font-size:13px; background:#242833; color:var(--err); border:2px solid var(--err); border-radius:8px; cursor:pointer;">⏹ STOP BUZZER</button>
+    </div>
+
+    <div id="buzzerStatus" class="robot-status" style="margin-top:10px;" role="status">Ready</div>
+  </div>
+
   <div class="card">
     <label>Recent events</label>
     <table>
@@ -398,6 +453,45 @@ async function sendRobotCommand(direction) {
 document.querySelectorAll(".robot-dpad button").forEach(button => {
   button.addEventListener("click", () => sendRobotCommand(button.dataset.direction));
 });
+
+function setBuzzerFreq(val) {
+  $("buzzerFreq").value = val;
+  $("freqSlider").value = val;
+  $("freqVal").textContent = val;
+}
+$("freqSlider")?.addEventListener("input", (e) => {
+  $("buzzerFreq").value = e.target.value;
+  $("freqVal").textContent = e.target.value;
+});
+$("buzzerFreq")?.addEventListener("input", (e) => {
+  $("freqSlider").value = e.target.value;
+  $("freqVal").textContent = e.target.value;
+});
+
+async function sendBuzzerCommand(action) {
+  const status = $("buzzerStatus");
+  const deviceId = $("buzzerDevice").value.trim() || "unoq-01";
+  const frequency = Number.parseInt($("buzzerFreq").value, 10) || 440;
+  const duration = Number.parseInt($("buzzerDuration").value, 10) || 0;
+
+  status.className = "robot-status";
+  status.textContent = `Sending ${action}...`;
+
+  try {
+    const r = await fetch("/user/buzzer-command", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ device_id: deviceId, action, frequency, duration })
+    });
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.error || "Buzzer command failed");
+    status.className = "robot-status ok";
+    status.textContent = `Buzzer ${action.toUpperCase()} sent to ${j.device_id}`;
+  } catch (e) {
+    status.className = "robot-status err";
+    status.textContent = e.message || "Buzzer command failed";
+  }
+}
 
 $("enrollForm").addEventListener("submit", enroll);
 loadKnownFaces();
