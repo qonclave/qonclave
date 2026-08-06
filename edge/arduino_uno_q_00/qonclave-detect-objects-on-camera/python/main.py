@@ -33,11 +33,25 @@ from person_distance import PersonDistanceController, size_ratio_of
 from person_tracker import PersonTracker
 from priority_sync import PriorityMapClient
 from track_crop import crop_persons, remove_crop_locally, save_crop_locally
+from mcu_link import McuLink
 from track_overlay import draw_track_overlay_bgr, encode_jpeg
 
 load_dotenv()
 
 log = Logger("qonclave.edge")
+
+# Circuit breaker around every Bridge.call() to the MCU: a desynced
+# router<->MCU serial link (e.g. after a reflash mid-connection) makes each
+# raw Bridge.call() block for its full 10s RPC timeout, so a bare Bridge.call
+# in a per-frame path turns into a ~10s freeze roughly every frame, forever,
+# with one duplicate "timed out" log line per attempt. mcu.call() never
+# blocks once the link is known-down and logs the outage once, not per call.
+mcu = McuLink(Bridge, logger=log)
+
+# Sentinel default for mcu.call(): distinguishes "the call never reached the
+# MCU" from a legitimate MCU response of None/False (e.g. move_robot(...) can
+# genuinely return False for "orientation sensor is not ready").
+_MCU_UNAVAILABLE = object()
 
 DEVICE_ID = os.environ.get("DEVICE_ID", "unoq-01")
 HUB_DISCOVERY_ENABLED = os.environ.get("HUB_DISCOVERY_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
@@ -160,7 +174,7 @@ def _generate_icon_thread(label: str):
         log.info(f"Successfully received and cached Level 1 icon from Hub for '{label}'")
         try:
           bitstring = "".join("1" if val else "0" for r in grid for val in r[:12])
-          Bridge.call("set_custom_led_array", bitstring)
+          mcu.call("set_custom_led_array", bitstring)
           ui.send_message("sync_icons", message=icon_cache)
           ui.send_message("led_status", message={"state": "active", "trigger": label, "bitmap": grid, "ai_generated": True})
         except Exception as e:
@@ -428,7 +442,8 @@ def _execute_robot_command(message):
 
   direction = str(message.get("direction", "")).strip().upper()
   if direction == "STOP":
-    Bridge.call("stop_robot")
+    if mcu.call("stop_robot", default=_MCU_UNAVAILABLE) is _MCU_UNAVAILABLE:
+      raise RuntimeError("MCU unavailable")
     person_centering.note_motion()
     person_distance.note_motion()
     return {"ok": True, "direction": "STOP"}
@@ -440,7 +455,9 @@ def _execute_robot_command(message):
   if not 1 <= magnitude <= 360:
     raise ValueError("Magnitude must be between 1 and 360")
 
-  started = Bridge.call("move_robot", direction, magnitude)
+  started = mcu.call("move_robot", direction, magnitude, default=_MCU_UNAVAILABLE)
+  if started is _MCU_UNAVAILABLE:
+    raise RuntimeError("MCU unavailable")
   if started is False:
     raise RuntimeError("Orientation sensor is not ready")
   # Blank BOTH followers for this move's estimated duration plus the pipeline
@@ -483,16 +500,20 @@ def _execute_buzzer_command(message):
   duration = int(message.get("duration", 0))
 
   if action in ("believer", "song"):
-    Bridge.call("play_believer")
+    if mcu.call("play_believer", default=_MCU_UNAVAILABLE) is _MCU_UNAVAILABLE:
+      raise RuntimeError("MCU unavailable")
     return {"ok": True, "action": "believer", "song": "Believer - Imagine Dragons"}
   elif action in ("start", "tone"):
     if "frequency" in message:
-      Bridge.call("trigger_buzzer", frequency, duration)
+      result = mcu.call("trigger_buzzer", frequency, duration, default=_MCU_UNAVAILABLE)
     else:
-      Bridge.call("play_believer")
+      result = mcu.call("play_believer", default=_MCU_UNAVAILABLE)
+    if result is _MCU_UNAVAILABLE:
+      raise RuntimeError("MCU unavailable")
     return {"ok": True, "action": action, "frequency": frequency, "duration": duration}
   elif action in ("stop", "notone"):
-    Bridge.call("stop_buzzer")
+    if mcu.call("stop_buzzer", default=_MCU_UNAVAILABLE) is _MCU_UNAVAILABLE:
+      raise RuntimeError("MCU unavailable")
     return {"ok": True, "action": action}
   else:
     raise ValueError(f"Unsupported buzzer action: {action or '(empty)'}")
@@ -522,12 +543,10 @@ def handle_knob_change(percentage_str):
 Bridge.provide("on_knob_change", handle_knob_change)
 green_bmp = _get_bitmap_entry("green")
 if green_bmp:
-  try:
-    Bridge.call("set_custom_led_array", "".join("1" if val else "0" for r in green_bmp for val in r[:12]))
-  except Exception as e:
-    # The MCU bridge can still be coming online after a container restart.
-    # LED initialization is cosmetic and must not take down video analysis.
-    log.warning(f"Initial LED update unavailable; continuing without it: {e}")
+  # LED initialization is cosmetic and must not take down video analysis;
+  # mcu.call() degrades to a no-op instead of raising if the MCU bridge is
+  # still coming online after a container restart.
+  mcu.call("set_custom_led_array", "".join("1" if val else "0" for r in green_bmp for val in r[:12]))
 
 # --- Hub event forwarding: notify the Qonclave hub when a person is detected ---
 
@@ -1025,8 +1044,14 @@ def send_detections_to_ui(detections: dict, frame: bytes | None = None):
     })
 
     try:
-      motion_active = Bridge.call("robot_motion_active")
-      if motion_active:
+      # None means the MCU link is down (breaker open or this attempt
+      # failed) -- mcu.call() has already logged the outage (throttled, not
+      # once per frame). Skip commanding motion entirely rather than issue a
+      # turn we already know will fail.
+      motion_active = mcu.call("robot_motion_active", default=None)
+      if motion_active is None:
+        turn = None
+      elif motion_active:
         # Backup for moves note_motion() didn't see start (e.g. a long manual
         # move still running): keep extending the blank window while the MCU
         # reports motion, so bearings from these frames are also discarded.
@@ -1050,7 +1075,7 @@ def send_detections_to_ui(detections: dict, frame: bytes | None = None):
           f"Auto-centering person {turn.track_id}: {turn.direction} "
           f"{turn.magnitude}° (measured error {turn.angle_error_degrees:.2f}°)"
         )
-      elif (not motion_active
+      elif (motion_active is False
             and abs(angle_to_center) <= person_centering.tolerance_degrees):
         # Distance keeping runs only once the person is CENTERED and no turn
         # was issued this frame: turning has priority (driving forward while
@@ -1093,18 +1118,18 @@ def send_detections_to_ui(detections: dict, frame: bytes | None = None):
       cy = frame_h - cy  # rear (top half) -> bottom rows, front (bottom half) -> top rows
     bitmap = person_display_bitmap((cx, cy), frame_w, frame_h)
     bitstring = "".join("1" if val else "0" for r in bitmap for val in r[:12])
-    Bridge.call("set_custom_led_array", bitstring)
+    mcu.call("set_custom_led_array", bitstring)
     ui.send_message("led_status", message={"state": "active", "trigger": "person", "bitmap": bitmap, "ai_generated": False})
   elif detections:
     first_obj = list(detections.keys())[0]
     bitmap, is_generating = get_or_trigger_icon(first_obj)
     bitstring = "".join("1" if val else "0" for r in bitmap for val in r[:12]) if bitmap else "0" * 96
-    Bridge.call("set_custom_led_array", bitstring)
+    mcu.call("set_custom_led_array", bitstring)
     ui.send_message("led_status", message={"state": "active", "trigger": first_obj, "bitmap": bitmap, "ai_generated": (first_obj not in ["clear", "green"])})
   else:
     clear_bmp = _get_bitmap_entry("clear") or [[0]*12 for _ in range(8)]
     bitstring = "".join("1" if val else "0" for r in clear_bmp for val in r[:12])
-    Bridge.call("set_custom_led_array", bitstring)
+    mcu.call("set_custom_led_array", bitstring)
     ui.send_message("led_status", message={"state": "clear", "trigger": "clear", "bitmap": clear_bmp})
 
   for key, values in detections.items():
@@ -1131,14 +1156,13 @@ def _wait_for_motion_idle(deadline: float) -> bool:
   estimate, not a promise -- polling is what makes the following capture
   reliably sharp instead of hopefully sharp."""
   while time.monotonic() < deadline:
-    try:
-      if not Bridge.call("robot_motion_active"):
-        return True
-    except Exception as e:
+    motion_active = mcu.call("robot_motion_active", default=None)
+    if motion_active is None:
       # No motion feedback available: fall back to the commanded timing
       # rather than spinning here until the deadline.
-      log.warning(f"robot_motion_active unavailable while approaching: {e}")
       return False
+    if not motion_active:
+      return True
     time.sleep(0.05)
   return False
 
@@ -1204,11 +1228,9 @@ def _approach_target_before_capture(event_id: str, requested: bool):
     # Guarantee the wheels are stopped (a step may have overrun its estimate),
     # THEN let the chassis stop rocking and the camera pipeline emit a frame
     # from the new position -- only after that is _camera_frame worth reading.
-    try:
-      Bridge.call("stop_robot")
-    except Exception as e:
-      log.warning(f"Investigation {event_id}: stop_robot after approach "
-                  f"failed: {e}")
+    # A failed stop_robot here is already logged (throttled) by mcu.call();
+    # nothing more useful to do than proceed to the settle sleep either way.
+    mcu.call("stop_robot")
     time.sleep(INVESTIGATION_APPROACH_SETTLE_SEC)
 
 
