@@ -29,6 +29,7 @@ from led_display import person_display_bitmap
 from mqtt_client import EdgeMQTTClient
 from analysis_client import AnalysisClient
 from person_centering import PersonCenteringController, horizontal_bearing_degrees
+from person_distance import PersonDistanceController, size_ratio_of
 from person_tracker import PersonTracker
 from priority_sync import PriorityMapClient
 from track_crop import crop_persons, remove_crop_locally, save_crop_locally
@@ -429,6 +430,7 @@ def _execute_robot_command(message):
   if direction == "STOP":
     Bridge.call("stop_robot")
     person_centering.note_motion()
+    person_distance.note_motion()
     return {"ok": True, "direction": "STOP"}
 
   if direction not in ROBOT_DIRECTIONS:
@@ -441,15 +443,17 @@ def _execute_robot_command(message):
   started = Bridge.call("move_robot", direction, magnitude)
   if started is False:
     raise RuntimeError("Orientation sensor is not ready")
-  # Blank centering for this move's estimated duration plus the pipeline
-  # latency window, whatever the source (auto-centering, web UI, hub MQTT).
-  # Small turns finish between detection callbacks, so waiting to *observe*
+  # Blank BOTH followers for this move's estimated duration plus the pipeline
+  # latency window, whatever the source (auto-centering, distance keeping,
+  # web UI, hub MQTT): motion stales bearings and box sizes alike. Small
+  # turns finish between detection callbacks, so waiting to *observe*
   # robot_motion_active would miss exactly the moves that cause ping-pong.
   if direction in {"LEFT", "RIGHT"}:
     est_duration = magnitude * person_centering.estimated_ms_per_degree / 1000.0
   else:
     est_duration = float(magnitude)  # FORWARD/BACKWARD magnitude is seconds
   person_centering.note_motion(est_duration)
+  person_distance.note_motion(est_duration)
   return {
     "ok": True,
     "direction": direction,
@@ -578,6 +582,22 @@ person_centering = PersonCenteringController(
   # latency is ~1s on this board) and are discarded rather than acted on.
   post_motion_blank_seconds=float(os.environ.get("PERSON_CENTER_POST_MOTION_BLANK_SEC", "1.5")),
   turn_gain=float(os.environ.get("PERSON_CENTER_TURN_GAIN", "0.7")),
+)
+
+# --- Distance keeping: centering only ROTATES toward the followed person;
+# this drives FORWARD when they are too small in frame to see clearly and
+# BACKWARD when they are uncomfortably close, holding inside the deadband.
+# Size comes from the larger box dimension, so a FALLEN person (wide, short
+# box) is not misread as "far away" and driven into. One 1s nudge per paced,
+# confirmed decision -- see python/person_distance.py for the safety order.
+person_distance = PersonDistanceController(
+  enabled=os.environ.get("FOLLOW_DISTANCE_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on"),
+  approach_below=float(os.environ.get("FOLLOW_DISTANCE_APPROACH_BELOW", "0.35")),
+  retreat_above=float(os.environ.get("FOLLOW_DISTANCE_RETREAT_ABOVE", "0.65")),
+  step_seconds=int(os.environ.get("FOLLOW_DISTANCE_STEP_SEC", "1")),
+  minimum_interval_seconds=float(os.environ.get("FOLLOW_DISTANCE_MIN_INTERVAL_SEC", "2.5")),
+  confirm_frames=int(os.environ.get("FOLLOW_DISTANCE_CONFIRM_FRAMES", "3")),
+  post_motion_blank_seconds=float(os.environ.get("FOLLOW_DISTANCE_POST_MOTION_BLANK_SEC", "1.5")),
 )
 
 # --- Investigation approach: when the hub opens an investigation (posture
@@ -975,15 +995,23 @@ def send_detections_to_ui(detections: dict, frame: bytes | None = None):
     # Publish for the investigation-capture thread, which needs to know which
     # way to turn before its close-up but never sees a frame itself.
     _note_follow_bearing(target_track["track_id"], angle_to_center)
+    x1, y1, x2, y2 = target_track["bounding_box_xyxy"]
+    # A stacked dual-lens frame is two views one above the other, so a person
+    # occupies at most half its pixel height; measure against one view's
+    # height or every ratio reads as "far away" and the robot keeps advancing.
+    size_frame_h = frame_h / 2 if CAMERA_DUAL_LENS_STACKED else frame_h
+    size_ratio = size_ratio_of(x2 - x1, y2 - y1, frame_w, size_frame_h)
     log.debug(
       f"Tracking person {target_track['track_id']}: angle_to_center={angle_to_center:.2f}°, "
-      f"motion={target_track['direction']}"
+      f"size_ratio={size_ratio}, motion={target_track['direction']}"
     )
     ui.send_message("person_tracking_status", message={
       "track_id": target_track["track_id"],
       "angle_to_center_degrees": angle_to_center,
       "centered": abs(angle_to_center) <= person_centering.tolerance_degrees,
       "centroid": [cx, cy],
+      "size_ratio": size_ratio,
+      "distance_zone": person_distance.zone_for(size_ratio),
     })
 
     try:
@@ -993,6 +1021,7 @@ def send_detections_to_ui(detections: dict, frame: bytes | None = None):
         # move still running): keep extending the blank window while the MCU
         # reports motion, so bearings from these frames are also discarded.
         person_centering.note_motion()
+        person_distance.note_motion()
         turn = None
       else:
         turn = person_centering.command_for(angle_to_center, target_track["track_id"])
@@ -1011,8 +1040,35 @@ def send_detections_to_ui(detections: dict, frame: bytes | None = None):
           f"Auto-centering person {turn.track_id}: {turn.direction} "
           f"{turn.magnitude}° (measured error {turn.angle_error_degrees:.2f}°)"
         )
+      elif (not motion_active
+            and abs(angle_to_center) <= person_centering.tolerance_degrees):
+        # Distance keeping runs only once the person is CENTERED and no turn
+        # was issued this frame: turning has priority (driving forward while
+        # misaligned closes distance toward the wrong point, and on a stacked
+        # dual-lens rig the person may even be BEHIND the robot), and the
+        # centered gate also means FORWARD always moves toward the person the
+        # bearing was measured on.
+        move = person_distance.command_for(
+          x2 - x1, y2 - y1, frame_w, size_frame_h,
+          target_track["track_id"])
+        if move:
+          status = _execute_robot_command({
+            "direction": move.direction,
+            "magnitude": move.magnitude,
+          })
+          status.update({
+            "automatic": True,
+            "track_id": move.track_id,
+            "size_ratio": move.size_ratio,
+            "reason": move.reason,
+          })
+          ui.send_message("robot_move_status", message=status)
+          log.info(
+            f"Distance-keeping person {move.track_id}: {move.direction} "
+            f"{move.magnitude}s ({move.reason}, size_ratio={move.size_ratio})"
+          )
     except Exception as e:
-      log.error(f"Person auto-centering command failed: {e}")
+      log.error(f"Person follow command failed: {e}")
 
   if person_tracks:
     # A person is visible: show a position on the LED matrix instead of the
@@ -1227,6 +1283,15 @@ log.info(
      f"(within {INVESTIGATION_APPROACH_MAX_TURN_DEGREES:.0f} deg), "
      f"{INVESTIGATION_APPROACH_BUDGET_SEC}s budget"
      if INVESTIGATION_APPROACH_ENABLED else "disabled (capture in place)")
+)
+log.info(
+  "Distance keeping: "
+  + (f"hold person at size {person_distance.approach_below:.2f}-"
+     f"{person_distance.retreat_above:.2f} of frame, "
+     f"{person_distance.step_seconds}s nudges every "
+     f">={person_distance.minimum_interval_seconds}s after "
+     f"{person_distance.confirm_frames} confirming frames"
+     if person_distance.enabled else "disabled (rotate only)")
 )
 
 mqtt_client = EdgeMQTTClient(
