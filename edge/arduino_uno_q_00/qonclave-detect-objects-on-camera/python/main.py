@@ -342,8 +342,14 @@ def _execute_buzzer_command(message):
   frequency = int(message.get("frequency", 440))
   duration = int(message.get("duration", 0))
 
-  if action in ("start", "tone"):
-    Bridge.call("trigger_buzzer", frequency, duration)
+  if action in ("believer", "song"):
+    Bridge.call("play_believer")
+    return {"ok": True, "action": "believer", "song": "Believer - Imagine Dragons"}
+  elif action in ("start", "tone"):
+    if "frequency" in message:
+      Bridge.call("trigger_buzzer", frequency, duration)
+    else:
+      Bridge.call("play_believer")
     return {"ok": True, "action": action, "frequency": frequency, "duration": duration}
   elif action in ("stop", "notone"):
     Bridge.call("stop_buzzer")
@@ -701,7 +707,7 @@ def _handle_hub_command(command: dict):
       log.warning(f"Rejected hub robot command: {e}")
     except Exception as e:
       log.error(f"Hub robot command failed: {e}")
-  elif cmd_type == "buzzer" or action in ("start", "stop", "tone", "notone"):
+  elif cmd_type == "buzzer" or action in ("start", "stop", "tone", "notone", "believer", "song"):
     try:
       status = _execute_buzzer_command(command)
       log.info(f"Executed hub buzzer command: {status}")

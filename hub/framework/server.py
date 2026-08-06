@@ -446,8 +446,8 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
             return jsonify({"ok": False, "error": "no edge device selected"}), 400
         if not re.fullmatch(r"[A-Za-z0-9_.:-]+", device_id):
             return jsonify({"ok": False, "error": "invalid device_id"}), 400
-        if action not in {"start", "stop", "tone"}:
-            return jsonify({"ok": False, "error": "action must be 'start', 'stop', or 'tone'"}), 400
+        if action not in {"start", "stop", "tone", "believer", "song"}:
+            return jsonify({"ok": False, "error": "action must be 'start', 'stop', 'tone', 'believer', or 'song'"}), 400
 
         try:
             frequency = int(body.get("frequency", 440))

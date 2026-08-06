@@ -75,6 +75,10 @@ void trigger_buzzer(int frequency, int duration) {
   buzzer.tone(frequency, duration);
 }
 
+void play_believer() {
+  buzzer.playBeliever();
+}
+
 void stop_buzzer() {
   buzzer.stop();
 }
@@ -101,6 +105,7 @@ void setup() {
   Bridge.provide("stop_robot", stop_robot);
   Bridge.provide("robot_motion_active", robot_motion_active);
   Bridge.provide("trigger_buzzer", trigger_buzzer);
+  Bridge.provide("play_believer", play_believer);
   Bridge.provide("stop_buzzer", stop_buzzer);
   Bridge.provide("buzzer_active", buzzer_active);
 

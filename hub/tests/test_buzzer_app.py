@@ -22,7 +22,7 @@ from framework.mqtt_bus import MQTTBus
 from framework.server import create_app
 from framework.sms_bus import SMSBus
 from framework.vlm import VLMBackend
-from apps.buzzer_alert.policy import BuzzerAlertPolicy
+from apps.security.policy import SecurityPolicy
 
 
 class TestBuzzerApp(unittest.TestCase):
@@ -40,7 +40,7 @@ class TestBuzzerApp(unittest.TestCase):
         self.sms = MagicMock(spec=SMSBus)
         self.sms.status.return_value = {"available": False}
 
-        self.policy = BuzzerAlertPolicy(vlm=self.vlm, target_device_id="buzzer-01")
+        self.policy = SecurityPolicy(vlm=self.vlm)
         self.app = create_app(
             policy=self.policy,
             vlm=self.vlm,
@@ -100,12 +100,25 @@ class TestBuzzerApp(unittest.TestCase):
             "duration": 0
         })
 
+    def test_buzzer_command_believer_success(self):
+        payload = {
+            "device_id": "unoq-01",
+            "action": "believer"
+        }
+        res = self.client.post("/user/buzzer-command", json=payload)
+        self.assertEqual(res.status_code, 200)
+
+        data = res.get_json()
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["device_id"], "unoq-01")
+        self.assertEqual(data["command"]["action"], "believer")
+
     def test_buzzer_command_invalid_action(self):
         res = self.client.post("/user/buzzer-command", json={"action": "dance"})
         self.assertEqual(res.status_code, 400)
         data = res.get_json()
         self.assertFalse(data["ok"])
-        self.assertIn("action must be 'start', 'stop', or 'tone'", data["error"])
+        self.assertIn("action must be 'start', 'stop', 'tone', 'believer', or 'song'", data["error"])
 
     def test_buzzer_command_invalid_frequency(self):
         res = self.client.post("/user/buzzer-command", json={"action": "start", "frequency": -10})
