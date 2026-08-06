@@ -619,6 +619,13 @@ INVESTIGATION_APPROACH_MAX_TURN_DEGREES = float(
   os.environ.get("INVESTIGATION_APPROACH_MAX_TURN_DEGREES", "45"))
 INVESTIGATION_APPROACH_SETTLE_SEC = float(
   os.environ.get("INVESTIGATION_APPROACH_SETTLE_SEC", "0.6"))
+# The capture may get a LITTLE closer than the everyday safe-follow band
+# (FOLLOW_DISTANCE_RETREAT_ABOVE, 0.65) -- a close-up is what the VLM needs --
+# but never past this: a person already filling this much of the frame gains
+# nothing from another step, and the box size is the only thing standing
+# between "close-up" and "contact" on a robot with no proximity sensing.
+INVESTIGATION_APPROACH_MAX_SIZE_RATIO = float(
+  os.environ.get("INVESTIGATION_APPROACH_MAX_SIZE_RATIO", "0.75"))
 INVESTIGATION_APPROACH_BUDGET_SEC = float(
   os.environ.get("INVESTIGATION_APPROACH_BUDGET_SEC", "6"))
 # A bearing older than this is not trusted to aim a turn. Detection runs at
@@ -796,29 +803,31 @@ def _log_follow_state_if_changed(selection: dict):
 _hub_event_lock = threading.Lock()
 _last_hub_event_at = 0.0
 
-# Newest bearing to the follow target, published by the detection callback and
-# read by the investigation-capture thread (which has no frame of its own to
-# measure from). (track_id, angle_degrees, monotonic timestamp) or None.
+# Newest bearing AND box-size measurement of the follow target, published by
+# the detection callback and read by the investigation-capture thread (which
+# has no frame of its own to measure from).
+# (track_id, angle_degrees, size_ratio|None, monotonic timestamp) or None.
 _follow_bearing_lock = threading.Lock()
-_follow_bearing: tuple[int, float, float] | None = None
+_follow_bearing: tuple[int, float, "float | None", float] | None = None
 
 
-def _note_follow_bearing(track_id: int, angle_degrees: float):
+def _note_follow_bearing(track_id: int, angle_degrees: float,
+                         size_ratio: "float | None" = None):
   global _follow_bearing
   with _follow_bearing_lock:
-    _follow_bearing = (track_id, angle_degrees, time.monotonic())
+    _follow_bearing = (track_id, angle_degrees, size_ratio, time.monotonic())
 
 
-def _recent_follow_bearing(max_age_seconds: float) -> tuple[int, float] | None:
-  """(track_id, bearing) if fresh enough to aim a turn at, else None."""
+def _recent_follow_bearing(max_age_seconds: float) -> "tuple[int, float, float | None] | None":
+  """(track_id, bearing, size_ratio) if fresh enough to act on, else None."""
   with _follow_bearing_lock:
     snapshot = _follow_bearing
   if snapshot is None:
     return None
-  track_id, angle, measured_at = snapshot
+  track_id, angle, size_ratio, measured_at = snapshot
   if time.monotonic() - measured_at > max_age_seconds:
     return None
-  return track_id, angle
+  return track_id, angle, size_ratio
 
 
 def _prune_escalation_frames():
@@ -992,15 +1001,16 @@ def send_detections_to_ui(detections: dict, frame: bytes | None = None):
       dual_lens_fov_degrees=CAMERA_DUAL_LENS_FOV_DEGREES,
     )
     target_track["angle_to_center_degrees"] = angle_to_center
-    # Publish for the investigation-capture thread, which needs to know which
-    # way to turn before its close-up but never sees a frame itself.
-    _note_follow_bearing(target_track["track_id"], angle_to_center)
     x1, y1, x2, y2 = target_track["bounding_box_xyxy"]
     # A stacked dual-lens frame is two views one above the other, so a person
     # occupies at most half its pixel height; measure against one view's
     # height or every ratio reads as "far away" and the robot keeps advancing.
     size_frame_h = frame_h / 2 if CAMERA_DUAL_LENS_STACKED else frame_h
     size_ratio = size_ratio_of(x2 - x1, y2 - y1, frame_w, size_frame_h)
+    # Publish for the investigation-capture thread, which needs to know which
+    # way to turn before its close-up -- and how close it already is -- but
+    # never sees a frame itself.
+    _note_follow_bearing(target_track["track_id"], angle_to_center, size_ratio)
     log.debug(
       f"Tracking person {target_track['track_id']}: angle_to_center={angle_to_center:.2f}°, "
       f"size_ratio={size_ratio}, motion={target_track['direction']}"
@@ -1149,8 +1159,11 @@ def _approach_target_before_capture(event_id: str, requested: bool):
 
   recent = _recent_follow_bearing(INVESTIGATION_APPROACH_BEARING_MAX_AGE_SEC)
   bearing = recent[1] if recent else None
+  size_ratio = recent[2] if recent else None
   steps = plan_approach(
     bearing,
+    size_ratio=size_ratio,
+    max_size_ratio=INVESTIGATION_APPROACH_MAX_SIZE_RATIO,
     forward_seconds=INVESTIGATION_APPROACH_FORWARD_SEC,
     tolerance_degrees=INVESTIGATION_APPROACH_TOLERANCE_DEGREES,
     max_turn_degrees=INVESTIGATION_APPROACH_MAX_TURN_DEGREES,
@@ -1160,8 +1173,11 @@ def _approach_target_before_capture(event_id: str, requested: bool):
   )
   log.info(
     f"Investigation {event_id}: approaching "
-    f"{'track ' + str(recent[0]) if recent else 'target (no recent bearing)'} "
-    f"-> {describe_approach(steps)}"
+    f"{'track ' + str(recent[0]) if recent else 'target (no recent bearing)'}"
+    + (f" (size_ratio={size_ratio:.2f}, cap "
+       f"{INVESTIGATION_APPROACH_MAX_SIZE_RATIO:.2f})"
+       if size_ratio is not None else "")
+    + f" -> {describe_approach(steps)}"
   )
 
   budget_ends = time.monotonic() + INVESTIGATION_APPROACH_BUDGET_SEC

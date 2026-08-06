@@ -45,6 +45,8 @@ class ApproachStep:
 def plan_approach(
     bearing_degrees: float | None,
     *,
+    size_ratio: float | None = None,
+    max_size_ratio: float = 0.75,
     forward_seconds: int = 1,
     tolerance_degrees: float = 8.0,
     max_turn_degrees: float = 45.0,
@@ -57,6 +59,16 @@ def plan_approach(
     ``bearing_degrees`` is the signed horizontal bearing to the target
     (negative = left of center), or None when no recent bearing is available.
 
+    ``size_ratio`` is how much of the frame the person already fills (the
+    distance keeper's posture-independent metric, person_distance.py), or
+    None when no recent measurement exists. The capture is allowed to get a
+    LITTLE closer than the everyday safe-follow distance -- a close-up is
+    exactly what the VLM needs -- but ``max_size_ratio`` is the line: a
+    person already filling that much of the frame gains nothing from another
+    forward step, and this robot has no proximity sensing, so the box size is
+    the only thing standing between "close-up" and "contact". At or past the
+    cap the forward step is dropped; the turn still happens.
+
     The turn corrects the FULL measured error, unlike the continuous
     centering controller's damped gain: this is a single one-shot alignment
     before a capture, not a loop that can oscillate, so undershooting just
@@ -64,7 +76,9 @@ def plan_approach(
 
     With no bearing at all the turn is skipped but the forward step still
     runs -- the centering loop has been keeping the target roughly ahead, so
-    forward remains the best available guess at "toward them".
+    forward remains the best available guess at "toward them". An unknown
+    size keeps the forward step too: the everyday distance keeper has been
+    holding the safe band, so one bounded step from inside it is safe.
     """
     steps: list[ApproachStep] = []
     remaining = max(0.0, budget_seconds)
@@ -87,7 +101,8 @@ def plan_approach(
             ))
             remaining -= cost
 
-    if forward_seconds >= 1:
+    already_close = size_ratio is not None and size_ratio >= max_size_ratio
+    if forward_seconds >= 1 and not already_close:
         magnitude = _clamp_magnitude(int(forward_seconds))
         cost = float(magnitude)  # FORWARD magnitude is seconds
         if fits(cost):
@@ -108,7 +123,7 @@ def _clamp_magnitude(value: float) -> int:
 def describe(steps: list[ApproachStep]) -> str:
     """One-line log summary of a plan."""
     if not steps:
-        return "no approach (nothing fits the budget)"
+        return "no approach (already close enough, or nothing fits the budget)"
     return ", ".join(
         f"{s.direction} {s.magnitude}"
         f"{'deg' if s.direction in ('LEFT', 'RIGHT') else 's'} ({s.reason})"

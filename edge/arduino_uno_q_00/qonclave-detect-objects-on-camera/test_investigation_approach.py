@@ -50,6 +50,43 @@ def test_unknown_bearing_skips_the_turn_but_still_approaches():
     assert [s.direction for s in steps] == ["FORWARD"]
 
 
+def test_already_close_person_is_not_approached_further():
+    # The hub's approach flag may close in a LITTLE past the everyday safe
+    # distance, but max_size_ratio is the line: a person already filling that
+    # much of the frame gains nothing from another step, and box size is all
+    # that stands between "close-up" and "contact" -- no proximity sensing.
+    steps = plan_approach(1.0, size_ratio=0.80, max_size_ratio=0.75,
+                          forward_seconds=1)
+    assert steps == []
+    # Exactly at the cap counts as there: don't go any further.
+    steps = plan_approach(1.0, size_ratio=0.75, max_size_ratio=0.75,
+                          forward_seconds=1)
+    assert steps == []
+
+
+def test_close_but_under_the_cap_still_gets_its_little_step():
+    # Inside the follow band's "too close" zone (>0.65) but under the
+    # investigation cap: one bounded step closer is allowed for the photo.
+    steps = plan_approach(1.0, size_ratio=0.70, max_size_ratio=0.75,
+                          forward_seconds=1)
+    assert [s.direction for s in steps] == ["FORWARD"]
+
+
+def test_already_close_person_is_still_faced():
+    # The size cap drops only the forward step; a capture of the wrong wall
+    # helps no one, so the alignment turn survives.
+    steps = plan_approach(30.0, size_ratio=0.90, max_size_ratio=0.75,
+                          forward_seconds=1)
+    assert [s.direction for s in steps] == ["RIGHT"]
+
+
+def test_unknown_size_keeps_the_forward_step():
+    # No recent measurement: the everyday distance keeper has been holding
+    # the safe band, so one bounded step from inside it is safe.
+    steps = plan_approach(1.0, size_ratio=None, forward_seconds=1)
+    assert [s.direction for s in steps] == ["FORWARD"]
+
+
 def test_a_tight_budget_drops_steps_rather_than_overrunning():
     # The hub abandons the capture after its timeout and uses a buffered crop,
     # so an approach that overruns throws away the frame it exists to get.
@@ -87,7 +124,7 @@ def test_describe_is_readable_and_units_are_labelled():
     text = describe(plan_approach(30.0, forward_seconds=1))
     assert "RIGHT 30deg" in text
     assert "FORWARD 1s" in text
-    assert describe([]) == "no approach (nothing fits the budget)"
+    assert describe([]).startswith("no approach")
 
 
 def test_steps_are_hashable_value_objects():
