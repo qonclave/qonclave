@@ -44,6 +44,12 @@ and independently under `spec/v1/`.
   placement-candidate scope. Backs `hub/framework/device_registry.py`, whose assumed destination
   (`peers.py`/`health.py`) turned out to be placement-specific on inspection; see
   `docs/CONVENTIONS.md`.
+- **`qonclave.discovery.announce`** + **`discovery/backends/udp.py`** — the UDP broadcast/probe-
+  respond mechanism from `hub/framework/discovery.py`, split into socket mechanics
+  (`UDPAnnounceBackend`) and the announce loop that uses them. The announced payload is still the
+  pre-spec ad-hoc shape (not a real `node-manifest.schema.json` document) to stay byte-compatible
+  with already-flashed edge devices; `discovery/browse.py` (peer-manifest caching for placement)
+  was left untouched since nothing in the old file does that. See `docs/CONVENTIONS.md`.
 - **`InferenceTask.from_event()`** — build a task from an inbound `EdgeEvent`'s declared `task`
   descriptor, with a caller-supplied fallback complexity/use_case for events that don't declare
   one (true of every device that hasn't been reflashed to). Generalizes what
@@ -72,13 +78,14 @@ and independently under `spec/v1/`.
 ### Notes
 
 `edge/` is still untouched — nothing under it imports `qonclave.*` yet. `hub/` is no longer fully
-untouched: `hub/framework/adapter.py`, `events.py`, `transport.py`, `policy.py`, and now
-`device_registry.py` are thin shims over this SDK today. `hub/framework/policy.py` was lifted,
-reverted while merging `hub/`'s own feature work, and redone (all 2026-08-06) —
-`docs/CONVENTIONS.md`'s "Where existing code lands" section is the current, maintained status of
-every module, including `device_registry.py`'s assumed destination not existing and getting a new
-module (`qonclave.discovery.registry`) instead. Pointing the rest of `hub/server.py` at
-`qonclave.hub` remains a separate, later change.
+untouched: `hub/framework/adapter.py`, `events.py`, `transport.py`, `policy.py`,
+`device_registry.py`, and now `discovery.py` are thin shims over this SDK today.
+`hub/framework/policy.py` was lifted, reverted while merging `hub/`'s own feature work, and redone
+(all 2026-08-06) — `docs/CONVENTIONS.md`'s "Where existing code lands" section is the current,
+maintained status of every module, including `device_registry.py`'s assumed destination not
+existing (got a new module, `qonclave.discovery.registry`, instead) and `discovery.py`'s announced
+payload still being pre-spec. Pointing the rest of `hub/server.py` at `qonclave.hub` remains a
+separate, later change.
 
 `hub/apps/security/placement.py`'s `SecurityPlacement` had zero callers until now — clean usage of
 `qonclave.placement`, but unproven under real traffic. `create_app()` gained an optional

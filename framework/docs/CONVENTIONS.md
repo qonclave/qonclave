@@ -168,7 +168,7 @@ merge on either side of the framework/`hub/` split can tell what it's actually c
 | `mqtt_bus.py` | **stays put** — it is the demo's chosen pipe, wrapped in `PubSubTransport` | ⬜ not started |
 | `sms_bus.py` | `apps/<name>/egress/twilio_sms.py` — **leaves the framework** | ⬜ not started |
 | `server.py`'s `POST /sms` route | `apps/<name>/` — it reads Twilio's own form fields | ⬜ not started |
-| `discovery.py` | `discovery/backends/udp.py` | ⬜ not started |
+| `discovery.py` | `discovery/announce.py` + `discovery/backends/udp.py` | ✅ done — payload not yet spec-compliant, `browse.py` not touched; see below |
 | `vlm.py`, `llm.py` | `inference/local/geniex.py` | ⬜ not started |
 | `face_id/` | `inference/local/face_id/` | ⬜ not started |
 | `pose/`, `qnn_session.py` | `inference/local/` — didn't exist when this table was first written | ⬜ not started |
@@ -176,10 +176,10 @@ merge on either side of the framework/`hub/` split can tell what it's actually c
 | edge-side `edge_confidence` threshold | a `PlacementPolicy` — no longer hardcoded | ⬜ not started; `edge/` imports nothing from `qonclave.*` yet |
 | `icons.py` | **stays app-level** | n/a — correctly not lifted |
 
-`hub/` is no longer untouched: `adapter.py`, `events.py`, `transport.py`, `policy.py`, and now
-`device_registry.py` are thin shims over the SDK today, proved by `hub/tests/` running against all
-five. Everything else in the table above is still the pre-convergence, framework-agnostic
-implementation.
+`hub/` is no longer untouched: `adapter.py`, `events.py`, `transport.py`, `policy.py`,
+`device_registry.py`, and now `discovery.py` are thin shims over the SDK today, proved by
+`hub/tests/` running against all six. Everything else in the table above is still the
+pre-convergence, framework-agnostic implementation.
 
 ### `policy.py` was lifted, then reverted, then redone (2026-08-06)
 
@@ -231,6 +231,28 @@ file's historical `device_id` field name, since `/user/devices` and `network.htm
 it. RTT probing (`_ping_once`/`start_rtt_prober`) stayed hub-local — deployment-specific (a
 subprocess `ping` call needs OS privileges that don't make sense on every binding) — reading the
 new module's `probe_targets()`/`record_rtt()` seam instead of touching its internals directly.
+
+### `discovery.py`'s wire format is not yet spec-compliant, and `browse.py` wasn't touched (2026-08-06)
+
+`discovery/announce.py`'s `Origin:` comment confirmed it as this file's real target, and the
+socket-level send/receive/reply mechanics moved to `discovery/backends/udp.py` (a small
+`UDPAnnounceBackend` class) underneath it. Two things this migration deliberately did **not** do:
+
+1. **The announced payload is still the pre-spec ad-hoc shape**
+   (`{"service": "qonclave-hub", "hostname": ..., "port": ..., "version": "1.0"}`), not a real
+   `node-manifest.schema.json` document (`schema_version`, `service: "qonclave-node"`, `node_id`,
+   `node_type`, `capabilities`, ...). Edge devices already flashed against the old shape — notably
+   `edge/arduino_uno_q_00/qonclave-detect-objects-on-camera`'s discovery client, checked against
+   this exact hub earlier the same day — would break silently on a format change. `announce.start()`
+   takes `payload: dict` generically for exactly this reason: the caller supplies the shape, the
+   SDK doesn't assume it's spec-compliant yet. Fixing this is a real, cross-cutting `hub/`+`edge/`
+   change, not something to slip into a structural move.
+2. **`browse.py` was left untouched.** Its docstring ("find peers and cache their manifests with a
+   TTL") describes actively discovering and remembering *other* nodes for placement/federation
+   purposes. `hub/framework/discovery.py` never did this — it only answers probes aimed at itself
+   and records the prober as a sighting (now `discovery.registry`, not a peer-manifest cache).
+   There was nothing in the old file to port into `browse.py`; it remains a placeholder until
+   something actually needs to browse for peers.
 
 Three more of the table's rows are worth explaining.
 

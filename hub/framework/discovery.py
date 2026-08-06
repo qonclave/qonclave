@@ -1,99 +1,34 @@
 """
-discovery.py — Built-in UDP LAN Broadcaster & Discovery Responder for Qonclave Hub.
+discovery.py — Built-in UDP LAN Broadcaster & Discovery Responder for
+Qonclave Hub, now supplied by the qonclave SDK.
 
-Broadcasts a periodic JSON heartbeat on UDP port 8888 and responds to LAN discovery
-probes from Edge clients, enabling zero-configuration IP discovery without external mDNS libraries.
+The broadcast/probe-respond mechanism itself is framework, not application,
+so it now lives in `qonclave.discovery.announce` (+ the socket-level
+`qonclave.discovery.backends.udp`) and is re-exported here while `hub/`
+converges on `framework/`.
+
+The announced payload is still this file's historical ad-hoc shape
+(`{"service": "qonclave-hub", "hostname": ..., "port": ..., "version": "1.0"}`),
+not yet a real spec/v1 `node-manifest.schema.json` document — kept
+byte-compatible with edge devices already flashed against it. See
+CONVENTIONS.md's note on this migration for the follow-up.
 """
 
 from __future__ import annotations
 
-import json
-import logging
-import socket
-import threading
-import time
+from qonclave.discovery import announce
+from qonclave.discovery.backends.udp import DISCOVERY_PORT, lan_ip  # noqa: F401
 
-from . import device_registry
-
-log = logging.getLogger("qonclave.discovery")
-
-DISCOVERY_PORT = 8888
-BROADCAST_INTERVAL_SEC = 3.0
 MDNS_NAME = "qonclave-hub.local"
-
-
-def lan_ip() -> str | None:
-    """Best-effort LAN address of this hub — the IP a device on the subnet
-    would reach us at. The UDP connect never sends a packet; it only asks the
-    OS which interface would route out."""
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            s.connect(("8.8.8.8", 80))
-            return s.getsockname()[0]
-    except OSError:
-        return None
+BROADCAST_INTERVAL_SEC = announce.BROADCAST_INTERVAL_S
 
 
 def start_broadcaster(http_port: int = 8000, mdns_name: str = MDNS_NAME) -> None:
     """Starts background UDP broadcast heartbeat and probe responder thread."""
-    def _run():
-        time.sleep(1.0)  # Allow server to bind HTTP first
-        log.info("Starting built-in LAN UDP Broadcaster on port %d (advertising HTTP port %d)...", DISCOVERY_PORT, http_port)
-
-        # 1. Broadcaster socket (sends heartbeat to 255.255.255.255:8888 every 3s)
-        try:
-            bcast_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            bcast_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        except Exception as e:
-            log.warning("Could not create UDP broadcast socket: %s", e)
-            bcast_sock = None
-
-        # 2. Listener socket (listens on port 8888 for probe requests from new edge devices)
-        listen_sock = None
-        try:
-            listen_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            listen_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            listen_sock.bind(("", DISCOVERY_PORT))
-            listen_sock.settimeout(BROADCAST_INTERVAL_SEC)
-        except Exception as e:
-            log.warning("Could not bind UDP discovery listener on port %d: %s", DISCOVERY_PORT, e)
-
-        payload = json.dumps({
-            "service": "qonclave-hub",
-            "hostname": mdns_name,
-            "port": http_port,
-            "version": "1.0"
-        }).encode("utf-8")
-
-        while True:
-            # Send periodic broadcast
-            if bcast_sock:
-                try:
-                    bcast_sock.sendto(payload, ("255.255.255.255", DISCOVERY_PORT))
-                except Exception:
-                    pass
-
-            # Listen for incoming probes
-            if listen_sock:
-                try:
-                    data, addr = listen_sock.recvfrom(1024)
-                    try:
-                        msg = json.loads(data.decode("utf-8", errors="ignore"))
-                        if isinstance(msg, dict) and msg.get("probe") in ("qonclave-hub", "any"):
-                            log.debug("Received discovery probe from %s; responding with Hub info.", addr)
-                            # A probe is a device announcing itself — record it
-                            # (with its node id, if the probe carries one).
-                            device_registry.record(
-                                device_id=msg.get("node_id") or msg.get("device_id"),
-                                ip=addr[0], source="discovery")
-                            listen_sock.sendto(payload, addr)
-                    except Exception:
-                        pass
-                except socket.timeout:
-                    continue
-                except Exception:
-                    time.sleep(1.0)
-            else:
-                time.sleep(BROADCAST_INTERVAL_SEC)
-
-    threading.Thread(target=_run, name="HubLANDiscovery", daemon=True).start()
+    payload = {
+        "service": "qonclave-hub",
+        "hostname": mdns_name,
+        "port": http_port,
+        "version": "1.0",
+    }
+    announce.start(payload, port=DISCOVERY_PORT, interval_s=BROADCAST_INTERVAL_SEC)
