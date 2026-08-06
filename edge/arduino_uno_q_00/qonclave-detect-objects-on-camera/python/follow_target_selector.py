@@ -11,6 +11,13 @@ Selection order (docs/follow_known_person_plan.md):
     -> longest-established visible unknown track
     -> no target
 
+Ties within a tier (several known people at the same priority, or several
+unknowns with no priority at all) prefer the LARGER bounding box -- the
+person closest to/most prominent in frame -- over the arbitrary "been
+visible longest" fallback. Already-following stickiness still wins over box
+size, so two similarly-sized people don't cause the target to flicker back
+and forth as their boxes cross over frame to frame.
+
 The selector owns ALL grace state; motor commands must only ever come from
 tracks in the current frame. select() returns a dict whose "track" key is
 either a track dict from this frame's person_tracks or None (during grace /
@@ -37,6 +44,13 @@ FOLLOWING = "following"
 KNOWN_TARGET_MISSING = "known_target_missing"
 FALLBACK_UNKNOWN = "fallback_unknown"
 NO_TARGET = "no_target"
+
+
+def _box_area(track) -> float:
+    """Pixel area of a track's bounding box -- a proxy for "closest/most
+    prominent", used to break ties between otherwise-equal candidates."""
+    x1, y1, x2, y2 = track["bounding_box_xyxy"]
+    return max(0.0, x2 - x1) * max(0.0, y2 - y1)
 
 
 class FollowTargetSelector:
@@ -74,13 +88,14 @@ class FollowTargetSelector:
                 (tid, name, priority_map.get(name, DEFAULT_PRIORITY), track))
 
         # 2. Best known: lowest priority number, then stickiness to the
-        # current target, then most-established, then lowest id.
+        # current target, then largest bounding box (closest/most
+        # prominent), then most-established, then lowest id.
         if candidates:
             current_id = target["track_id"] if target else None
             tid, name, prio, track = min(
                 candidates,
                 key=lambda c: (c[2], 0 if c[0] == current_id else 1,
-                               -c[3]["frames_tracked"], c[0]))
+                               -_box_area(c[3]), -c[3]["frames_tracked"], c[0]))
             reason = self._following_reason(tid, prio, candidates)
             self._target = {"track_id": tid, "identity": name,
                             "priority": prio, "missing_frames": 0}
@@ -103,7 +118,8 @@ class FollowTargetSelector:
 
         if person_tracks:
             track = min(person_tracks,
-                        key=lambda t: (-t["frames_tracked"], t["track_id"]))
+                        key=lambda t: (-_box_area(t), -t["frames_tracked"],
+                                       t["track_id"]))
             tid = track["track_id"]
             status = identity_snapshot.get(tid, {}).get("status")
             reason = ("grace_expired_fallback" if expired
