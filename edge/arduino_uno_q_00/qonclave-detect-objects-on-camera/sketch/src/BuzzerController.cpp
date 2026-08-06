@@ -103,7 +103,7 @@ void BuzzerController::tone(int frequency, unsigned long duration) {
     toneDuration_ = duration;
     isBuzzing_ = true;
   } else {
-    buzzer_.tone(frequency);
+    buzzer_.tone(frequency, 0);
     isBuzzing_ = true;
     toneDuration_ = 0;
   }
@@ -128,7 +128,7 @@ void BuzzerController::playCurrentNote() {
   if (note.frequency == 0) {
     buzzer_.noTone();
   } else {
-    buzzer_.tone(note.frequency);
+    buzzer_.tone(note.frequency, note.durationMs);
   }
   toneStartTime_ = millis();
   currentNoteDuration_ = note.durationMs;
