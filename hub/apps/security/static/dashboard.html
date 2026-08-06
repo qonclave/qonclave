@@ -83,6 +83,10 @@
                   text-align:center; }
   .robot-status.ok { color:var(--ok); }
   .robot-status.err { color:var(--err); }
+  .inv-btn { border:0; border-radius:9px; background:var(--accent); color:#fff;
+    padding:10px 16px; font-size:14px; cursor:pointer; white-space:nowrap; }
+  .inv-btn:active { transform:scale(.97); }
+  .inv-btn:disabled { opacity:.45; cursor:default; }
   .recognize-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(110px,1fr));
         gap:10px; margin-top:12px; }
   .recognize-item { background:#0f1218; border:1px solid var(--border);
@@ -237,6 +241,42 @@
       <button type="button" class="robot-move robot-backward" data-direction="BACKWARD" aria-label="Move backward">▼</button>
     </div>
     <div id="robotStatus" class="robot-status" role="status" aria-live="polite">Ready</div>
+  </div>
+
+  <div class="card" style="margin-bottom:18px;" id="investigateCard">
+    <div class="robot-head">
+      <div>
+        <label>VLM investigation <span id="invStatePill" class="pill" style="margin-left:8px;font-size:11px;"></span></label>
+        <div class="sub" style="margin:0;">
+          On-demand check: asks the edge for a fresh capture and runs one VLM
+          analysis. Also fires automatically on persistent DANGER posture, or
+          by texting CAPTURE to the hub.
+        </div>
+      </div>
+      <button id="investigateBtn" type="button" class="inv-btn">Capture &amp; analyze</button>
+    </div>
+    <div id="invMsg" class="robot-status" role="status" aria-live="polite"></div>
+    <div id="invResult" style="display:none;margin-top:10px;">
+      <div class="grid">
+        <div>
+          <label>Investigation image</label>
+          <img id="invImage" alt="investigation frame" style="width:100%;border-radius:8px;" />
+        </div>
+        <div>
+          <div class="kv"><span>Classification</span><span id="invClassification">—</span></div>
+          <div class="kv"><span>Confidence</span><span id="invConfidence">—</span></div>
+          <div class="kv"><span>Trigger</span><span id="invTrigger">—</span></div>
+          <div class="kv"><span>Image source</span><span id="invSource">—</span></div>
+          <div class="kv"><span>Event ID</span><span id="invEventId">—</span></div>
+          <div class="kv"><span>SMS sent</span><span id="invSms">—</span></div>
+          <div class="kv"><span>VLM latency</span><span id="invLatency">—</span></div>
+          <div style="margin-top:12px;">
+            <label>Observations &amp; recommended action</label>
+            <div class="reason" id="invReason">—</div>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <div class="card">
@@ -659,6 +699,81 @@ async function refreshPersonTracking() {
   }
 }
 
+const INV_BUSY_STATES = ["WAITING_FOR_CAPTURE", "VLM_RUNNING"];
+
+async function refreshInvestigation() {
+  try {
+    const j = await fetch("/user/investigation").then(r => r.json());
+    if (!j.available) { $("investigateCard").style.display = "none"; return; }
+
+    const busy = INV_BUSY_STATES.includes(j.state);
+    const pill = $("invStatePill");
+    pill.textContent = j.state + (j.state === "COOLDOWN" && j.cooldown_seconds_left
+      ? ` (${Math.ceil(j.cooldown_seconds_left)}s)` : "");
+    pill.className = "pill " + (busy ? "warn" : j.state === "MONITORING" ? "ok" : "");
+    $("investigateBtn").disabled = busy;
+    if (busy) {
+      $("invMsg").className = "robot-status";
+      $("invMsg").textContent = j.state === "WAITING_FOR_CAPTURE"
+        ? `Waiting for the edge capture (${j.active_event_id || ""})…`
+        : "VLM analyzing…";
+    } else if ($("invMsg").textContent.includes("…")) {
+      $("invMsg").textContent = "";
+    }
+
+    const res = j.last_result;
+    if (!res) return;
+    $("invResult").style.display = "block";
+    const cls = res.classification || "—";
+    const clsPill = cls === "EMERGENCY_LIKELY" ? "err" : cls === "SAFE_LIKELY" ? "ok" : "warn";
+    $("invClassification").innerHTML = `<span class="pill ${clsPill}">${cls}</span>`;
+    $("invConfidence").textContent = fmtConf(res.confidence);
+    $("invTrigger").textContent = res.manual
+      ? (res.source === "manual_sms" ? "SMS (CAPTURE)" : "dashboard")
+      : `posture: ${res.posture_state || "—"} (${res.identity || "—"})`;
+    $("invSource").textContent = res.image_source === "edge_capture"
+      ? "fresh edge capture" : (res.image_source || "—");
+    $("invEventId").textContent = res.event_id || "—";
+    $("invSms").textContent = res.sms_sent ? "yes" : "no";
+    $("invLatency").textContent = res.latency_s != null ? res.latency_s + "s" : "—";
+    const obs = (res.observations || []).join("; ");
+    $("invReason").textContent =
+      (obs || (res.vlm_available ? "no observations" : "(VLM unavailable — classified UNCERTAIN)"))
+      + (res.recommended_action ? ` → ${res.recommended_action}` : "");
+    if (res.frame) {
+      const src = `/user/frames/${res.frame}`;
+      const img = $("invImage");
+      if (img.dataset.src !== src) { img.dataset.src = src; img.src = src + "?ts=" + Date.now(); }
+      img.style.display = "block";
+    } else {
+      $("invImage").style.display = "none";
+    }
+  } catch (_) { /* leave prior state */ }
+}
+
+$("investigateBtn").addEventListener("click", async () => {
+  const msg = $("invMsg");
+  $("investigateBtn").disabled = true;
+  msg.className = "robot-status";
+  msg.textContent = "Requesting capture…";
+  try {
+    const r = await fetch("/user/investigate", { method: "POST" });
+    const j = await r.json();
+    if (j.ok) {
+      msg.className = "robot-status ok";
+      msg.textContent = `Investigation ${j.event_id} started`
+        + (j.capture_requested ? " — capture requested from the edge…" : " — using buffered frame…");
+    } else {
+      msg.className = "robot-status err";
+      msg.textContent = j.error || "Could not start an investigation.";
+    }
+  } catch (e) {
+    msg.className = "robot-status err";
+    msg.textContent = "Network error — hub unreachable.";
+  }
+  refreshInvestigation();
+});
+
 async function loadPostureSettings() {
   try {
     const j = await fetch("/user/track-settings").then(r => r.json());
@@ -694,6 +809,8 @@ refreshSMS();
 setInterval(refreshSMS, 2000);
 refreshLLM();
 setInterval(refreshLLM, 2000);
+refreshInvestigation();
+setInterval(refreshInvestigation, 2000);
 // Expanding the raw-history section renders it immediately rather than
 // waiting for the next poll tick.
 $("recognizeDetails").addEventListener("toggle", () => {

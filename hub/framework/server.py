@@ -23,6 +23,9 @@ Endpoints:
     POST /track/analyze       per-track-id analysis: a single cropped-person
                                JPEG + track_id, fanned out to the requested
                                analyzers (face identification, pose estimation)
+    POST /edge/investigation  edge's answer to a capture_investigation_image
+                               MQTT command: event_id + one fresh frame,
+                               handed to the policy's investigation flow
     POST /sms                 Twilio inbound-reply webhook: runs policy
                                on_sms_reply(), optionally publishes MQTT command
 
@@ -40,6 +43,8 @@ Endpoints:
     GET  /user/recognize_activity/<id>.jpg  the crop for one of those calls
     GET  /user/tracks         per-track identity + latest pose + history length
     GET  /user/tracks/<id>.jpg  latest skeleton-annotated frame for a track
+    GET  /user/investigation  current investigation state machine snapshot
+    POST /user/investigate    dashboard trigger: fresh capture + one VLM check
 
 Design goals:
     * Runs on ANY laptop (regular x86 Windows/Linux included). Reasoning is
@@ -319,6 +324,47 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
             "permanent": entry.get("permanent", False)
         })
 
+    @app.post("/edge/investigation")
+    def edge_investigation():
+        """Device contract: deliver the investigation image requested by a
+        capture_investigation_image MQTT command. Multipart 'image' (or raw
+        image body) + 'event_id'; optional 'device_id'. The policy decides
+        whether the event is still waiting for it."""
+        client = request.remote_addr
+        handler = getattr(policy, "on_investigation_capture", None)
+        if handler is None:
+            return jsonify({"ok": False,
+                            "error": "app has no investigation flow"}), 501
+
+        event_id = (request.form.get("event_id") or request.args.get("event_id")
+                    or "").strip()
+        if not event_id:
+            return jsonify({"ok": False, "error": "missing 'event_id'"}), 400
+        events.note_device(request.form.get("device_id")
+                           or request.args.get("device_id"))
+
+        path, err = transport.save_incoming_image()
+        if err:
+            log.warning("POST /edge/investigation rejected from %s (%s): %s",
+                        client, event_id, err)
+            return jsonify({"ok": False, "error": err}), 400
+        try:
+            with open(path, "rb") as f:
+                image_bytes = f.read()
+        finally:
+            # The staging upload is short-lived; the investigation flow saves
+            # its own composite under a stable name for the dashboard.
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+        log.info("POST /edge/investigation %s from %s (%d bytes)",
+                 event_id, client, len(image_bytes))
+        result = handler(event_id, image_bytes)
+        status = 200 if result.get("ok") else 409
+        return jsonify(result), status
+
     # --- /track/analyze: per-track-id analysis (face + pose) ----------------
     @app.post("/track/analyze")
     def track_analyze():
@@ -361,6 +407,11 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
             track_id = int(raw_track_id)
         except (TypeError, ValueError):
             return jsonify({"ok": False, "error": "'track_id' must be an integer"}), 400
+
+        # With periodic /edge/event escalation off, these samples are how the
+        # hub learns which device to target with MQTT commands.
+        events.note_device(request.form.get("device_id")
+                           or request.args.get("device_id"))
 
         raw_analyzers = request.form.get("analyzers") or request.args.get("analyzers") \
             or "face,pose"
@@ -592,6 +643,28 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
         if settings is None:
             return jsonify({"ok": False, "error": "track settings unsupported"}), 404
         return jsonify({"ok": True, "settings": settings})
+
+    @app.get("/user/investigation")
+    def user_investigation():
+        """Current investigation state (MONITORING/WAITING_FOR_CAPTURE/
+        VLM_RUNNING/COOLDOWN), the active event, and the last result."""
+        status_fn = getattr(policy, "investigation_status", None)
+        if status_fn is None:
+            return jsonify({"available": False}), 404
+        return jsonify({"available": True, **status_fn()})
+
+    @app.post("/user/investigate")
+    def user_investigate():
+        """Dashboard trigger: request a fresh edge capture and one VLM check.
+        409 when an investigation is already mid-flight."""
+        trigger = getattr(policy, "trigger_investigation", None)
+        if trigger is None:
+            return jsonify({"ok": False,
+                            "error": "app has no investigation flow"}), 501
+        result = trigger()
+        log.info("POST /user/investigate from %s -> %s",
+                 request.remote_addr, result)
+        return jsonify(result), 200 if result.get("ok") else 409
 
     @app.get("/user/tracks/<int:track_id>.jpg")
     def user_track_frame(track_id):

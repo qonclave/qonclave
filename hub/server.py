@@ -67,7 +67,7 @@ mqtt = MQTTBus(host=MQTT_HOST, port=MQTT_PORT, enabled=MQTT_ENABLED)
 face_id = FaceIdentityBackend()
 pose = PoseBackend()
 sms = SMSBus()
-policy = SecurityPolicy(vlm, face_id, sms, llm)
+policy = SecurityPolicy(vlm, face_id, sms, llm, mqtt=mqtt)
 app = create_app(policy=policy, vlm=vlm, mqtt=mqtt, sms=sms, face_id=face_id, static_dir=STATIC_DIR, llm=llm, pose=pose)
 
 

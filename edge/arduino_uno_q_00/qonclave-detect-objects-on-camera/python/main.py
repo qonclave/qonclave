@@ -462,6 +462,13 @@ if green_bmp:
 
 # --- Hub event forwarding: notify the Qonclave hub when a person is detected ---
 
+# Periodic person-detected escalation to POST /edge/event. Each of those
+# escalations ran the hub's VLM, so with a person in frame the VLM ran every
+# HUB_EVENT_HYSTERESIS_SEC forever. Default OFF: the VLM is now event-driven --
+# the hub opens an investigation (capture_investigation_image command -> one
+# VLM call) only when the posture pipeline reports persistent
+# SUSPICIOUS/DANGER. Set HUB_EVENT_ENABLED=1 to restore the old behaviour.
+HUB_EVENT_ENABLED = os.environ.get("HUB_EVENT_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
 PERSON_CONFIDENCE_THRESHOLD = float(os.environ.get("PERSON_CONFIDENCE_THRESHOLD", "0.7"))
 HUB_EVENT_HYSTERESIS_SEC = float(os.environ.get("HUB_EVENT_HYSTERESIS_SEC", "10"))
 HUB_EVENT_TIMEOUT_SEC = float(os.environ.get("HUB_EVENT_TIMEOUT_SEC", "5"))
@@ -514,6 +521,7 @@ analysis_client = AnalysisClient(
   pose_interval_sec=POSE_SAMPLE_INTERVAL_SEC,
   analyzers=TRACK_ANALYZERS,
   logger=log,
+  device_id=DEVICE_ID,
 )
 
 # Track_ids from the *current* frame, so a /track/analyze response that
@@ -656,7 +664,7 @@ def _post_person_event(confidence: float, frame: bytes):
 
 
 def maybe_notify_hub(detections: dict, frame: bytes | None):
-  if not frame:
+  if not HUB_EVENT_ENABLED or not frame:
     return
 
   person_detections = detections.get("person", [])
@@ -822,9 +830,55 @@ detection_stream.on_detect_all(send_detections_to_ui)
 
 # --- Hub->edge command channel: connect to the MQTT broker and listen for
 # commands the hub pushes to this device.
+
+def _capture_investigation_image(command: dict):
+  """Answer a capture_investigation_image command: grab the freshest raw
+  camera frame (full resolution, not a person crop) and POST it back to the
+  hub's /edge/investigation with the event_id. For now this is a simple
+  fresh capture; aligning/approaching the person and tilting a servo before
+  capturing slots in here later. Failures are logged only -- the hub falls
+  back to its buffered evidence frames after its capture timeout."""
+  event_id = str(command.get("event_id") or "")
+  with _camera_frame_cond:
+    frame = _camera_frame
+  jpeg = encode_jpeg(frame) if frame is not None else None
+  if jpeg is None:
+    log.warning(f"Investigation {event_id}: no camera frame available to capture")
+    return
+  try:
+    url = f"{get_hub_base_url()}/edge/investigation"
+    resp = requests.post(
+      url,
+      data={
+        "event_id": event_id,
+        "device_id": DEVICE_ID,
+        "status": "capture_complete",
+        "track_id": str(command.get("track_id") or ""),
+      },
+      files={"image": (f"{event_id}.jpg", jpeg, "image/jpeg")},
+      timeout=HUB_EVENT_TIMEOUT_SEC,
+    )
+    log.info(f"Investigation {event_id}: capture sent -> {resp.status_code} {resp.text[:200]}")
+  except requests.RequestException as e:
+    log.error(f"Investigation {event_id}: failed to send capture to {url}: {e}")
+
+
 def _handle_hub_command(command: dict):
   log.info(f"Received hub command: {command}")
-  if not isinstance(command, dict) or command.get("type") != "robot_move":
+  if not isinstance(command, dict):
+    log.warning(f"Ignoring unsupported hub command: {command}")
+    return
+
+  command_type = command.get("type") or command.get("command")
+  if command_type == "capture_investigation_image":
+    # Off-thread: the MQTT callback must not block on camera + HTTP work.
+    threading.Thread(
+      target=_capture_investigation_image, args=(command,),
+      name="InvestigationCapture", daemon=True,
+    ).start()
+    return
+
+  if command_type != "robot_move":
     log.warning(f"Ignoring unsupported hub command: {command}")
     return
 

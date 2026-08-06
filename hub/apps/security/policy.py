@@ -19,6 +19,7 @@ from framework.vlm import VLMBackend
 from framework.llm import LLMBackend
 from framework.sms_bus import SMSBus
 from framework.face_id.identity import FaceIdentityBackend
+from .investigation import InvestigationManager
 from .posture import PostureStateMachine
 
 log = logging.getLogger("qonclave.hub")
@@ -69,12 +70,20 @@ class SecurityPolicy(Policy):
     name = "security"
 
     def __init__(self, vlm: VLMBackend, face_id: FaceIdentityBackend | None = None,
-                 sms: SMSBus | None = None, llm: LLMBackend | None = None):
+                 sms: SMSBus | None = None, llm: LLMBackend | None = None,
+                 mqtt=None):
         self.vlm = vlm
         self.face_id = face_id
         self.sms = sms
         self.llm = llm
         self.posture = PostureStateMachine()
+        # Event-driven VLM: posture DANGER/SUSPICIOUS opens one investigation
+        # (capture request -> single VLM call -> at most one SMS) instead of
+        # the VLM running on every escalated frame.
+        self.investigation = InvestigationManager(vlm, sms, mqtt)
+        # Outcome of the most recent SMS "CAPTURE" trigger, shared between
+        # on_sms_reply() and reply_for_sms() (called back-to-back).
+        self._last_capture_request: tuple[str | None, dict] = (None, {})
         # Last verified verdict stored so it can be injected into LLM context
         # for richer SMS reply reasoning.
         self._last_verdict: Verdict | None = None
@@ -90,7 +99,24 @@ class SecurityPolicy(Policy):
         # never enter the posture state machine.
         if not face or face.get("status") != "known" or not face.get("identity"):
             return None
-        return self.posture.analyze(track_id, image_bytes, face, pose)
+        analysis = self.posture.analyze(track_id, image_bytes, face, pose)
+        if analysis is not None:
+            status = self.investigation.observe(track_id, image_bytes, analysis)
+            if status is not None:
+                analysis["investigation"] = status
+        return analysis
+
+    def on_investigation_capture(self, event_id: str, image_bytes: bytes) -> dict:
+        """The edge's answer to a capture_investigation_image command."""
+        return self.investigation.on_capture(event_id, image_bytes)
+
+    def investigation_status(self) -> dict:
+        return self.investigation.snapshot()
+
+    def trigger_investigation(self) -> dict:
+        """Dashboard button: capture a fresh frame and run one VLM check.
+        The result lands in investigation_status() for the dashboard to show."""
+        return self.investigation.trigger_manual(source="dashboard")
 
     def track_settings(self):
         return self.posture.settings_dict()
@@ -353,6 +379,16 @@ class SecurityPolicy(Policy):
             log.info("SMS reply DISPATCH from %s — publishing dispatch command", sender)
             return {"type": "dispatch", "source": "sms_reply", "requested_by": sender}
 
+        if keyword == "CAPTURE":
+            # Operator-requested VLM check: the capture command is published
+            # inside trigger_manual (not via the framework's command path),
+            # and the VLM reasoning is texted back to the sender when done.
+            result = self.investigation.trigger_manual(
+                source="manual_sms", notify_recipient=sender)
+            log.info("SMS reply CAPTURE from %s -> %s", sender, result)
+            self._last_capture_request = (sender, result)
+            return None
+
         # Unrecognised keyword — ask the LLM.
         parsed = self._llm_interpret_reply(sender, body)
         command = parsed.get("mqtt_command")
@@ -369,6 +405,16 @@ class SecurityPolicy(Policy):
         # Keywords are handled entirely in on_sms_reply; no LLM reply needed.
         if keyword in ("STOP", "DISPATCH"):
             return None
+
+        if keyword == "CAPTURE":
+            # Immediate ack; the VLM reasoning itself arrives as a second SMS
+            # once the investigation finishes (see InvestigationManager._finish).
+            _, result = getattr(self, "_last_capture_request", (None, {}))
+            if result.get("ok"):
+                return ("Capture requested — analyzing the scene now. "
+                        "I'll text you the result shortly.")
+            return (f"Cannot run a capture right now: "
+                    f"{result.get('error', 'investigation unavailable')}.")
 
         parsed = self._llm_interpret_reply(sender, body)
         reply = parsed.get("reply")

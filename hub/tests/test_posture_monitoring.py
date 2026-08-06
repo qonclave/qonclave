@@ -129,8 +129,16 @@ def test_security_policy_only_tracks_known_people():
             self.calls.append(args)
             return {"state": "NORMAL"}
 
+    class IdleInvestigation:
+        observed = []
+
+        def observe(self, *args):
+            self.observed.append(args)
+            return None
+
     policy = SecurityPolicy.__new__(SecurityPolicy)
     policy.posture = Recorder()
+    policy.investigation = IdleInvestigation()
     pose = {"status": "ok", "keypoints": [[0, 0, 1]] * 17}
     assert policy.analyze_track(1, b"image", {"status": "unknown"}, pose) is None
     assert policy.analyze_track(2, b"image", None, pose) is None

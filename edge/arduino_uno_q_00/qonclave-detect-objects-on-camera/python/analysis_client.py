@@ -35,8 +35,12 @@ ANALYZERS = ("face", "pose")
 class AnalysisClient:
     def __init__(self, get_hub_base_url, timeout_sec: float = 5.0,
                  face_interval_sec: float = 0.5, pose_interval_sec: float = 0.25,
-                 analyzers=ANALYZERS, logger=None):
+                 analyzers=ANALYZERS, logger=None, device_id=None):
         self._get_hub_base_url = get_hub_base_url
+        # Sent with every request so the hub knows which device to push MQTT
+        # commands (e.g. capture_investigation_image) back to, now that the
+        # periodic /edge/event escalation no longer announces it.
+        self.device_id = device_id
         self.timeout_sec = timeout_sec
         self.intervals = {"face": face_interval_sec, "pose": pose_interval_sec}
         self.analyzers = tuple(a for a in ANALYZERS if a in analyzers)
@@ -114,6 +118,8 @@ class AnalysisClient:
         try:
             url = f"{self._get_hub_base_url()}/track/analyze"
             data = {"track_id": str(track_id), "analyzers": ",".join(analyzer_list)}
+            if self.device_id:
+                data["device_id"] = str(self.device_id)
             if person_box is not None:
                 data["person_box"] = ",".join(str(int(v)) for v in person_box)
             if known_identity:
