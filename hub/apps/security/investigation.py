@@ -51,8 +51,9 @@ INVESTIGATE_PROMPT_TEMPLATE = (
     "exactly this form:\n"
     '{{"classification": "EMERGENCY_LIKELY" or "SAFE_LIKELY" or "UNCERTAIN", '
     '"confidence": a number from 0 to 1, '
-    '"observations": ["up to 4 short factual observations about the person and scene"], '
+    '"observations": ["at most 3 observations, each under 10 words"], '
     '"recommended_action": "one short sentence for the human operator"}}\n'
+    "Be terse: every observation a short phrase, not a sentence. "
     "Use EMERGENCY_LIKELY only if the person appears collapsed, unresponsive, "
     "or in visible distress; SAFE_LIKELY if they appear to be resting, "
     "exercising, or otherwise fine; UNCERTAIN if you cannot tell."
@@ -66,8 +67,9 @@ MANUAL_INVESTIGATE_PROMPT = (
     "other text, of exactly this form:\n"
     '{{"classification": "EMERGENCY_LIKELY" or "SAFE_LIKELY" or "UNCERTAIN", '
     '"confidence": a number from 0 to 1, '
-    '"observations": ["up to 4 short factual observations about any people and the scene"], '
+    '"observations": ["at most 3 observations, each under 10 words"], '
     '"recommended_action": "one short sentence for the human operator"}}\n'
+    "Be terse: every observation a short phrase, not a sentence. "
     "Use EMERGENCY_LIKELY only if someone appears collapsed, unresponsive, or "
     "in visible distress; SAFE_LIKELY if the scene appears fine (including an "
     "empty room); UNCERTAIN if you cannot tell."
