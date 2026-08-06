@@ -190,6 +190,8 @@
       <label>Abnormal seconds<input id="postureAbnormal" type="number" min="0.1" step="0.5"></label>
       <label>Motionless seconds<input id="postureMotionless" type="number" min="0.1" step="0.5"></label>
       <label>Movement threshold<input id="postureMovement" type="number" min="0.001" step="0.005"></label>
+      <label>Tilt angle (full)<input id="postureAngle" type="number" min="1" step="5"></label>
+      <label>Tilt angle (partial)<input id="posturePartialAngle" type="number" min="1" step="5"></label>
       <button id="postureSave" type="button">Apply</button>
       <span id="postureSettingsMsg" class="sub" style="margin:0"></span>
     </div>
@@ -739,9 +741,7 @@ async function refreshPersonTracking() {
           <span>State <strong class="posture-state ${posture.state}">${posture.state}</strong></span>
           <span>Duration <strong>${posture.duration_seconds.toFixed(1)} sec</strong></span>`;
       } else if (debug) {
-        debug.innerHTML = status === "known"
-          ? '<span style="grid-column:1/-1">Waiting for a valid pose sample…</span>'
-          : '<span style="grid-column:1/-1">Posture tracking starts after identity is known.</span>';
+        debug.innerHTML = '<span style="grid-column:1/-1">Waiting for a valid pose sample…</span>';
       }
 
       // Inset the crop this track was identified from, once there is one.
@@ -840,6 +840,8 @@ async function loadPostureSettings() {
     $("postureAbnormal").value = j.settings.abnormal_seconds;
     $("postureMotionless").value = j.settings.motionless_seconds;
     $("postureMovement").value = j.settings.movement_threshold;
+    $("postureAngle").value = j.settings.horizontal_angle;
+    $("posturePartialAngle").value = j.settings.partial_angle;
   } catch (_) {}
 }
 
@@ -848,6 +850,8 @@ $("postureSave").addEventListener("click", async () => {
     abnormal_seconds: Number($("postureAbnormal").value),
     motionless_seconds: Number($("postureMotionless").value),
     movement_threshold: Number($("postureMovement").value),
+    horizontal_angle: Number($("postureAngle").value),
+    partial_angle: Number($("posturePartialAngle").value),
   };
   const msg = $("postureSettingsMsg");
   try {

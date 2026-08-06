@@ -18,9 +18,12 @@ A posture sample whose state is SUSPICIOUS/DANGER and whose abnormal timer
        posture context folded into the prompt,
     4. the classification routes at most ONE SMS
        (EMERGENCY_LIKELY -> emergency, UNCERTAIN -> manual check,
-       SAFE_LIKELY -> none),
-    5. COOLDOWN suppresses new events for ``cooldown_seconds`` AND until the
-       person has been observed NORMAL again.
+       SAFE_LIKELY -> none, but only when the VLM is confident about it --
+       see SAFE_MIN_CONFIDENCE),
+    5. COOLDOWN suppresses new events for ``cooldown_seconds``; when it
+       elapses, monitoring re-arms unconditionally -- a person observed
+       still SUSPICIOUS/DANGER is investigated again immediately, so a
+       single SAFE_LIKELY misread can never silence monitoring for good.
 
 The VLM's verdict never diagnoses a medical condition: it only picks one of
 three coarse classifications, and the human recipient acts on the SMS.
@@ -74,6 +77,12 @@ MANUAL_INVESTIGATE_PROMPT = (
 )
 
 CLASSIFICATIONS = ("EMERGENCY_LIKELY", "SAFE_LIKELY", "UNCERTAIN")
+
+# SAFE_LIKELY is the only verdict that stays silent, so it must be a
+# confident one: below this the automatic event is downgraded to UNCERTAIN
+# and a human is asked to look. A needless "please check" text is cheap;
+# staying quiet about a real collapse is not.
+SAFE_MIN_CONFIDENCE = 0.6
 
 # Investigation state machine states.
 MONITORING = "MONITORING"
@@ -146,8 +155,12 @@ class InvestigationManager:
         # uses real timers/threads so HTTP callers never wait on the VLM.
         self._spawn_threads = spawn_threads
 
+        # 2s (down from 5): the posture machine already required its own
+        # abnormal_seconds before reporting SUSPICIOUS, so a long second wait
+        # here just delays the VLM -- the one component that can actually
+        # tell a collapse from a nap. Confirming early costs a VLM call.
         self.trigger_persistence_seconds = _env_float(
-            "QONCLAVE_INVESTIGATION_PERSISTENCE_SEC", 5.0)
+            "QONCLAVE_INVESTIGATION_PERSISTENCE_SEC", 2.0)
         self.capture_timeout_seconds = _env_float(
             "QONCLAVE_INVESTIGATION_CAPTURE_TIMEOUT_SEC", 10.0)
         self.cooldown_seconds = _env_float(
@@ -193,12 +206,19 @@ class InvestigationManager:
                 buf.append((now, image_bytes))
 
             if self.state == COOLDOWN:
-                if now >= self._cooldown_until and state == "NORMAL":
-                    log.info("Investigation cooldown over and %s back to NORMAL "
-                             "-> MONITORING", identity)
-                    self.state = MONITORING
-                    self.active_event = None
-                return self._status_locked()
+                if now < self._cooldown_until:
+                    return self._status_locked()
+                # Cooldown elapsed: back to MONITORING no matter what the
+                # posture says. If the person is STILL abnormal, the branch
+                # below opens a fresh investigation right away -- one
+                # SAFE_LIKELY misread (or an unanswered UNCERTAIN SMS) must
+                # never permanently silence monitoring while someone is
+                # still down. A duplicate check is recoverable; a missed
+                # collapse is not.
+                log.info("Investigation cooldown over (%s is %s) -> MONITORING",
+                         identity, state)
+                self.state = MONITORING
+                self.active_event = None
 
             if self.state != MONITORING or self.active_event is not None:
                 # An investigation is already active for this or another
@@ -421,26 +441,43 @@ class InvestigationManager:
 
     def _run_vlm(self, event, image_bytes, source):
         event_id = event["event_id"]
-        result = {"available": False, "parsed": {}, "error": "no frame available"}
-        frame_name = None
-        if image_bytes:
-            composite = compose_investigation_image(image_bytes, event.get("history") or [])
-            frame_name = f"investigation_{event_id}.jpg"
-            path = os.path.join(transport.UPLOAD_DIR, frame_name)
-            try:
-                with open(path, "wb") as f:
-                    f.write(composite)
-            except OSError:
-                log.exception("Investigation %s: failed to save frame", event_id)
-                frame_name = None
-            if frame_name:
-                self.vlm_calls += 1
-                result = self.vlm.structured_query(
-                    path, self._prompt_for(event), INVESTIGATE_MAX_NEW_TOKENS,
-                    json_mode=True, temperature=0.1,
-                )
+        try:
+            result = {"available": False, "parsed": {}, "error": "no frame available"}
+            frame_name = None
+            if image_bytes:
+                composite = compose_investigation_image(image_bytes, event.get("history") or [])
+                frame_name = f"investigation_{event_id}.jpg"
+                path = os.path.join(transport.UPLOAD_DIR, frame_name)
+                try:
+                    with open(path, "wb") as f:
+                        f.write(composite)
+                except OSError:
+                    log.exception("Investigation %s: failed to save frame", event_id)
+                    frame_name = None
+                if frame_name:
+                    self.vlm_calls += 1
+                    result = self.vlm.structured_query(
+                        path, self._prompt_for(event), INVESTIGATE_MAX_NEW_TOKENS,
+                        json_mode=True, temperature=0.1,
+                    )
 
-        self._finish(event, result, source, frame_name)
+            self._finish(event, result, source, frame_name)
+        except Exception:
+            # An unexpected crash must not strand the machine in VLM_RUNNING:
+            # that would block every future investigation (permanent silence,
+            # the one failure mode this system can't afford). Enter COOLDOWN,
+            # which re-arms and retries if the person is still abnormal.
+            log.exception("Investigation %s: crashed mid-run; entering "
+                          "cooldown so monitoring re-arms", event_id)
+            with self._lock:
+                self.vlm_in_progress = False
+                self.active_event = None
+                if event.get("manual"):
+                    self.state = (COOLDOWN if event.get("resume_cooldown")
+                                  else MONITORING)
+                else:
+                    self.state = COOLDOWN
+                    self._cooldown_until = self._clock() + self.cooldown_seconds
 
     # --- result handling ----------------------------------------------------
 
@@ -478,6 +515,20 @@ class InvestigationManager:
                 if not result.get("available") and not frame_name:
                     message = ("VLM check failed: no camera image could be "
                                "captured. Please check the camera feed directly.")
+        elif (classification == "SAFE_LIKELY"
+                and (confidence is None or confidence < SAFE_MIN_CONFIDENCE)):
+            # A hedged "they look fine" is not evidence that they are. The
+            # posture machine already saw a persistent abnormal state, so an
+            # unconvinced SAFE_LIKELY gets a human to look rather than being
+            # the sole reason nobody is told.
+            log.info("Investigation %s: SAFE_LIKELY at confidence %s < %s "
+                     "-> escalating to a manual check", event_id, confidence,
+                     SAFE_MIN_CONFIDENCE)
+            classification = "UNCERTAIN"
+            message = (f"Please check on {identity}: prolonged "
+                       f"{event['posture_state'].lower()} posture detected and "
+                       "automatic verification was not confident. "
+                       f"{recommended}").strip()
         elif classification == "EMERGENCY_LIKELY":
             message = (f"EMERGENCY: {identity} may need help "
                        f"({event['reason'].replace('_', ' ')}). "

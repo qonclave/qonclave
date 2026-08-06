@@ -5,7 +5,8 @@ Success criteria under test (see apps/security/investigation.py):
   * one persistent DANGER -> exactly one event, one capture command, one VLM
     call, at most one SMS
   * capture timeout -> the VLM still runs once, on a buffered frame
-  * COOLDOWN suppresses new events until it elapses AND the person is NORMAL
+  * COOLDOWN suppresses new events while it lasts; a person STILL abnormal
+    when it elapses is re-investigated (never suppressed forever)
 """
 
 import os
@@ -102,7 +103,7 @@ def test_normal_posture_never_calls_vlm(tmp_path, monkeypatch):
 
 def test_danger_below_persistence_does_not_trigger(tmp_path, monkeypatch):
     manager, clock, vlm, sms, mqtt = make_manager(tmp_path, monkeypatch)
-    manager.observe(4, b"jpeg", analysis(abnormal=4.9))
+    manager.observe(4, b"jpeg", analysis(abnormal=1.9))
     assert manager.snapshot()["state"] == "MONITORING"
     assert mqtt.published == []
 
@@ -170,25 +171,36 @@ def test_publish_failure_uses_buffered_frame_immediately(tmp_path, monkeypatch):
     assert manager.snapshot()["last_result"]["image_source"] == "buffered_frame"
 
 
-def test_cooldown_requires_normal_before_reset(tmp_path, monkeypatch):
+def test_cooldown_reinvestigates_while_still_abnormal(tmp_path, monkeypatch):
     manager, clock, vlm, sms, mqtt = make_manager(tmp_path, monkeypatch)
     manager.observe(4, b"jpeg", analysis())
     manager.on_capture("event_001", b"frame")
     assert manager.snapshot()["state"] == "COOLDOWN"
 
-    # Still DANGER during cooldown: no new event.
+    # Still DANGER during cooldown: no new event yet.
     clock.now += 5.0
     manager.observe(4, b"jpeg", analysis())
     assert len(mqtt.published) == 1
 
-    # Cooldown elapsed but the person is STILL in DANGER: keep suppressing.
+    # Cooldown elapsed and the person is STILL in DANGER: a fresh
+    # investigation opens immediately. One SAFE_LIKELY misread (or an
+    # unanswered UNCERTAIN SMS) must never silence monitoring for good
+    # while someone is down.
     clock.now += manager.cooldown_seconds
     manager.observe(4, b"jpeg", analysis())
+    assert manager.snapshot()["state"] == "WAITING_FOR_CAPTURE"
+    assert len(mqtt.published) == 2
+    assert mqtt.published[1][1]["event_id"] == "event_002"
+
+
+def test_cooldown_resets_once_person_normal(tmp_path, monkeypatch):
+    manager, clock, vlm, sms, mqtt = make_manager(tmp_path, monkeypatch)
+    manager.observe(4, b"jpeg", analysis())
+    manager.on_capture("event_001", b"frame")
     assert manager.snapshot()["state"] == "COOLDOWN"
-    assert len(mqtt.published) == 1
 
     # Back to NORMAL after the cooldown: fully reset...
-    clock.now += 1.0
+    clock.now += manager.cooldown_seconds + 1.0
     manager.observe(4, b"jpeg", analysis(state="NORMAL", abnormal=0.0))
     assert manager.snapshot()["state"] == "MONITORING"
 
@@ -227,6 +239,55 @@ def test_safe_likely_sends_no_sms(tmp_path, monkeypatch):
     assert sms.sent == []
     assert manager.snapshot()["last_result"]["classification"] == "SAFE_LIKELY"
     assert manager.snapshot()["state"] == "COOLDOWN"
+
+
+def test_low_confidence_safe_likely_still_asks_for_a_check(tmp_path, monkeypatch):
+    # A hedged "looks fine" is not evidence that someone is fine. Posture
+    # already saw a persistent DANGER, so an unconvinced SAFE_LIKELY must
+    # not be the sole reason nobody is told.
+    vlm = FakeVLM(parsed={"classification": "SAFE_LIKELY", "confidence": 0.35,
+                          "observations": ["person is seated, hard to tell"],
+                          "recommended_action": ""})
+    manager, clock, _, sms, _ = make_manager(tmp_path, monkeypatch, vlm=vlm)
+    manager.observe(4, b"jpeg", analysis())
+    manager.on_capture("event_001", b"frame")
+
+    assert manager.snapshot()["last_result"]["classification"] == "UNCERTAIN"
+    assert len(sms.sent) == 1
+    assert "check on Jogendra" in sms.sent[0].message
+
+    # A missing confidence field is treated the same way.
+    vlm2 = FakeVLM(parsed={"classification": "SAFE_LIKELY",
+                           "observations": [], "recommended_action": ""})
+    manager2, _, _, sms2, _ = make_manager(tmp_path, monkeypatch, vlm=vlm2)
+    manager2.observe(4, b"jpeg", analysis())
+    manager2.on_capture("event_001", b"frame")
+    assert manager2.snapshot()["last_result"]["classification"] == "UNCERTAIN"
+    assert len(sms2.sent) == 1
+
+
+def test_vlm_crash_does_not_strand_the_state_machine(tmp_path, monkeypatch):
+    # A crash mid-investigation must never leave the machine in VLM_RUNNING:
+    # that blocks every future investigation, which is permanent silence --
+    # the one failure mode this system cannot afford.
+    class ExplodingVLM(FakeVLM):
+        def structured_query(self, *a, **kw):
+            raise RuntimeError("boom")
+
+    manager, clock, _, sms, mqtt = make_manager(tmp_path, monkeypatch,
+                                                vlm=ExplodingVLM())
+    manager.observe(4, b"jpeg", analysis())
+    manager.on_capture("event_001", b"frame")
+
+    snap = manager.snapshot()
+    assert snap["state"] == "COOLDOWN"
+    assert snap["vlm_in_progress"] is False
+
+    # ...and once the cooldown elapses, a still-abnormal person is retried.
+    clock.now += manager.cooldown_seconds + 1.0
+    manager.observe(4, b"jpeg", analysis())
+    assert manager.snapshot()["state"] == "WAITING_FOR_CAPTURE"
+    assert len(mqtt.published) == 2
 
 
 def test_dashboard_manual_trigger_presents_result_without_sms(tmp_path, monkeypatch):

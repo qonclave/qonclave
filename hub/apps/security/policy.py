@@ -99,11 +99,14 @@ class SecurityPolicy(Policy):
         self._llm_cache_lock = threading.Lock()
 
     def analyze_track(self, track_id, image_bytes, face, pose):
-        # Posture monitoring is deliberately limited to enrolled identities.
-        # Unknown/no-face tracks remain visible in the security dashboard but
-        # never enter the posture state machine.
-        if not face or face.get("status") != "known" or not face.get("identity"):
-            return None
+        # Posture runs for EVERY track with a usable pose, known or not. It
+        # used to be gated on a resolved identity, but a fall is exactly the
+        # case where the face stops being recognizable (turned away, facing
+        # the floor) and the tracker mints fresh track ids mid-collapse --
+        # observed live: a slump left every new track no_face, so posture
+        # monitoring switched off at the moment it mattered. Known people
+        # still get a stable identity key inside the state machine, so their
+        # abnormal/motionless timers survive tracker churn.
         analysis = self.posture.analyze(track_id, image_bytes, face, pose)
         if analysis is not None:
             status = self.investigation.observe(track_id, image_bytes, analysis)
