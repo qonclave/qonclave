@@ -409,6 +409,7 @@ def _execute_robot_command(message):
   direction = str(message.get("direction", "")).strip().upper()
   if direction == "STOP":
     Bridge.call("stop_robot")
+    person_centering.note_motion()
     return {"ok": True, "direction": "STOP"}
 
   if direction not in ROBOT_DIRECTIONS:
@@ -421,6 +422,15 @@ def _execute_robot_command(message):
   started = Bridge.call("move_robot", direction, magnitude)
   if started is False:
     raise RuntimeError("Orientation sensor is not ready")
+  # Blank centering for this move's estimated duration plus the pipeline
+  # latency window, whatever the source (auto-centering, web UI, hub MQTT).
+  # Small turns finish between detection callbacks, so waiting to *observe*
+  # robot_motion_active would miss exactly the moves that cause ping-pong.
+  if direction in {"LEFT", "RIGHT"}:
+    est_duration = magnitude * person_centering.estimated_ms_per_degree / 1000.0
+  else:
+    est_duration = float(magnitude)  # FORWARD/BACKWARD magnitude is seconds
+  person_centering.note_motion(est_duration)
   return {
     "ok": True,
     "direction": direction,
@@ -499,6 +509,11 @@ person_centering = PersonCenteringController(
   minimum_interval_seconds=float(os.environ.get("PERSON_CENTER_MIN_INTERVAL_SEC", "0.75")),
   estimated_ms_per_degree=float(os.environ.get("PERSON_CENTER_ESTIMATED_MS_PER_DEGREE", "12")),
   settle_seconds=float(os.environ.get("PERSON_CENTER_SETTLE_SEC", "0.35")),
+  # Bearings arriving within this window after any robot motion ends come from
+  # frames captured while the camera was still moving (detection pipeline
+  # latency is ~1s on this board) and are discarded rather than acted on.
+  post_motion_blank_seconds=float(os.environ.get("PERSON_CENTER_POST_MOTION_BLANK_SEC", "1.5")),
+  turn_gain=float(os.environ.get("PERSON_CENTER_TURN_GAIN", "0.7")),
 )
 
 # --- Per-track analysis: sample each tracked person's crop to the hub's
@@ -784,9 +799,14 @@ def send_detections_to_ui(detections: dict, frame: bytes | None = None):
 
     try:
       motion_active = Bridge.call("robot_motion_active")
-      turn = None if motion_active else person_centering.command_for(
-        angle_to_center, tracked["track_id"]
-      )
+      if motion_active:
+        # Backup for moves note_motion() didn't see start (e.g. a long manual
+        # move still running): keep extending the blank window while the MCU
+        # reports motion, so bearings from these frames are also discarded.
+        person_centering.note_motion()
+        turn = None
+      else:
+        turn = person_centering.command_for(angle_to_center, tracked["track_id"])
       if turn:
         status = _execute_robot_command({
           "direction": turn.direction,
