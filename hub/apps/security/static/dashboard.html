@@ -218,12 +218,19 @@
       Add a photo to the known-faces database. The next inference run will
       recognize this person by name. The roster below also sets each person's
       follow priority (1 = highest; the robot follows the lowest number).
+      Tick <em>additional photo</em> to keep an existing person's photos and add
+      another angle — recognition uses the best match across them, so extra
+      angles only help when someone turns away or slumps.
     </div>
     <form id="enrollForm" class="enroll">
       <input id="enrollName" type="text" placeholder="Person's name (e.g. Jane Doe)"
              autocomplete="off" />
       <input id="enrollFile" type="file"
              accept=".jpg,.jpeg,.png,.webp,image/*" />
+      <label class="sub" style="margin:0;display:flex;align-items:center;gap:6px;">
+        <input id="enrollAdditional" type="checkbox" />
+        additional photo (same person)
+      </label>
       <button id="enrollBtn" type="submit">Enroll</button>
     </form>
     <div id="enrollMsg" class="enroll-msg"></div>
@@ -476,6 +483,7 @@ async function enroll(ev) {
   const fd = new FormData();
   fd.append("name", name);
   fd.append("image", file);
+  if ($("enrollAdditional").checked) fd.append("additional", "1");
 
   $("enrollBtn").disabled = true;
   msg.className = "enroll-msg"; msg.textContent = "Enrolling…";
@@ -484,8 +492,10 @@ async function enroll(ev) {
     const j = await r.json();
     if (r.ok && j.ok) {
       msg.className = "enroll-msg ok";
-      msg.textContent = `Enrolled "${j.name}"${j.replaced ? " (replaced existing photo)" : ""}. Future inference will recognize them.`;
+      const photos = j.photo_count > 1 ? ` — ${j.photo_count} photos on file` : "";
+      msg.textContent = `Enrolled "${j.name}"${j.replaced ? " (replaced existing photo)" : ""}${photos}. Future inference will recognize them.`;
       $("enrollName").value = ""; $("enrollFile").value = "";
+      $("enrollAdditional").checked = false;
       loadKnownFaces();
     } else {
       msg.className = "enroll-msg err";

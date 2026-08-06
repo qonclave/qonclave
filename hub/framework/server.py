@@ -825,7 +825,12 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
     @app.post("/user/known_faces")
     def enroll_known_face():
         """Add a known face: multipart 'image' + a 'name' field. The next
-        inference run will match against the newly enrolled person."""
+        inference run will match against the newly enrolled person.
+
+        Optional 'additional' field (1/true/yes/on): keep this person's
+        existing photos and add this one as another angle, instead of
+        replacing them. Recognition scores the best match across a person's
+        photos, so an extra angle can only help."""
         client = request.remote_addr
         if face_id is None:
             return jsonify({"ok": False, "error": "face ID not enabled on this hub"}), 501
@@ -834,12 +839,16 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
         if not name:
             return jsonify({"ok": False, "error": "missing 'name'"}), 400
 
+        raw_additional = (request.form.get("additional")
+                          or request.args.get("additional") or "")
+        additional = raw_additional.strip().lower() in ("1", "true", "yes", "on")
+
         path, err = transport.save_incoming_image()
         if err:
             log.warning("POST /user/known_faces rejected from %s: %s", client, err)
             return jsonify({"ok": False, "error": err}), 400
 
-        result = face_id.enroll(name, path)
+        result = face_id.enroll(name, path, additional=additional)
         # The uploaded copy in uploads/ was only a staging file; enroll() has
         # written its own copy into known_faces/, so drop the staging one.
         try:
