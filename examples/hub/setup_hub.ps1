@@ -40,7 +40,7 @@
       8. Runs hub/server.py.
 
     Usage (from an elevated or normal PowerShell prompt, inside the checkout):
-        powershell -ExecutionPolicy Bypass -File .\hub\setup_hub.ps1
+        powershell -ExecutionPolicy Bypass -File .\examples\hub\setup_hub.ps1
 
       -NoRun            stop after installing requirements; don't start the server
       -Warmup           pre-load the VLM model at server start (default: off, loads lazily on first request)
@@ -67,8 +67,8 @@
                         setup scripts it calls) through Qualcomm's internal
                         devpi mirror instead of pypi.org - use this on
                         networks where files.pythonhosted.org is unreachable.
-      -- a b c          extra args forwarded to hub/server.py, e.g.:
-        .\hub\setup_hub.ps1 -- --verbose --port 8080
+      -- a b c          extra args forwarded to server.py, e.g.:
+        .\examples\hub\setup_hub.ps1 -- --verbose --port 8080
 #>
 
 param(
@@ -140,7 +140,7 @@ Write-Step "Checking machine architecture"
 # under x64 emulation on a Snapdragon X box reports AMD64 and this script
 # would mistake an ARM64 host for x86. That matters twice: the warning below,
 # and the face-ID model probe in step 6b, which only requires the exported
-# .onnx files on ARM64. hub\framework\face_id\setup\setup.ps1 reads the same registry value.
+# .onnx files on ARM64. examples\hub\framework\face_id\setup\setup.ps1 reads the same registry value.
 $osArch = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment').PROCESSOR_ARCHITECTURE
 $IsArm  = ($osArch -match 'ARM64')
 Write-Host "    PROCESSOR_ARCHITECTURE (OS) = $osArch"
@@ -151,10 +151,10 @@ if (-not $IsArm) {
 }
 
 Write-Step "Checking for a synced Qonclave checkout"
-$ServerPy = Join-Path $RepoDir 'hub\server.py'
+$ServerPy = Join-Path $RepoDir 'examples\hub\server.py'
 if (-not (Test-Path $ServerPy)) {
-    throw ("hub\server.py not found under $RepoDir. This script assumes the repo is " +
-           "already git-synced and that this script is at <repo>\hub\setup_hub.ps1. " +
+    throw ("examples\hub\server.py not found under $RepoDir. This script assumes the repo is " +
+           "already git-synced and that this script is at <repo>\examples\hub\setup_hub.ps1. " +
            "Run 'git clone https://github.com/jogendar/Qonclave.git' (or 'git pull' in an " +
            "existing checkout) first, then re-run this script from inside it.")
 }
@@ -403,7 +403,7 @@ if ($IsArm) {
 
 # --- 6. Install hub requirements --------------------------------------------
 Write-Step "Installing hub requirements into the venv"
-& $VenvPython -m pip install -r (Join-Path $RepoDir 'hub\requirements.txt') @PipIndexArgs
+& $VenvPython -m pip install -r (Join-Path $RepoDir 'examples\hub\requirements.txt') @PipIndexArgs
 Write-Ok "requirements installed"
 
 # --- 6a. Install the in-tree Qonclave SDK (editable) -------------------------
@@ -433,8 +433,8 @@ Write-Step "Installing face ID into the venv"
 if ($SkipFaceId) {
     Write-Ok "-SkipFaceId set - skipping (hub will report face-ID as not_enabled)"
 } else {
-    $FaceIdSetup = Join-Path $RepoDir 'hub\framework\face_id\setup\setup.ps1'
-    $FaceIdModels = Join-Path $RepoDir 'hub\framework\face_id\models'
+    $FaceIdSetup = Join-Path $RepoDir 'examples\hub\framework\face_id\setup\setup.ps1'
+    $FaceIdModels = Join-Path $RepoDir 'examples\hub\framework\face_id\models'
 
     # Idempotency probe, so re-running this bootstrap every session stays quick:
     # face-ID is already usable if the stack its CHOSEN MODE needs is present in
@@ -476,7 +476,7 @@ if ($SkipFaceId) {
 
     if ($depsOk -and $modelsOk) {
         Write-Ok "face ID already installed in this venv, skipping"
-        Write-Host "        (re-run hub\framework\face_id\setup\setup.ps1 -PythonPath `"$VenvPython`" to force)"
+        Write-Host "        (re-run examples\hub\framework\face_id\setup\setup.ps1 -PythonPath `"$VenvPython`" to force)"
     } else {
         # Prompt in the parent so the same token can be forwarded to pose
         # setup later in this run instead of each child script prompting.
@@ -522,8 +522,8 @@ if ($SkipPose) {
 } elseif (-not ($osArch -match 'ARM64')) {
     Write-Ok "non-ARM64 host - skipping (pose runs on Snapdragon hubs only)"
 } else {
-    $PoseSetup  = Join-Path $RepoDir 'hub\framework\pose\setup\setup_pose.ps1'
-    $PoseModels = Join-Path $RepoDir 'hub\framework\pose\models'
+    $PoseSetup  = Join-Path $RepoDir 'examples\hub\framework\pose\setup\setup_pose.ps1'
+    $PoseModels = Join-Path $RepoDir 'examples\hub\framework\pose\models'
 
     # Idempotency probe: the export is the slow, token-needing part; if the
     # model is already present, only offer the re-run hint.
@@ -565,10 +565,10 @@ if ($IsArm) {
     Write-Host " Hub environment ready (non-ARM host: VLM/GenieX disabled)." -ForegroundColor Green
 }
 Write-Host " Run scripts either by activating the venv:" -ForegroundColor Green
-Write-Host "     .\hub\geniex-env\Scripts\Activate.ps1" -ForegroundColor Green
-Write-Host "     python hub\server.py" -ForegroundColor Green
+Write-Host "     .\examples\hub\geniex-env\Scripts\Activate.ps1" -ForegroundColor Green
+Write-Host "     python examples\hub\server.py" -ForegroundColor Green
 Write-Host " ...or without activating, via the venv python directly:" -ForegroundColor Green
-Write-Host "     .\hub\geniex-env\Scripts\python.exe hub\server.py" -ForegroundColor Green
+Write-Host "     .\examples\hub\geniex-env\Scripts\python.exe examples\hub\server.py" -ForegroundColor Green
 Write-Host "===================================================================" -ForegroundColor Green
 
 # --- 8. Run the hub server ---------------------------------------------------
@@ -582,8 +582,8 @@ if ($NoRun) {
     }
     Set-Location $RepoDir
     if ($ServerArgs) {
-        & $VenvPython (Join-Path $RepoDir 'hub\server.py') @ServerArgs
+        & $VenvPython (Join-Path $RepoDir 'examples\hub\server.py') @ServerArgs
     } else {
-        & $VenvPython (Join-Path $RepoDir 'hub\server.py')
+        & $VenvPython (Join-Path $RepoDir 'examples\hub\server.py')
     }
 }

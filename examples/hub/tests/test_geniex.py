@@ -4,10 +4,10 @@ test_geniex.py — minimal GenieX smoke test.
 
 Runs a tiny Qwen3 GGUF model through GenieX to confirm the SDK works on this
 Snapdragon X box (one-shot + streaming generation). Run inside the geniex-env
-built by hub/setup_hub.ps1, from the repo root:
+built by examples/hub/setup_hub.ps1, from the repo root:
 
-    .\\hub\\geniex-env\\Scripts\\Activate.ps1     # Windows ARM64
-    python hub\\tests\\test_geniex.py
+    .\\examples\\hub\\geniex-env\\Scripts\\Activate.ps1     # Windows ARM64
+    python examples\\hub\\tests\\test_geniex.py
 
 If GenieX / the model isn't available it prints a clear error instead of a
 raw traceback.

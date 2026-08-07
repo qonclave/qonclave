@@ -699,6 +699,12 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms,
     def user_network():
         return send_from_directory(static_dir, "network.html")
 
+    @app.post("/user/network/clear")
+    def clear_network():
+        """Clear the device registry."""
+        device_registry.clear()
+        return jsonify({"status": "cleared"})
+
     # --- /user/* dashboard data + frames ------------------------------------
     @app.get("/user/events")
     def user_events():

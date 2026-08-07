@@ -10,7 +10,7 @@
     broker or any devices subscribed to it.
 
     Usage (from an elevated or normal PowerShell prompt, inside the checkout):
-        powershell -ExecutionPolicy Bypass -File .\hub\setup_mqtt.ps1
+        powershell -ExecutionPolicy Bypass -File .\examples\hub\setup_mqtt.ps1
 
       -NoRun            stop after installing; don't start the broker
       -HostAddress      address for the broker to listen on (default: 0.0.0.0)

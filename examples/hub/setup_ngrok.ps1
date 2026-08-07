@@ -18,8 +18,8 @@
     removed entirely with a paid ngrok plan.
 
     Usage (from inside this checkout):
-        powershell -ExecutionPolicy Bypass -File .\hub\setup_ngrok.ps1
-        powershell -ExecutionPolicy Bypass -File .\hub\setup_ngrok.ps1 -AuthToken <token>
+        powershell -ExecutionPolicy Bypass -File .\examples\hub\setup_ngrok.ps1
+        powershell -ExecutionPolicy Bypass -File .\examples\hub\setup_ngrok.ps1 -AuthToken <token>
 
       -AuthToken              ngrok authtoken (from https://dashboard.ngrok.com/get-started/your-authtoken).
                               Prompted interactively if omitted and not already configured.

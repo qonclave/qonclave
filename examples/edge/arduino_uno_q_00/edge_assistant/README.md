@@ -310,11 +310,11 @@ curl "http://<HUB_IP>:8000/user/assistant_activity?limit=5"
 Start the normal hub server. The assistant blueprint is registered by the hub
 server automatically.
 
-Run the hub inside `hub/geniex-env` — GenieX is only installed there, and
+Run the hub inside `examples/hub/geniex-env` — GenieX is only installed there, and
 without it the assistant silently serves template replies:
 
 ```powershell
-hub\geniex-env\Scripts\python.exe hub\server.py
+examples\hub\geniex-env\Scripts\python.exe examples\hub\server.py
 ```
 
 With `ASSISTANT_LLM_ENABLED=1` (the default) the hub loads Qwen3-4B during

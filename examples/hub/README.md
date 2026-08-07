@@ -462,9 +462,9 @@ subscribed (not mid-request) still receives it.
   `hub/server.py`'s lifecycle. Start it once; restart the hub as often as you
   like without losing the broker or its subscribers.
   ```powershell
-  powershell -ExecutionPolicy Bypass -File .\hub\setup_mqtt.ps1
+  powershell -ExecutionPolicy Bypass -File .\examples\hub\setup_mqtt.ps1
   # or, if already installed:
-  mosquitto -c hub\mosquitto.conf -v
+  mosquitto -c examples\hub\mosquitto.conf -v
   ```
 - **Topics**:
   - `qonclave/<device_id>/command` — hub → edge (JSON, from `command_for()`)
@@ -500,9 +500,9 @@ Twilio needs a **public HTTPS URL** to deliver inbound SMS replies to `POST
 hub server, opens the tunnel, and prints the public URL — all in one command:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\hub\setup_ngrok.ps1
+powershell -ExecutionPolicy Bypass -File .\examples\hub\setup_ngrok.ps1
 # pass your authtoken the first time (prompted if omitted):
-powershell -ExecutionPolicy Bypass -File .\hub\setup_ngrok.ps1 -AuthToken <token>
+powershell -ExecutionPolicy Bypass -File .\examples\hub\setup_ngrok.ps1 -AuthToken <token>
 ```
 
 At the end it prints something like:

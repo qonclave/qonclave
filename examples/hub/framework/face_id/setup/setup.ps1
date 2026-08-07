@@ -81,7 +81,7 @@ if ($PythonPath) {
     $python = $pythonCmd.Source
     Info "No -PythonPath given - using python from PATH: $python"
     Info "  (standalone face_id use. To make face-ID available inside the hub"
-    Info "   server, run hub\setup_hub.ps1 instead - it calls this script"
+    Info "   server, run examples\hub\setup_hub.ps1 instead - it calls this script"
     Info "   with the interpreter that actually runs hub/server.py.)"
 }
 

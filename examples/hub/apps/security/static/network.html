@@ -84,6 +84,7 @@
     </div>
     <span id="hubPill" class="pill">connecting…</span>
     <span id="deviceCount" class="pill muted"></span>
+    <button id="clearBtn" style="background:var(--err);color:var(--fg);border:none;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:500;">Clear</button>
   </div>
 
   <div class="card" style="margin-bottom:18px;">
@@ -301,6 +302,18 @@ drawRings();
 loadHealth(); loadDevices();
 setInterval(loadHealth, 15000);
 setInterval(loadDevices, 3000);
+
+$("clearBtn").addEventListener("click", async () => {
+  if (!confirm("Clear all device history?")) return;
+  try {
+    await fetch("/user/network/clear", { method: "POST" });
+    nodes.clear();
+    $("rows").innerHTML = '<tr><td colspan="6" style="color:var(--muted)">No devices seen yet.</td></tr>';
+    $("deviceCount").textContent = "0 online / 0 known";
+    $("emptyNote").style.display = "block";
+    $("devices").innerHTML = "";
+  } catch (e) { alert("Clear failed: " + e.message); }
+});
 </script>
 </body>
 </html>
