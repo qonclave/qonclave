@@ -3,6 +3,7 @@
 import os
 import struct
 import sys
+import threading
 
 HUB_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, HUB_DIR)
@@ -359,6 +360,9 @@ def test_security_policy_tracks_unknown_people_too():
     policy = SecurityPolicy.__new__(SecurityPolicy)
     policy.posture = Recorder()
     policy.investigation = IdleInvestigation()
+    policy._mqtt = None
+    policy._auto_buzzer_enabled = False
+    policy._auto_buzzer_lock = threading.Lock()
     pose = {"status": "ok", "keypoints": [[0, 0, 1]] * 17}
     assert policy.analyze_track(1, b"image", {"status": "unknown"}, pose) == {"state": "NORMAL"}
     assert policy.analyze_track(2, b"image", None, pose) == {"state": "NORMAL"}

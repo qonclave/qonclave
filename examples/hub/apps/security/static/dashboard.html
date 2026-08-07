@@ -159,6 +159,11 @@
                       align-items:center; font-size:11px; color:var(--muted); }
   .exchange .exmeta .pill { font-size:10px; padding:1px 7px; }
   .fallback { color:var(--warn); font-size:11px; margin-top:5px; }
+  .minimize-btn { background:transparent; border:1px solid var(--border); color:var(--muted);
+        border-radius:6px; width:28px; height:28px; font-size:13px; cursor:pointer;
+        line-height:1; flex:0 0 auto; }
+  .minimize-btn:hover { color:var(--fg); border-color:var(--fg); }
+  .card-body.collapsed { display:none; }
 </style>
 </head>
 <body>
@@ -336,8 +341,9 @@
         <label>Modulino Buzzer control</label>
         <div class="sub" style="margin:0;">Control edge buzzer: choose between custom frequency tone mode or song melody mode.</div>
       </div>
+      <button type="button" class="minimize-btn" id="buzzerMinimizeBtn" aria-label="Minimize" aria-expanded="true" aria-controls="buzzerBody">▾</button>
     </div>
-    
+    <div id="buzzerBody" class="card-body">
     <!-- Target Device Row -->
     <div style="margin-top:10px; max-width:220px;">
       <label style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em;">Target Device ID</label>
@@ -383,6 +389,55 @@
     </div>
 
     <div id="buzzerStatus" class="robot-status" style="margin-top:10px;" role="status">Ready</div>
+    </div>
+  </div>
+
+  <!-- Auto-Buzzer on Unknown Face -->
+  <div class="card" style="margin-bottom:18px;">
+    <div class="robot-head">
+      <div>
+        <label>🚨 Auto-Buzzer on Unknown Face</label>
+        <div class="sub" style="margin:0;">Automatically trigger a buzzer tone when an unrecognized person is detected by Face ID.</div>
+      </div>
+      <button type="button" class="minimize-btn" id="autoBuzzerMinimizeBtn" aria-label="Minimize" aria-expanded="true" aria-controls="autoBuzzerBody">▾</button>
+    </div>
+    <div id="autoBuzzerBody" class="card-body">
+    <div style="margin-top:12px; display:flex; gap:16px; flex-wrap:wrap; align-items:center;">
+      <!-- Enable toggle -->
+      <label style="display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none;">
+        <input type="checkbox" id="autoBuzzerEnabled" style="width:18px; height:18px; accent-color:#f5b74f; cursor:pointer;" />
+        <span style="font-size:13px; font-weight:700; color:var(--fg);">Enable</span>
+      </label>
+
+      <!-- Target Device Dropdown -->
+      <div style="flex:1 1 180px; max-width:260px;">
+        <label style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em;">Target Device</label>
+        <select id="autoBuzzerDevice" style="width:100%; padding:7px 9px; margin-top:4px; background:#0f1218; color:var(--fg); border:1px solid var(--border); border-radius:6px; font-size:13px; cursor:pointer;">
+          <option value="">— select a device —</option>
+        </select>
+      </div>
+    </div>
+
+    <div style="margin-top:12px; padding:12px; background:#14171f; border:1px solid var(--border); border-radius:8px;">
+      <div style="display:flex; gap:14px; flex-wrap:wrap; align-items:flex-end;">
+        <div style="flex:1 1 100px;">
+          <label style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em;">Frequency (Hz)</label>
+          <input type="number" id="autoBuzzerFreq" min="20" max="20000" value="1000" style="width:100%; padding:7px 9px; margin-top:4px; background:#0f1218; color:var(--fg); border:1px solid var(--border); border-radius:6px; font-size:13px;" />
+        </div>
+        <div style="flex:1 1 100px;">
+          <label style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em;">Duration (ms)</label>
+          <input type="number" id="autoBuzzerDuration" min="100" max="60000" step="100" value="3000" style="width:100%; padding:7px 9px; margin-top:4px; background:#0f1218; color:var(--fg); border:1px solid var(--border); border-radius:6px; font-size:13px;" />
+        </div>
+        <div style="flex:1 1 100px;">
+          <label style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em;">Cooldown (s)</label>
+          <input type="number" id="autoBuzzerCooldown" min="0" max="600" step="5" value="30" style="width:100%; padding:7px 9px; margin-top:4px; background:#0f1218; color:var(--fg); border:1px solid var(--border); border-radius:6px; font-size:13px;" />
+        </div>
+        <button type="button" id="btnAutoBuzzerSave" style="padding:8px 18px; font-weight:700; font-size:12px; background:linear-gradient(135deg, #f5b74f, #ff6b6b); color:#0f1115; border:none; border-radius:6px; cursor:pointer;">💾 SAVE</button>
+      </div>
+    </div>
+
+    <div id="autoBuzzerStatus" class="robot-status" style="margin-top:10px;" role="status">Loading settings…</div>
+    </div>
   </div>
 
   <div class="card">
@@ -1074,9 +1129,127 @@ setInterval(refreshAssistant, 1500);
 //
 // Expanding the raw-history section renders it immediately rather than
 // waiting for the next poll tick.
+// ---- Auto-Buzzer on Unknown Face ----------------------------------------
+let _autoBuzzerDevicesLoaded = false;
+
+async function loadAutoBuzzerDevices() {
+  try {
+    const r = await fetch("/user/devices");
+    const j = await r.json();
+    const sel = $("autoBuzzerDevice");
+    const current = sel.value;
+    // Preserve the placeholder option, then rebuild
+    sel.innerHTML = '<option value="">— select a device —</option>';
+    (j.devices || []).forEach(d => {
+      const id = d.device_id || d.ip || "";
+      if (!id) return;
+      const state = d.state || "";
+      const opt = document.createElement("option");
+      opt.value = id;
+      opt.textContent = `${id}${state ? " (" + state + ")" : ""}`;
+      sel.appendChild(opt);
+    });
+    // Restore selection if still present
+    if (current) sel.value = current;
+    _autoBuzzerDevicesLoaded = true;
+  } catch (_) { /* leave prior list */ }
+}
+
+async function loadAutoBuzzerSettings() {
+  const status = $("autoBuzzerStatus");
+  try {
+    const r = await fetch("/user/auto-buzzer-settings");
+    if (r.status === 404) {
+      status.textContent = "Auto-buzzer not supported by this app";
+      return;
+    }
+    const j = await r.json();
+    $("autoBuzzerEnabled").checked = !!j.enabled;
+    $("autoBuzzerFreq").value = j.frequency || 1000;
+    $("autoBuzzerDuration").value = j.duration || 3000;
+    $("autoBuzzerCooldown").value = j.cooldown_s != null ? j.cooldown_s : 30;
+
+    // Load device list then select the saved device
+    if (!_autoBuzzerDevicesLoaded) await loadAutoBuzzerDevices();
+    if (j.device_id) $("autoBuzzerDevice").value = j.device_id;
+
+    if (j.enabled) {
+      const last = j.last_triggered
+        ? "last triggered " + new Date(j.last_triggered * 1000).toLocaleTimeString()
+        : "not yet triggered";
+      status.className = "robot-status ok";
+      status.textContent = `Enabled — targeting ${j.device_id || "(none)"} — ${last}`;
+    } else {
+      status.className = "robot-status";
+      status.textContent = "Disabled";
+    }
+  } catch (_) {
+    status.className = "robot-status err";
+    status.textContent = "Could not load settings";
+  }
+}
+
+$("btnAutoBuzzerSave").addEventListener("click", async () => {
+  const status = $("autoBuzzerStatus");
+  status.className = "robot-status";
+  status.textContent = "Saving…";
+  try {
+    const body = {
+      enabled: $("autoBuzzerEnabled").checked,
+      device_id: $("autoBuzzerDevice").value || null,
+      frequency: Number.parseInt($("autoBuzzerFreq").value, 10) || 1000,
+      duration: Number.parseInt($("autoBuzzerDuration").value, 10) || 3000,
+      cooldown_s: Number.parseFloat($("autoBuzzerCooldown").value) || 30,
+    };
+    const r = await fetch("/user/auto-buzzer-settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    if (j.enabled) {
+      status.className = "robot-status ok";
+      status.textContent = `Saved ✓ — enabled, targeting ${j.device_id || "(none)"}`;
+    } else {
+      status.className = "robot-status";
+      status.textContent = "Saved ✓ — disabled";
+    }
+  } catch (e) {
+    status.className = "robot-status err";
+    status.textContent = e.message || "Save failed";
+  }
+});
+
+loadAutoBuzzerSettings();
+// Refresh device list periodically so new devices appear in the dropdown
+setInterval(loadAutoBuzzerDevices, 15000);
+// Refresh auto-buzzer status (last triggered time) alongside events
+setInterval(loadAutoBuzzerSettings, 10000);
+
 $("recognizeDetails").addEventListener("toggle", () => {
   if ($("recognizeDetails").open) refreshPersonTracking();
 });
+
+// ---- Card minimize/expand (Buzzer control + Auto-Buzzer) ----------------
+function setupMinimizable(btnId, bodyId, storageKey) {
+  const btn = $(btnId);
+  const body = $(bodyId);
+  if (!btn || !body) return;
+  const apply = (collapsed) => {
+    body.classList.toggle("collapsed", collapsed);
+    btn.textContent = collapsed ? "▸" : "▾";
+    btn.setAttribute("aria-expanded", String(!collapsed));
+    btn.setAttribute("aria-label", collapsed ? "Expand" : "Minimize");
+  };
+  apply(localStorage.getItem(storageKey) === "1");
+  btn.addEventListener("click", () => {
+    const collapsed = !body.classList.contains("collapsed");
+    apply(collapsed);
+    localStorage.setItem(storageKey, collapsed ? "1" : "0");
+  });
+}
+setupMinimizable("buzzerMinimizeBtn", "buzzerBody", "qonclave.buzzerCollapsed");
+setupMinimizable("autoBuzzerMinimizeBtn", "autoBuzzerBody", "qonclave.autoBuzzerCollapsed");
 </script>
 </body>
 </html>

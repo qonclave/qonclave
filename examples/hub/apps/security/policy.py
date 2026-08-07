@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 import uuid
 
 from qonclave.core.models import EdgeEvent, Command
@@ -101,6 +102,16 @@ class SecurityPolicy(Policy):
         self._llm_cache: tuple[str, str, dict] | None = None  # (sender, body, result)
         self._llm_cache_lock = threading.Lock()
 
+        # --- Auto-buzzer on unknown face detection ---------------------------
+        self._mqtt = mqtt
+        self._auto_buzzer_enabled: bool = False
+        self._auto_buzzer_device_id: str | None = None
+        self._auto_buzzer_frequency: int = 1000
+        self._auto_buzzer_duration: int = 3000
+        self._auto_buzzer_cooldown_s: float = 30.0
+        self._auto_buzzer_last_triggered: float = 0
+        self._auto_buzzer_lock = threading.Lock()
+
     def analyze_track(self, track_id, image_bytes, face, pose):
         # Posture runs for EVERY track with a usable pose, known or not. It
         # used to be gated on a resolved identity, but a fall is exactly the
@@ -115,6 +126,14 @@ class SecurityPolicy(Policy):
             status = self.investigation.observe(track_id, image_bytes, analysis)
             if status is not None:
                 analysis["investigation"] = status
+
+        # Auto-buzzer: this per-track face result (fed by the live tracking
+        # loop that drives the dashboard's "unknown" pill) is what actually
+        # sees unknown faces in normal operation -- the /edge/event escalation
+        # path this policy also triggers on fires far less often.
+        if face is not None and face.get("status") == "unknown":
+            self._trigger_auto_buzzer({"identity_unknown_count": 1})
+
         return analysis
 
     def on_investigation_capture(self, event_id: str, image_bytes: bytes) -> dict:
@@ -186,6 +205,12 @@ class SecurityPolicy(Policy):
         log.info("SecurityPolicy verify (%.2fs): person=%s conf=%s",
                  result.get("latency_s") or 0.0, person, conf)
 
+        id_extra = self._identity_extra(identity, person)
+
+        # Auto-buzzer: trigger on unknown face detection (independent of the
+        # command_for() path, which targets the source edge device only).
+        self._trigger_auto_buzzer(id_extra)
+
         return Verdict(
             verified=bool(person),
             confidence=conf,
@@ -193,7 +218,7 @@ class SecurityPolicy(Policy):
             reasoning_text=description or result.get("text"),
             reasoning_available=True,
             latency_s=result.get("latency_s"),
-            extra=self._identity_extra(identity, person),
+            extra=id_extra,
         )
 
     def _run_face_id(self, image_path: str) -> dict:
@@ -299,6 +324,97 @@ class SecurityPolicy(Policy):
             "identity_known_count": len(names),
             "identity_unknown_count": sum(1 for f in faces if not f.get("identified")),
         }
+
+    # --- Auto-buzzer on unknown face ----------------------------------------
+
+    def _trigger_auto_buzzer(self, identity_extra: dict) -> None:
+        """If auto-buzzer is enabled and unknown faces were detected, publish
+        a buzzer 'tone' command to the configured device.  Respects a cooldown
+        window so the buzzer doesn't re-fire on every polling frame while the
+        unknown person remains in view."""
+        with self._auto_buzzer_lock:
+            if not self._auto_buzzer_enabled:
+                return
+            if not self._auto_buzzer_device_id:
+                return
+            if self._mqtt is None:
+                return
+            unknown_count = identity_extra.get("identity_unknown_count", 0)
+            if not unknown_count or unknown_count <= 0:
+                return
+            now = time.time()
+            if now - self._auto_buzzer_last_triggered < self._auto_buzzer_cooldown_s:
+                return
+
+            command = {
+                "type": "buzzer",
+                "action": "tone",
+                "frequency": self._auto_buzzer_frequency,
+                "duration": self._auto_buzzer_duration,
+            }
+            ok = self._mqtt.publish_command(self._auto_buzzer_device_id, command)
+            if ok:
+                self._auto_buzzer_last_triggered = now
+                log.info("Auto-buzzer triggered: %d unknown face(s) -> tone %dHz %dms -> %s",
+                         unknown_count, self._auto_buzzer_frequency,
+                         self._auto_buzzer_duration, self._auto_buzzer_device_id)
+            else:
+                log.warning("Auto-buzzer publish failed for device %s",
+                            self._auto_buzzer_device_id)
+
+    def auto_buzzer_settings(self) -> dict:
+        """Current auto-buzzer configuration for the dashboard."""
+        with self._auto_buzzer_lock:
+            return {
+                "enabled": self._auto_buzzer_enabled,
+                "device_id": self._auto_buzzer_device_id,
+                "frequency": self._auto_buzzer_frequency,
+                "duration": self._auto_buzzer_duration,
+                "cooldown_s": self._auto_buzzer_cooldown_s,
+                "last_triggered": self._auto_buzzer_last_triggered or None,
+            }
+
+    def update_auto_buzzer_settings(self, values: dict) -> dict:
+        """Validate and apply new auto-buzzer settings from the dashboard."""
+        with self._auto_buzzer_lock:
+            if "enabled" in values:
+                self._auto_buzzer_enabled = bool(values["enabled"])
+            if "device_id" in values:
+                did = str(values["device_id"]).strip() if values["device_id"] else None
+                self._auto_buzzer_device_id = did or None
+            if "frequency" in values:
+                try:
+                    freq = int(values["frequency"])
+                    if 20 <= freq <= 20000:
+                        self._auto_buzzer_frequency = freq
+                except (TypeError, ValueError):
+                    pass
+            if "duration" in values:
+                try:
+                    dur = int(values["duration"])
+                    if dur >= 0:
+                        self._auto_buzzer_duration = dur
+                except (TypeError, ValueError):
+                    pass
+            if "cooldown_s" in values:
+                try:
+                    cd = float(values["cooldown_s"])
+                    if cd >= 0:
+                        self._auto_buzzer_cooldown_s = cd
+                except (TypeError, ValueError):
+                    pass
+            log.info("Auto-buzzer settings updated: enabled=%s device=%s freq=%d dur=%d cooldown=%.0fs",
+                     self._auto_buzzer_enabled, self._auto_buzzer_device_id,
+                     self._auto_buzzer_frequency, self._auto_buzzer_duration,
+                     self._auto_buzzer_cooldown_s)
+            return {
+                "enabled": self._auto_buzzer_enabled,
+                "device_id": self._auto_buzzer_device_id,
+                "frequency": self._auto_buzzer_frequency,
+                "duration": self._auto_buzzer_duration,
+                "cooldown_s": self._auto_buzzer_cooldown_s,
+                "last_triggered": self._auto_buzzer_last_triggered or None,
+            }
 
     def notify_for(self, verdict: Verdict, event: EdgeEvent) -> Notification | None:
         if verdict.verified:

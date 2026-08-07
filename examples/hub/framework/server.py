@@ -905,6 +905,22 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms,
         log.info("Dashboard buzzer command %s -> device %s", command, device_id)
         return jsonify({"ok": True, "device_id": device_id, "command": command})
 
+    @app.get("/user/auto-buzzer-settings")
+    def user_auto_buzzer_settings():
+        """Current auto-buzzer-on-unknown-face configuration."""
+        if not hasattr(policy, "auto_buzzer_settings"):
+            return jsonify({"error": "auto-buzzer not supported by this app"}), 404
+        return jsonify(policy.auto_buzzer_settings())
+
+    @app.put("/user/auto-buzzer-settings")
+    def user_update_auto_buzzer_settings():
+        """Update auto-buzzer-on-unknown-face configuration."""
+        if not hasattr(policy, "update_auto_buzzer_settings"):
+            return jsonify({"error": "auto-buzzer not supported by this app"}), 404
+        body = request.get_json(silent=True) or {}
+        result = policy.update_auto_buzzer_settings(body)
+        return jsonify(result)
+
     @app.get("/user/frames/<path:name>")
     def user_frame(name):
         return send_from_directory(transport.UPLOAD_DIR, name)
