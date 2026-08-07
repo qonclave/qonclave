@@ -211,7 +211,6 @@ hub/
     events.py               # event ring buffer for the dashboard
     vlm.py                  # VLMBackend: reason() + structured_query()
     mqtt_bus.py             # MQTTBus: publish_command() hub->edge push channel
-    sms_bus.py              # SMSBus: send() SMS notifications via Twilio
     policy.py               # Policy ABC + Verdict + Notification dataclasses
     face_id/                # face detection + identification (see face_id/README.md)
       identity.py           # FaceIdentityBackend: conditional wrapper used by SecurityPolicy
@@ -220,6 +219,12 @@ hub/
   apps/
     security/                # this use case: stationary person detection
       policy.py              # SecurityPolicy(Policy) — VLM verify + face-ID lookup
+      egress/
+        twilio_sms.py         # SMSBus: send() SMS notifications via Twilio (app-owned; no
+                               # generic SMS contract in framework/ or the SDK -- see
+                               # framework/docs/CONVENTIONS.md)
+      sms_routes.py           # POST /sms + GET /user/sms_activity blueprint, registered
+                               # from hub/server.py
       static/                # dashboard.html, test_edge.html, test_hub.html
       samples/                # bundled test images + helpers
 ```
@@ -536,10 +541,11 @@ are processed by `SecurityPolicy.on_reply()`.
 {"sms": {"available": true, "enabled": true, "suppressed": false, ...}}
 ```
 
-`framework/sms_bus.py`'s `SMSBus` gives a Policy a way to push an SMS to an
-operator when a significant event is verified. The trigger and message content
-are entirely up to the app — the framework just sends whatever the Policy's
-`notify_for()` method returns.
+`apps/security/egress/twilio_sms.py`'s `SMSBus` gives a Policy a way to push an
+SMS to an operator when a significant event is verified. The trigger and
+message content are entirely up to the app — the framework just calls
+`.send()` on whatever `sms` object `hub/server.py` handed to `create_app()`
+with whatever the Policy's `notify_for()` method returns.
 
 ### Trial mode
 

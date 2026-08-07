@@ -19,8 +19,8 @@ from qonclave.core.models import EdgeEvent
 from framework.policy import Policy, Verdict, Notification
 from framework.vlm import VLMBackend
 from framework.llm import LLMBackend
-from framework.sms_bus import SMSBus
 from framework.face_id.identity import FaceIdentityBackend
+from .egress.twilio_sms import SMSBus
 from .investigation import InvestigationManager
 from .known_person_priorities import KnownPersonPriorityStore
 from .posture import PostureStateMachine

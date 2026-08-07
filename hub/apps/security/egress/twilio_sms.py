@@ -1,5 +1,5 @@
 """
-sms_bus.py — SMS notification channel for the Qonclave framework.
+twilio_sms.py — Twilio-backed SMS egress for the security app.
 
 Trial-mode: the API accepts a Notification(message, recipient) from the
 caller but always sends a fixed template message to a fixed phone number
@@ -12,14 +12,19 @@ Public API:
     bus.send(notification)      # -> bool; never raises for the caller
     bus.status()                # for /health
 
-Like MQTTBus and VLMBackend: lazy import, best-effort, never raises for
-the caller. If credentials are missing or the Twilio call fails, the hub
-keeps serving HTTP/dashboard traffic and send() is a logged no-op.
+Lazy import, best-effort, never raises for the caller. If credentials are
+missing or the Twilio call fails, the hub keeps serving HTTP/dashboard
+traffic and send() is a logged no-op.
 
 Environment:
     QONCLAVE_SMS_ENABLED        1 (default) to enable; 0 to disable
     TWILIO_ACCOUNT_SID          Twilio account SID
     TWILIO_AUTH_TOKEN           Twilio auth token
+
+This is entirely app-owned, by design: which vendor, which credentials, and
+what "activity" means are all specific to this use case, not core framework
+concerns. qonclave.hub.egress.sms stays a placeholder rather than a generic
+transport contract for exactly that reason -- see CONVENTIONS.md.
 """
 
 from __future__ import annotations
@@ -30,7 +35,7 @@ import logging
 import os
 import threading
 
-from .policy import Notification
+from qonclave.hub.policy import Notification
 
 log = logging.getLogger("qonclave.sms")
 

@@ -85,15 +85,19 @@ and independently under `spec/v1/`.
 
 `edge/` is still untouched — nothing under it imports `qonclave.*` yet. `hub/` is no longer fully
 untouched: `hub/framework/adapter.py`, `events.py`, `transport.py`, `policy.py`,
-`device_registry.py`, `discovery.py`, and now `mqtt_bus.py` build on this SDK today.
+`device_registry.py`, `discovery.py`, and `mqtt_bus.py` build on this SDK today.
 `hub/framework/policy.py` was lifted, reverted while merging `hub/`'s own feature work, and redone
 (all 2026-08-06) — `docs/CONVENTIONS.md`'s "Where existing code lands" section is the current,
 maintained status of every module, including `device_registry.py`'s assumed destination not
 existing (got a new module, `qonclave.discovery.registry`, instead), `discovery.py`'s announced
 payload still being pre-spec, and `mqtt_bus.py` being a wrapper around `MQTTTransport` rather than
 a pure re-export shim (JSON encoding, the ring buffer, and dual-topic publishing are hub-specific,
-not generic transport). Pointing the rest of `hub/server.py` at `qonclave.hub` remains a separate,
-later change.
+not generic transport). `hub/framework/sms_bus.py` left the framework entirely the same day (to
+`hub/apps/security/egress/twilio_sms.py`, plus a new `hub/apps/security/sms_routes.py` blueprint
+for the routes that used to live in `framework/server.py`) — deliberately *without* a generic SDK
+counterpart; a `qonclave.hub.egress.sms.SMSTransport` contract was drafted and then removed once
+nothing outside `hub/framework/server.py`'s untyped `.status()`/`.send()` duck typing turned out to
+need it. Pointing the rest of `hub/server.py` at `qonclave.hub` remains a separate, later change.
 
 `hub/apps/security/placement.py`'s `SecurityPlacement` had zero callers until now — clean usage of
 `qonclave.placement`, but unproven under real traffic. `create_app()` gained an optional

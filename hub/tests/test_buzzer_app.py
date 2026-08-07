@@ -20,8 +20,8 @@ if HUB_DIR not in sys.path:
 
 from framework.mqtt_bus import MQTTBus
 from framework.server import create_app
-from framework.sms_bus import SMSBus
 from framework.vlm import VLMBackend
+from apps.security.egress.twilio_sms import SMSBus
 from apps.security.policy import SecurityPolicy
 
 

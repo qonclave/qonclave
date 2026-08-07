@@ -49,9 +49,10 @@ from framework.llm import LLMBackend  # noqa: E402
 from framework.mqtt_bus import MQTTBus  # noqa: E402
 from framework.face_id.identity import FaceIdentityBackend  # noqa: E402
 from framework.pose.pose import PoseBackend  # noqa: E402
-from framework.sms_bus import SMSBus  # noqa: E402
+from apps.security.egress.twilio_sms import SMSBus  # noqa: E402
 from apps.security.policy import SecurityPolicy  # noqa: E402
 from apps.security.placement import SecurityPlacement  # noqa: E402
+from apps.security.sms_routes import create_sms_blueprint  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "apps", "security", "static")
@@ -77,6 +78,10 @@ placement = SecurityPlacement()
 app = create_app(policy=policy, vlm=vlm, mqtt=mqtt, sms=sms, face_id=face_id,
                  static_dir=STATIC_DIR, llm=llm, pose=pose, placement=placement,
                  assistant_llm=llm if ASSISTANT_LLM_ENABLED else None)
+# Twilio-specific routes (POST /sms, GET /user/sms_activity) are app-owned --
+# registered directly here rather than through create_app(), so framework/
+# never imports anything from apps/ for this.
+app.register_blueprint(create_sms_blueprint(policy=policy, mqtt=mqtt, sms=sms))
 
 
 def main():

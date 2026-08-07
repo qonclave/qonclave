@@ -166,8 +166,8 @@ merge on either side of the framework/`hub/` split can tell what it's actually c
 | `policy.py` | `hub/policy.py` | ✅ done — lifted, reverted, redone; see below |
 | `server.py` | `hub/app.py` | ⬜ not started |
 | `mqtt_bus.py` | **stays put**, now wrapping `transport/mqtt.py`'s `MQTTTransport` (`PubSubTransport`) | ✅ done — JSON encoding, ring buffer, dual-topic publish, registry wiring all stay hub-side |
-| `sms_bus.py` | `apps/<name>/egress/twilio_sms.py` — **leaves the framework** | ⬜ not started |
-| `server.py`'s `POST /sms` route | `apps/<name>/` — it reads Twilio's own form fields | ⬜ not started |
+| `sms_bus.py` | `apps/security/egress/twilio_sms.py` — **leaves the framework entirely**, no generic contract in the SDK either | ✅ done — see below |
+| `server.py`'s `POST /sms` + `GET /user/sms_activity` routes | `apps/security/sms_routes.py`, a Blueprint registered from `hub/server.py` | ✅ done — see below |
 | `discovery.py` | `discovery/announce.py` + `discovery/backends/udp.py` | ✅ done — payload not yet spec-compliant, `browse.py` not touched; see below |
 | `vlm.py`, `llm.py` | `inference/local/geniex.py` | ⬜ not started |
 | `face_id/` | `inference/local/face_id/` | ⬜ not started |
@@ -177,10 +177,11 @@ merge on either side of the framework/`hub/` split can tell what it's actually c
 | `icons.py` | **stays app-level** | n/a — correctly not lifted |
 
 `hub/` is no longer untouched: `adapter.py`, `events.py`, `transport.py`, `policy.py`,
-`device_registry.py`, `discovery.py`, and now `mqtt_bus.py` build on the SDK today, proved by
+`device_registry.py`, `discovery.py`, and `mqtt_bus.py` build on the SDK today, proved by
 `hub/tests/` running against all seven (`mqtt_bus.py` is a wrapper rather than a pure re-export
-shim like the others — see below for why). Everything else in the table above is still the
-pre-convergence, framework-agnostic implementation.
+shim like the others — see below for why). `sms_bus.py` is a different case again: it left
+`hub/framework/` entirely, without gaining any SDK-side counterpart — see below. Everything else
+in the table above is still the pre-convergence, framework-agnostic implementation.
 
 ### `policy.py` was lifted, then reverted, then redone (2026-08-06)
 
@@ -294,3 +295,24 @@ correct outcome rather than an oversight.
 It is 195 lines of `TWILIO_ACCOUNT_SID`, `from twilio.rest import Client`, and one hardcoded
 recipient. Twilio appears nowhere in `spec/v1/`, and the SDK's own `egress/webhook.py` docstring
 already argues the point: enterprises "do not want a hardcoded SMS vendor."
+
+**Migrated 2026-08-06, further than first planned.** The original plan for this migration kept a
+generic `SMSTransport` contract (`send`/`is_available`/`status`) in `qonclave.hub.egress.sms`, with
+only the Twilio implementation moving to the app — the same shape as `Policy`/`PlacementPolicy`.
+That went in, then came back out: SMS turned out not to need a framework-level contract at all.
+Nothing in `hub/framework/server.py` calls anything on `sms` beyond `.status()` (for `/health`) and
+`.send(notification)` (from `notify_for()`'s result) — both already expressible as plain duck
+typing, the same way `create_app()`'s untyped `face_id`/`pose` parameters work. Forcing an ABC into
+the SDK for that would be a contract with one implementation and no second consumer to prove it
+generalizes — exactly the trap `qonclave.discovery.registry`'s design note above warns against
+inverted. So `qonclave.hub.egress.sms` stays the placeholder it always was, and
+`hub/apps/security/egress/twilio_sms.py`'s `SMSBus` doesn't subclass anything from the SDK.
+
+The route migration went with it: `POST /sms` and `GET /user/sms_activity` both read Twilio-shaped
+data (`request.form["From"]`/`["Body"]`, `sms._suppressed`) that has no business in generic
+framework HTTP surface. Both moved to `hub/apps/security/sms_routes.py`, a `Blueprint` — but
+registered from `hub/server.py` *after* `create_app()` returns, not threaded through
+`create_app()`'s parameters the way `apps/assistant/routes.py`'s blueprint currently is. That
+avoids adding a second `from apps.x.routes import ...` into `hub/framework/server.py` next to the
+one already flagged as backwards and awaiting Phase 8's pluggable-registration fix — no reason to
+write a second copy of a bug already scheduled for removal.

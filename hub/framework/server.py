@@ -26,8 +26,6 @@ Endpoints:
     POST /edge/investigation  edge's answer to a capture_investigation_image
                                MQTT command: event_id + one fresh frame,
                                handed to the policy's investigation flow
-    POST /sms                 Twilio inbound-reply webhook: runs policy
-                               on_reply(), optionally publishes MQTT command
 
     GET  /user/dashboard      live dashboard page (app-provided static/);
                                also the default landing page (/, /user/)
@@ -59,6 +57,12 @@ Endpoints:
                                for the dashboard's assistant card
     (both live in apps/assistant/routes.py, registered below)
 
+    POST /sms                 Twilio inbound-reply webhook (security app only)
+    GET  /user/sms_activity    recent SMS activity (security app only)
+    (both live in apps/security/sms_routes.py, registered from hub/server.py
+    -- not here, since both read Twilio's own wire shapes; see
+    docs/CONVENTIONS.md's note on the sms_bus.py migration)
+
 Design goals:
     * Runs on ANY laptop (regular x86 Windows/Linux included). Reasoning is
       conditional — see framework/vlm.py — so only that piece is
@@ -85,7 +89,6 @@ from .face_id.identity import _slugify_name
 from .llm import LLMBackend
 from .mqtt_bus import MQTTBus
 from .policy import Policy
-from .sms_bus import SMSBus
 from .vlm import VLMBackend
 
 # "apps" is a sibling top-level package (hub/ is on sys.path, it is not itself a
@@ -175,7 +178,7 @@ def _publish_track_frame(track_id: int, crop_jpeg: bytes, keypoints, label: str)
         return None
 
 
-def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
+def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms,
                static_dir: str, face_id=None, llm: LLMBackend | None = None,
                pose=None, placement: PlacementPolicy | None = None,
                assistant_llm: LLMBackend | None = None) -> Flask:
@@ -191,8 +194,14 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
                 /track/analyze's face analyzer
     pose        optional PoseBackend, exposed via /health and used by
                 /track/analyze's pose analyzer
-    sms         shared SMSBus; sends an SMS when notify_for() returns a
-                Notification (trial mode: fixed template + fixed number)
+    sms         app-owned notification channel (e.g.
+                apps.security.egress.twilio_sms.SMSBus): sends an alert when
+                notify_for() returns a Notification. Untyped here on purpose
+                -- unlike Policy/PlacementPolicy, there's no generic SDK
+                contract for this; only .status() and .send(notification)
+                are called from framework/. Any app-specific routes for it
+                (e.g. a Twilio webhook) are the app's own blueprint, not
+                registered here -- see hub/apps/security/sms_routes.py.
     llm         optional LLMBackend (text-only Qwen3-4B); used by the Policy
                 for on_reply() reasoning; exposed via /health
     placement   optional qonclave.placement.PlacementPolicy instance. When
@@ -693,43 +702,6 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
     def user_network():
         return send_from_directory(static_dir, "network.html")
 
-    # --- /sms: Twilio inbound-reply webhook ---------------------------------
-    @app.post("/sms")
-    def sms_reply():
-        """
-        Twilio webhook: called when the recipient replies to an outbound SMS.
-        Twilio POSTs form fields; we read From + Body, hand them to the
-        Policy, and publish any returned MQTT command to the last known device.
-        Signature validation is skipped in trial mode.
-        """
-        sender = request.form.get("From", "").strip()
-        body = request.form.get("Body", "").strip()
-        log.info("SMS reply from %s: %r", sender, body)
-
-        command = policy.on_reply(sender, body)
-        if command is not None:
-            device_id = events.latest_device_id()
-            if device_id:
-                mqtt.publish_command(device_id, command)
-                log.info("SMS reply MQTT command %s -> device %s", command, device_id)
-                action = "mqtt_published"
-            else:
-                log.warning("SMS reply returned command %s but no device_id known yet", command)
-                action = "ignored"
-        elif body.strip().upper() == "STOP":
-            action = "suppressed"
-        else:
-            action = "ignored"
-
-        reply_text = policy.reply_for(sender, body)
-        if reply_text:
-            from .policy import Notification
-            sent = sms.send(Notification(message=reply_text, recipient=sender))
-            log.info("SMS reply_for -> sent=%s: %r", sent, reply_text[:80])
-
-        sms.record_reply(sender, body, action)
-        return ("", 200)
-
     # --- /user/* dashboard data + frames ------------------------------------
     @app.get("/user/events")
     def user_events():
@@ -940,16 +912,6 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
         if not name:
             return jsonify({"error": "no frame received yet"}), 404
         return send_from_directory(transport.UPLOAD_DIR, name)
-
-    @app.get("/user/sms_activity")
-    def user_sms_activity():
-        """Recent SMS activity (outbound + inbound), newest first."""
-        limit = request.args.get("limit", type=int) or 50
-        return jsonify({
-            "count": len(sms.recent_activity(limit)),
-            "suppressed": sms._suppressed,
-            "activity": sms.recent_activity(limit),
-        })
 
     @app.get("/user/llm_response")
     def user_llm_response():
