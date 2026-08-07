@@ -408,7 +408,12 @@
   </div>
 
   <div class="card" style="margin-top:18px;">
-    <label>SMS activity</label>
+    <label>SMS activity
+      <label class="sub" style="margin:0;float:right;display:flex;align-items:center;gap:6px;">
+        <input id="smsToggle" type="checkbox" />
+        Send SMS
+      </label>
+    </label>
     <table id="smsTable">
       <thead>
         <tr><th>Time</th><th>Dir</th><th>Content</th><th>Status</th></tr>
@@ -696,6 +701,24 @@ async function refreshSMS() {
     }).join("");
   } catch (e) { /* leave prior state */ }
 }
+
+async function loadSmsToggle() {
+  try {
+    const j = await fetch("/user/sms-settings").then(r => r.json());
+    if (j.ok) $("smsToggle").checked = !j.disabled;
+  } catch (_) {}
+}
+
+$("smsToggle").addEventListener("change", async (e) => {
+  const disabled = !e.target.checked;
+  try {
+    const j = await fetch("/user/sms-settings", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ disabled }),
+    }).then(r => r.json());
+    if (!j.ok) e.target.checked = !disabled; // revert on failure
+  } catch (_) { e.target.checked = !disabled; }
+});
 
 async function refreshLLM() {
   try {
@@ -1057,6 +1080,7 @@ setInterval(refreshPersonTracking, 2000);
 loadPostureSettings();
 refreshSMS();
 setInterval(refreshSMS, 2000);
+loadSmsToggle();
 refreshLLM();
 setInterval(refreshLLM, 2000);
 refreshInvestigation();

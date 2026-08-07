@@ -668,7 +668,7 @@ class InvestigationManager:
             message = (f"Please check on {who}. {headline} "
                        f"{recommended}").strip()
         sms_sent = False
-        if message is not None and self.sms is not None:
+        if message is not None and self.sms is not None and classification == "EMERGENCY_LIKELY":
             from framework.policy import Notification
             sms_sent = self.sms.send(Notification(message=message, recipient=recipient))
 
