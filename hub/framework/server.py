@@ -843,6 +843,16 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
             "activity": sms.recent_activity(limit),
         })
 
+    @app.route("/user/sms-settings", methods=["GET", "POST"])
+    def user_sms_settings():
+        """Dashboard toggle for enabling/disabling outbound SMS."""
+        if request.method == "POST":
+            body = request.get_json(silent=True) or {}
+            if "disabled" not in body:
+                return jsonify({"ok": False, "error": "missing 'disabled' field"}), 400
+            sms.set_user_disabled(bool(body["disabled"]))
+        return jsonify({"ok": True, "disabled": sms._user_disabled})
+
     @app.get("/user/llm_response")
     def user_llm_response():
         """Latest LLM analysis of an inbound SMS reply, for the dashboard."""

@@ -50,6 +50,7 @@ class SMSBus:
         self._load_error: str | None = None
         self._load_attempted = False
         self._suppressed = False
+        self._user_disabled = True
         self._lock = threading.Lock()
         self._activity: collections.deque = collections.deque(maxlen=50)
 
@@ -69,6 +70,7 @@ class SMSBus:
             "available": self._client is not None,
             "enabled": self.enabled,
             "suppressed": self._suppressed,
+            "user_disabled": self._user_disabled,
             "load_attempted": self._load_attempted,
             "load_error": self._load_error,
         }
@@ -123,6 +125,17 @@ class SMSBus:
         self._suppressed = True
         log.info("SMS suppressed for this session (STOP received)")
 
+    # --- user toggle (dashboard) ---------------------------------------------
+
+    def set_user_disabled(self, disabled: bool) -> None:
+        """
+        Enable/disable outbound SMS from the dashboard toggle. Independent of
+        the STOP-triggered suppress() and the QONCLAVE_SMS_ENABLED env var.
+        Resets on server restart.
+        """
+        self._user_disabled = bool(disabled)
+        log.info("SMS %s from dashboard", "disabled" if self._user_disabled else "enabled")
+
     # --- activity tracking ---------------------------------------------------
 
     def record_sent(self, content: str, ok: bool) -> None:
@@ -162,6 +175,13 @@ class SMSBus:
         if self._suppressed:
             log.warning(
                 "SMS suppressed (STOP was received). Skipping message: %r to %s",
+                notification.message, notification.recipient,
+            )
+            return False
+
+        if self._user_disabled:
+            log.info(
+                "SMS disabled from dashboard. Skipping message: %r to %s",
                 notification.message, notification.recipient,
             )
             return False

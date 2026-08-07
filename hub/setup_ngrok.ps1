@@ -66,6 +66,16 @@ function Get-NgrokExe {
     $wingetPath = Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Links\ngrok.exe'
     if (Test-Path $wingetPath) { return $wingetPath }
 
+    # winget sometimes installs the package under WinGet\Packages\ without
+    # creating the PATH shim in WinGet\Links\ (seen when the Links symlink
+    # step is skipped/fails). Fall back to searching the packages dir directly.
+    $wingetPackagesRoot = Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Packages'
+    if (Test-Path $wingetPackagesRoot) {
+        $found = Get-ChildItem -Path $wingetPackagesRoot -Filter 'ngrok.exe' -Recurse -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($found) { return $found.FullName }
+    }
+
     $fallbackPath = Join-Path $NgrokFallbackDir 'ngrok.exe'
     if (Test-Path $fallbackPath) { return $fallbackPath }
 
