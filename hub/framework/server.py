@@ -55,12 +55,13 @@ Endpoints:
                                LLM (or canned template) reply
     GET  /user/assistant_activity  LLM status + recent assistant exchanges,
                                for the dashboard's assistant card
-    (both live in apps/assistant/routes.py, registered below)
+    (both live in apps/assistant/routes.py; the app builds this Blueprint
+    itself and passes it to create_app()'s `blueprints` param -- see below)
 
     POST /sms                 Twilio inbound-reply webhook (security app only)
     GET  /user/sms_activity    recent SMS activity (security app only)
-    (both live in apps/security/sms_routes.py, registered from hub/server.py
-    -- not here, since both read Twilio's own wire shapes; see
+    (both live in apps/security/sms_routes.py, same `blueprints` mechanism
+    -- neither lives here since both read Twilio's own wire shapes; see
     docs/CONVENTIONS.md's note on the sms_bus.py migration)
 
 Design goals:
@@ -90,11 +91,6 @@ from .llm import LLMBackend
 from .mqtt_bus import MQTTBus
 from .policy import Policy
 from .vlm import VLMBackend
-
-# "apps" is a sibling top-level package (hub/ is on sys.path, it is not itself a
-# package), so this must be absolute — same style as hub/server.py's
-# "from apps.security.policy import SecurityPolicy".
-from apps.assistant.routes import create_assistant_blueprint
 
 log = logging.getLogger("qonclave.hub")
 
@@ -181,7 +177,7 @@ def _publish_track_frame(track_id: int, crop_jpeg: bytes, keypoints, label: str)
 def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms,
                static_dir: str, face_id=None, llm: LLMBackend | None = None,
                pose=None, placement: PlacementPolicy | None = None,
-               assistant_llm: LLMBackend | None = None) -> Flask:
+               blueprints=()) -> Flask:
     """
     Build the Qonclave hub Flask app for one Policy.
 
@@ -210,12 +206,13 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms,
                 always where the event was already going) and logs the
                 resolution. The app supplies its own PlacementPolicy the same
                 way it supplies its own Policy; framework/ never imports one.
-    assistant_llm
-                LLMBackend the /assistant/query route generates with, or None
-                to make it serve canned template replies instead. Separate
-                from llm so the assistant can be switched off (see
-                ASSISTANT_LLM_ENABLED in hub/server.py) without disabling
-                /health reporting or the Policy's own LLM use.
+    blueprints  extra Flask Blueprint objects to register (e.g. an app's own
+                voice-assistant or SMS-webhook routes). The app builds each
+                one itself -- with whatever app-specific dependencies it
+                needs, however it likes -- and passes the finished Blueprint
+                in; framework/ never imports from apps/ to construct one.
+                See hub/server.py, apps/assistant/routes.py,
+                apps/security/sms_routes.py.
     static_dir  directory holding the app's dashboard.html, test_*.html
     """
     app = Flask(__name__, static_folder=None)
@@ -1045,6 +1042,7 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms,
         # default landing = dashboard
         return send_from_directory(static_dir, "dashboard.html")
 
-    app.register_blueprint(create_assistant_blueprint(assistant_llm))
+    for bp in blueprints:
+        app.register_blueprint(bp)
 
     return app

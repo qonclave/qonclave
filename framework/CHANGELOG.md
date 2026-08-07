@@ -109,8 +109,13 @@ need it. `hub/framework/recognize_activity.py` and `track_store.py` were reclass
 day from "not started"/missing entirely to "stays app-level" — both are dashboard ring buffers
 with no wire-spec state and no `Origin:` pointer in any SDK stub; `track_store.py` specifically
 was checked against the new `analyze_track`/`track_settings` hooks and found to only store their
-result as an opaque blob, nothing worth promoting. Pointing the rest of `hub/server.py` at
-`qonclave.hub` remains a separate, later change.
+result as an opaque blob, nothing worth promoting. `hub/framework/server.py`'s one concrete bug
+(`from apps.assistant.routes import create_assistant_blueprint`, framework reaching into a
+specific app) is fixed via a generic `blueprints` parameter on `create_app()`; the rest of the
+originally-planned `hub/app.py` capstone move turned out to need its own route-by-route
+framework/app audit across ~40 routes and is descoped to future work — see
+`docs/CONVENTIONS.md`. Pointing the rest of `hub/server.py` at `qonclave.hub` remains a separate,
+later change.
 
 `hub/apps/security/placement.py`'s `SecurityPlacement` had zero callers until now — clean usage of
 `qonclave.placement`, but unproven under real traffic. `create_app()` gained an optional

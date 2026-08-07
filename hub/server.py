@@ -49,6 +49,7 @@ from framework.llm import LLMBackend  # noqa: E402
 from framework.mqtt_bus import MQTTBus  # noqa: E402
 from framework.face_id.identity import FaceIdentityBackend  # noqa: E402
 from framework.pose.pose import PoseBackend  # noqa: E402
+from apps.assistant.routes import create_assistant_blueprint  # noqa: E402
 from apps.security.egress.twilio_sms import SMSBus  # noqa: E402
 from apps.security.policy import SecurityPolicy  # noqa: E402
 from apps.security.placement import SecurityPlacement  # noqa: E402
@@ -75,13 +76,16 @@ pose = PoseBackend()
 sms = SMSBus()
 policy = SecurityPolicy(vlm, face_id, sms, llm, mqtt=mqtt)
 placement = SecurityPlacement()
+# Each app builds its own blueprint, with whatever app-specific dependencies
+# it needs, and hands the finished Blueprint to create_app() -- framework/
+# never imports from apps/ to construct one.
+blueprints = [
+    create_assistant_blueprint(llm if ASSISTANT_LLM_ENABLED else None),
+    create_sms_blueprint(policy=policy, mqtt=mqtt, sms=sms),
+]
 app = create_app(policy=policy, vlm=vlm, mqtt=mqtt, sms=sms, face_id=face_id,
                  static_dir=STATIC_DIR, llm=llm, pose=pose, placement=placement,
-                 assistant_llm=llm if ASSISTANT_LLM_ENABLED else None)
-# Twilio-specific routes (POST /sms, GET /user/sms_activity) are app-owned --
-# registered directly here rather than through create_app(), so framework/
-# never imports anything from apps/ for this.
-app.register_blueprint(create_sms_blueprint(policy=policy, mqtt=mqtt, sms=sms))
+                 blueprints=blueprints)
 
 
 def main():

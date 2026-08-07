@@ -165,7 +165,7 @@ merge on either side of the framework/`hub/` split can tell what it's actually c
 | `recognize_activity.py` | **stays app-level** | n/a — decided 2026-08-06, see below |
 | `track_store.py` | **stays app-level** | n/a — decided 2026-08-06, see below (missing from this table until now) |
 | `policy.py` | `hub/policy.py` | ✅ done — lifted, reverted, redone; see below |
-| `server.py` | `hub/app.py` | ⬜ not started |
+| `server.py` | `hub/app.py` | 🔄 backwards-dependency bug fixed; full move descoped, see below |
 | `mqtt_bus.py` | **stays put**, now wrapping `transport/mqtt.py`'s `MQTTTransport` (`PubSubTransport`) | ✅ done — JSON encoding, ring buffer, dual-topic publish, registry wiring all stay hub-side |
 | `sms_bus.py` | `apps/security/egress/twilio_sms.py` — **leaves the framework entirely**, no generic contract in the SDK either | ✅ done — see below |
 | `server.py`'s `POST /sms` + `GET /user/sms_activity` routes | `apps/security/sms_routes.py`, a Blueprint registered from `hub/server.py` | ✅ done — see below |
@@ -183,8 +183,10 @@ today, proved by `hub/tests/` running against all nine (`mqtt_bus.py`, `vlm.py`,
 wrappers rather than pure re-export shims like the others — see below for why). `sms_bus.py` is a
 different case again: it left `hub/framework/` entirely, without gaining any SDK-side counterpart
 — see below. `face_id/`, `pose/`, and `qnn_session.py` are staying app-level permanently — also
-below. Everything else in the table above is still the pre-convergence, framework-agnostic
-implementation.
+below. `server.py` had its one concrete, long-flagged bug fixed (the `apps.assistant.routes`
+backwards import) without the full `hub/app.py` move it was originally scoped for — see below for
+why that turned out to be its own, larger effort. Everything else in the table above is still the
+pre-convergence, framework-agnostic implementation.
 
 ### `policy.py` was lifted, then reverted, then redone (2026-08-06)
 
@@ -315,6 +317,38 @@ framework's default install surface matters for the open-source privacy-claims a
 `qonclave.vision` namespace; (3) `qnn_session.py` has no consumer left once face_id/pose stay put,
 so there's nothing to migrate it *for* — the same "no second consumer to prove it generalizes"
 reasoning `sms_bus.py`'s note above landed on for a different file.
+
+### `server.py`'s backwards dependency is fixed; the rest of the move is descoped (2026-08-06)
+
+This was planned as the migration's capstone: implement `qonclave.hub.app` (a Flask app factory)
+using everything the six migrations above stood up, and reduce `hub/framework/server.py` to a
+composition root. Attempting that revealed the plan's own premise didn't survive contact with the
+file: `server.py` is ~1050 lines and ~40 routes, and — following the exact reasoning that already
+moved `/sms` and `/user/sms_activity` out to an app blueprint (§ above) — a real, honest pass would
+first have to sort every one of those 40 routes into "generic framework HTTP surface" versus
+"reads an app-specific data shape and belongs in a blueprint instead." Several are obviously the
+latter on inspection (`/user/known_faces`, `/user/known-person-priorities`, `/user/investigation`,
+`/user/investigate` all read `SecurityPolicy`-specific optional hooks; `/user/recognize_activity`
+and the `/user/tracks*` family read `recognize_activity.py`/`track_store.py`, both just decided
+"stays app-level" two sections up). That is a route-by-route audit at least as large as this
+entire migration series has been, file by file — not something to rush through inside what was
+supposed to be the last, wrap-up phase.
+
+So this phase shipped only what was already fully specified and low-risk: the concrete bug named
+in every earlier phase's note, `hub/framework/server.py` doing
+`from apps.assistant.routes import create_assistant_blueprint` — the framework layer reaching into
+one specific app. `create_app()` gained a generic `blueprints: list[Blueprint] = ()` parameter;
+`assistant_llm` (which existed solely to build that one blueprint internally) is gone. Each app now
+builds its own blueprints and hands the finished objects to `create_app()` — `hub/server.py` builds
+both `apps.assistant.routes.create_assistant_blueprint(...)` and
+`apps.security.sms_routes.create_sms_blueprint(...)` and passes both through the same list.
+`framework/server.py` now imports nothing from `apps/`, verified by a test that greps its own
+source for `apps.` imports and fails if one reappears.
+
+**What's still open**: `qonclave.hub.app` remains the placeholder it always was. The actual
+`hub/app.py` migration — the route-by-route framework/app sort described above, then moving
+whatever's left into the SDK — is real, valuable, future work, but it's its own multi-phase effort
+now that the assumption it would be a single capstone phase has been tested and found wrong.
 
 Three more of the table's rows are worth explaining.
 
