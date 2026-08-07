@@ -6,6 +6,10 @@ and independently under `spec/v1/`.
 
 ## [Unreleased]
 
+## [0.1.0-alpha] - 2026-08-07
+
+First public release, published as [`qonclave 0.1.0` on PyPI](https://pypi.org/project/qonclave/0.1.0/).
+
 ### Added
 
 - **`spec/v1/`** — the normative wire contract. JSON Schemas for every plane, `compute.proto`,
