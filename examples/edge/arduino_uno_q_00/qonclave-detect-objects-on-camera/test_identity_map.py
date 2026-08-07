@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "python"))
 from identity_map import IdentityMap  # noqa: E402
 
 
-def _known(name="Jogendra", confidence=0.93):
+def _known(name="Priya", confidence=0.93):
     return {"identity": name, "confidence": confidence, "status": "known"}
 
 
@@ -35,26 +35,26 @@ def test_first_response_of_any_status_is_recorded():
 def test_known_always_overwrites():
     im = IdentityMap()
     im.merge(4, _unknown(0.1))
-    im.merge(4, _known("Jogendra", 0.93))
-    assert im.get(4) == {"name": "Jogendra", "confidence": 0.93, "status": "known"}
+    im.merge(4, _known("Priya", 0.93))
+    assert im.get(4) == {"name": "Priya", "confidence": 0.93, "status": "known"}
     assert im.is_known(4)
 
 
 def test_unknown_does_not_overwrite_known():
     im = IdentityMap()
-    im.merge(4, _known("Jogendra", 0.93))
+    im.merge(4, _known("Priya", 0.93))
     im.merge(4, _unknown(0.2))
     entry = im.get(4)
-    assert entry["name"] == "Jogendra"
+    assert entry["name"] == "Priya"
     assert entry["status"] == "known"
 
 
 def test_no_face_does_not_erase_known():
     im = IdentityMap()
-    im.merge(4, _known("Jogendra", 0.93))
+    im.merge(4, _known("Priya", 0.93))
     im.merge(4, _no_face())
     entry = im.get(4)
-    assert entry["name"] == "Jogendra"
+    assert entry["name"] == "Priya"
     assert entry["status"] == "known"
 
 
@@ -70,9 +70,9 @@ def test_no_face_does_not_overwrite_existing_unknown():
 def test_a_later_known_response_can_still_upgrade_an_unknown_track():
     im = IdentityMap()
     im.merge(7, _unknown(0.25))
-    im.merge(7, _known("Jogendra", 0.9))
+    im.merge(7, _known("Priya", 0.9))
     entry = im.get(7)
-    assert entry["name"] == "Jogendra"
+    assert entry["name"] == "Priya"
     assert entry["status"] == "known"
 
 
@@ -93,10 +93,10 @@ def test_unknown_upgrades_a_stuck_no_face():
 def test_known_upgrades_from_no_face_too():
     im = IdentityMap()
     im.merge(20, _no_face())
-    im.merge(20, _known("Jogendra", 0.9))
+    im.merge(20, _known("Priya", 0.9))
     entry = im.get(20)
     assert entry["status"] == "known"
-    assert entry["name"] == "Jogendra"
+    assert entry["name"] == "Priya"
 
 
 def test_repeated_no_face_never_upgrades_to_unknown():
@@ -120,17 +120,17 @@ def test_same_rank_response_does_not_refresh_confidence():
 
 def test_prune_drops_inactive_and_keeps_active():
     im = IdentityMap(inactive_grace_sec=0)
-    im.merge(4, _known("Jogendra", 0.93))
+    im.merge(4, _known("Priya", 0.93))
     im.merge(7, _unknown(0.25))
     dropped = im.prune({4})
     assert dropped == [7]
     assert im.get(7) == {"name": "unidentified", "confidence": 0.0, "status": "unidentified"}
-    assert im.get(4)["name"] == "Jogendra"
+    assert im.get(4)["name"] == "Priya"
 
 
 def test_snapshot_reflects_current_entries_only():
     im = IdentityMap(inactive_grace_sec=0)
-    im.merge(4, _known("Jogendra", 0.93))
+    im.merge(4, _known("Priya", 0.93))
     im.merge(7, _unknown(0.25))
     im.prune({4})
     assert set(im.snapshot().keys()) == {4}

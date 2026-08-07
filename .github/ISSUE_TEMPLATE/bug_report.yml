@@ -1,0 +1,82 @@
+name: Bug Report
+description: Something in the framework or a reference app isn't working as documented
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. A reproducible report
+        gets fixed faster than "it doesn't work" — the fields below exist
+        to make that easy.
+
+        Found a **security vulnerability**? Please don't file it here —
+        see [`SECURITY.md`](../../SECURITY.md) for private reporting.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Where does this bug live?
+      options:
+        - framework/sdk/python
+        - framework/sdk/c
+        - framework/spec
+        - examples/hub
+        - examples/edge
+        - Documentation
+        - Other / not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug and what you expected instead.
+      placeholder: |
+        Expected: ...
+        Actual: ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps or a minimal code snippet that triggers it.
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Python version, `qonclave` version/commit, hardware (if `examples/edge`).
+      placeholder: |
+        OS: ...
+        Python: ...
+        qonclave: pip version or commit hash
+        Hardware (if applicable): ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or output
+      description: Paste any error output or logs. This will be rendered as code automatically.
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and didn't find a duplicate
+          required: true
+        - label: I'm on the latest `main` (or a specific released version I've noted above)
+          required: true

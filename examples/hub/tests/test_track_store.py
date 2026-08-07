@@ -16,7 +16,7 @@ sys.path.insert(0, HUB_DIR)
 
 from framework import track_store  # noqa: E402
 
-_FACE = {"identity": "Jogendra", "confidence": 0.93, "status": "known"}
+_FACE = {"identity": "Priya", "confidence": 0.93, "status": "known"}
 _POSE = {"status": "ok", "keypoints": [[1.0, 2.0, 0.9]] * 17, "mean_score": 0.71}
 
 
@@ -26,7 +26,7 @@ def test_record_and_history_roundtrip():
     hist = track_store.history(4)
     assert len(hist) == 1
     sample = hist[0]
-    assert sample["identity"] == "Jogendra"
+    assert sample["identity"] == "Priya"
     assert sample["status"] == "known"
     assert sample["pose_status"] == "ok"
     assert sample["mean_score"] == 0.71
@@ -41,7 +41,7 @@ def test_partial_results_are_recorded_as_none():
     track_store.record(4, _FACE, None)          # face-only tick
     hist = track_store.history(4)
     assert hist[0]["identity"] is None and hist[0]["pose_status"] == "ok"
-    assert hist[1]["identity"] == "Jogendra" and hist[1]["pose_status"] is None
+    assert hist[1]["identity"] == "Priya" and hist[1]["pose_status"] is None
 
 
 def test_history_is_capped_at_maxlen():
@@ -63,7 +63,7 @@ def test_snapshot_shape():
     track_store.record(5, None, {"status": "no_pose", "keypoints": None, "mean_score": 0.05})
     snap = track_store.snapshot()
     assert set(snap) == {4, 5}
-    assert snap[4]["identity"] == "Jogendra"
+    assert snap[4]["identity"] == "Priya"
     assert snap[4]["status"] == "known"
     assert snap[4]["history_len"] == 1
     assert snap[4]["has_frame"] is True
@@ -83,7 +83,7 @@ def test_snapshot_keeps_identity_through_pose_only_samples():
     for _ in range(10):
         track_store.record(4, None, _POSE)
     snap = track_store.snapshot()[4]
-    assert snap["identity"] == "Jogendra"
+    assert snap["identity"] == "Priya"
     assert snap["status"] == "known"
     assert snap["latest_pose"]["status"] == "ok"   # still the newest sample's
 
@@ -94,7 +94,7 @@ def test_snapshot_identity_is_the_most_recent_face_result():
     track_store.record(4, _FACE, None)
     track_store.record(4, None, _POSE)
     snap = track_store.snapshot()[4]
-    assert (snap["identity"], snap["status"]) == ("Jogendra", "known")
+    assert (snap["identity"], snap["status"]) == ("Priya", "known")
 
 
 def test_snapshot_known_identity_survives_later_weak_face_results():
@@ -106,7 +106,7 @@ def test_snapshot_known_identity_survives_later_weak_face_results():
         6, {"identity": "no_face", "confidence": 0.0, "status": "no_face"}, _POSE)
 
     snap = track_store.snapshot()[6]
-    assert snap["identity"] == "Jogendra"
+    assert snap["identity"] == "Priya"
     assert snap["status"] == "known"
 
 

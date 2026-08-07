@@ -8,16 +8,17 @@ Snapdragon laptop where VLM reasoning is live) without hunting for a file.
 | `room_with_person.jpg` | A room with a human figure | `hub_verified: true` |
 | `empty_room.jpg` | The same room, no person | `hub_verified: false` |
 | `geniex_demo.jpg` | Qualcomm's public GenieX demo photo | depends on scene |
-| `intruder_cctv.jpg` | Stock CCTV-style photo of an intruder with a crowbar | `hub_verified: true` (security/intrusion scenario) |
-| `senior_fall.png` | Photo of a fall scenario | `hub_verified: true` (fall/elderly-care scenario) |
+| `intruder_cctv.jpg` | Dim, grainy render of a figure carrying a bar-like object | `hub_verified: true` (security/intrusion scenario) |
+| `senior_fall.png` | Render of a figure lying on the floor | `hub_verified: true` (fall/elderly-care scenario) |
 
-`room_with_person.jpg` and `empty_room.jpg` are synthetic and license-free —
-regenerate them with `python make_samples.py`. `geniex_demo.jpg` is Qualcomm's
-public GenieX sample asset.
+All four of `room_with_person.jpg`, `empty_room.jpg`, `senior_fall.png`, and
+`intruder_cctv.jpg` are synthetic and license-free — regenerate any of them
+with `python make_samples.py`. `geniex_demo.jpg` is Qualcomm's public GenieX
+sample asset.
 
-`intruder_cctv.jpg` is a stock photo from Alamy (comp/watermarked preview
-resolution) — fine for local hackathon demo/testing, but **do not** redistribute
-or ship it in any public release without checking Alamy's licensing terms.
+(`intruder_cctv.jpg` was originally a watermarked Alamy stock photo of
+unclear license; replaced 2026-08-07 with a synthetic render as part of the
+open-source privacy/licensing scrub — see `steps_to_open_source.md` §1.)
 
 ## Quick test against a running hub
 

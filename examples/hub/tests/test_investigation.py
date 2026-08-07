@@ -33,7 +33,7 @@ class FakeVLM:
         self.parsed = parsed if parsed is not None else {
             "classification": "EMERGENCY_LIKELY",
             "confidence": 0.9,
-            "observations": ["Jogendra is lying on the floor by the sofa.",
+            "observations": ["Priya is lying on the floor by the sofa.",
                              "The room is otherwise empty."],
             "recommended_action": "Check on them now.",
         }
@@ -68,7 +68,7 @@ class FakeMQTT:
         return self.ok
 
 
-def analysis(state="DANGER", abnormal=6.0, still=8.0, identity="Jogendra"):
+def analysis(state="DANGER", abnormal=6.0, still=8.0, identity="Priya"):
     return {
         "identity": identity,
         "state": state,
@@ -117,7 +117,7 @@ def test_one_event_one_capture_one_vlm_call_one_sms(tmp_path, monkeypatch):
     status = manager.observe(4, b"danger-frame", analysis())
     assert status["state"] == "WAITING_FOR_CAPTURE"
     assert status["active_event_id"] == "event_001"
-    assert status["event_target_identity"] == "Jogendra"
+    assert status["event_target_identity"] == "Priya"
     assert len(mqtt.published) == 1
     device_id, command = mqtt.published[0]
     assert device_id == "unoq-test"
@@ -140,7 +140,7 @@ def test_one_event_one_capture_one_vlm_call_one_sms(tmp_path, monkeypatch):
     prompt = vlm.calls[0]["prompt"]
     # The prompt must name the person and forbid the generic fallbacks, or the
     # reply comes back as "A person appears to be..." with no name in it.
-    assert "Jogendra" in prompt
+    assert "Priya" in prompt
     assert '"a person"' in prompt
     # ...and it must NOT hand over telemetry to parrot back. The model was
     # reporting "The torso angle is 12.0 degrees from vertical" in alerts meant
@@ -151,7 +151,7 @@ def test_one_event_one_capture_one_vlm_call_one_sms(tmp_path, monkeypatch):
 
     assert len(sms.sent) == 1
     assert "EMERGENCY" in sms.sent[0].message
-    assert "Jogendra" in sms.sent[0].message
+    assert "Priya" in sms.sent[0].message
 
     snap = manager.snapshot()
     assert snap["state"] == "COOLDOWN"
@@ -275,7 +275,7 @@ def test_alert_is_two_plain_sentences_with_no_telemetry(tmp_path, monkeypatch):
     assert ";" not in message
     assert "torso" not in message.lower()
     assert "degree" not in message.lower()
-    assert message == ("EMERGENCY: Jogendra is lying on the floor by the sofa. "
+    assert message == ("EMERGENCY: Priya is lying on the floor by the sofa. "
                        "Check on them now.")
 
 
@@ -305,14 +305,14 @@ def test_name_is_added_when_the_model_omits_it(tmp_path, monkeypatch):
     manager, _, _, sms, _ = make_manager(tmp_path, monkeypatch, vlm=vlm)
     manager.observe(4, b"jpeg", analysis())
     manager.on_capture("event_001", b"frame")
-    assert sms.sent[0].message.startswith("EMERGENCY: Jogendra: ")
+    assert sms.sent[0].message.startswith("EMERGENCY: Priya: ")
 
 
 def test_name_is_not_duplicated_when_the_model_complies(tmp_path, monkeypatch):
     manager, _, _, sms, _ = make_manager(tmp_path, monkeypatch)
     manager.observe(4, b"jpeg", analysis())
     manager.on_capture("event_001", b"frame")
-    assert sms.sent[0].message.count("Jogendra") == 1
+    assert sms.sent[0].message.count("Priya") == 1
 
 
 def test_unidentified_person_never_triggers_the_vlm(tmp_path, monkeypatch):
@@ -338,14 +338,14 @@ def test_name_is_recovered_from_the_track_when_the_sample_has_none(tmp_path,
     from framework import track_store
 
     track_store.clear()
-    track_store.record(4, {"identity": "Jogendra", "status": "known"}, None)
+    track_store.record(4, {"identity": "Priya", "status": "known"}, None)
     try:
         manager, _, vlm, sms, _ = make_manager(tmp_path, monkeypatch)
         manager.observe(4, b"jpeg", analysis(identity="Unknown"))
         manager.on_capture("event_001", b"frame")
 
-        assert manager.snapshot()["last_result"]["identity"] == "Jogendra"
-        assert "Jogendra" in vlm.calls[0]["prompt"]
+        assert manager.snapshot()["last_result"]["identity"] == "Priya"
+        assert "Priya" in vlm.calls[0]["prompt"]
     finally:
         track_store.clear()
 
@@ -450,7 +450,7 @@ def test_sms_capture_texts_vlm_reasoning_to_sender(tmp_path, monkeypatch):
     # the severity still has to survive, or an emergency reads as an all-clear.
     assert reply.message.startswith("EMERGENCY: ")
     assert "EMERGENCY_LIKELY" not in reply.message
-    assert "Jogendra is lying on the floor by the sofa." in reply.message
+    assert "Priya is lying on the floor by the sofa." in reply.message
     assert "Check on them now." in reply.message
     assert ";" not in reply.message  # the old "; ".join formatting is gone
 

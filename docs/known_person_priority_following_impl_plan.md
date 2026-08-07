@@ -156,7 +156,7 @@ unchanged by default.
 
 `assets/index.html`: a `#followStatus` line near the detections panel.
 `assets/app.js`: handler for `follow_status` rendering
-`Following: Jogendra (Track 3, P1)` / `Holding for Jogendra (3/10 frames)` /
+`Following: Priya (Track 3, P1)` / `Holding for Priya (3/10 frames)` /
 `Following unknown (Track 7)` / `No target` — via `textContent`.
 
 ### A7. Config docs
@@ -181,7 +181,7 @@ class KnownPersonPriorityStore:
         # persist atomically under threading.Lock
 ```
 
-Persisted format: `{"jogendra": {"priority": 1}}`. Tolerant `_load()` (missing/
+Persisted format: `{"priya": {"priority": 1}}`. Tolerant `_load()` (missing/
 corrupt → `{}`, model: `framework/icons.py`). Atomic save: write `path.tmp`,
 `flush()` + `os.fsync()`, `os.replace()` — first atomic writer in hub/.
 Validation style model: `apps/security/posture.py` `update_settings()` (line 84).
@@ -242,11 +242,11 @@ entries.
    `python hub/tests/test_track_analyze_endpoint.py`.
 3. API smoke against a running hub (run with
    `C:\Users\qc_de\Qonclave\hub\geniex-env` python): GET roster; PUT
-   `{"priority":1}` for jogendra; 400 on `{"priority":0}`; 404 on `/nobody`;
+   `{"priority":1}` for priya; 400 on `{"priority":0}`; 404 on `/nobody`;
    inspect the JSON file; hand-add a stale slug and confirm GET omits it.
-4. End-to-end (cases 1, 5-7, 9, 14): dashboard sets Jogendra P1 → edge logs
+4. End-to-end (cases 1, 5-7, 9, 14): dashboard sets Priya P1 → edge logs
    `Priority map updated` within ~15 s; known + unknown in frame → preview shows
-   `Track N: Jogendra [FOLLOWING, P1]` (green box) + UI panel; known steps out →
+   `Track N: Priya [FOLLOWING, P1]` (green box) + UI panel; known steps out →
    `Holding known target ... missing n/10 frames`, no turns while only unknown
    visible; return before 10 frames → resume; stay out → grace-expired fallback.
    Kill hub → cached map persists; restart → reconnect refresh fires.

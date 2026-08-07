@@ -84,7 +84,7 @@ class _StubFaceID:
 
 
 _KNOWN_FACE = {"available": True, "face_detected": True, "identified": True,
-               "name": "Jogendra", "confidence": 0.93}
+               "name": "Priya", "confidence": 0.93}
 
 _OK_KEYPOINTS = [[10.0, float(i), 0.9] for i in range(17)]
 
@@ -185,7 +185,7 @@ def test_known_face_returns_name_and_confidence():
     body = resp.get_json()
     assert resp.status_code == 200, body
     assert body["track_id"] == 4
-    assert body["face"] == {"identity": "Jogendra", "confidence": 0.93, "status": "known"}
+    assert body["face"] == {"identity": "Priya", "confidence": 0.93, "status": "known"}
     assert "pose" not in body  # not requested
     assert "face" in body["latency_ms"]
 
@@ -270,10 +270,10 @@ def test_pose_only_request_carries_enrolled_identity_after_hub_restart():
     app = _make_app(face_id=_StubFaceID(_KNOWN_FACE), pose=_ok_pose())
     client = app.test_client()
     body = _post_analyze(client, 4, analyzers="pose",
-                         known_identity="Jogendra").get_json()
+                         known_identity="Priya").get_json()
     assert "face" not in body
     track = client.get("/user/tracks").get_json()["tracks"]["4"]
-    assert track["identity"] == "Jogendra"
+    assert track["identity"] == "Priya"
     assert track["status"] == "known"
 
 
@@ -339,7 +339,7 @@ def test_results_are_recorded_in_track_store():
     assert entry["history_len"] == 2
     # The newest sample was pose-only, but the identity resolved on the first
     # one must survive it -- that is the steady state once a track is known.
-    assert entry["identity"] == "Jogendra"
+    assert entry["identity"] == "Priya"
     assert entry["status"] == "known"
     assert entry["latest_pose"]["status"] == "ok"
     assert entry["latest_pose"]["mean_score"] == 0.71
@@ -409,7 +409,7 @@ def test_face_result_shows_up_in_activity_feed_and_serves_its_image():
     assert activity["count"] == 1
     entry = activity["activity"][0]
     assert entry["track_id"] == 4
-    assert entry["identity"] == "Jogendra"
+    assert entry["identity"] == "Priya"
     assert entry["status"] == "known"
     assert "image" not in entry  # metadata only, no inline bytes
 

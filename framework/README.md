@@ -14,8 +14,8 @@ framework/
 ```
 
 There are no applications here, by design. `framework/` is the reusable core; use cases live in
-`hub/apps/` and `edge/`, and that separation is the whole framework-versus-app split the project
-is built on. An example that drifted in here would be the first thing to blur it.
+`examples/hub/apps/` and `examples/edge/`, and that separation is the whole framework-versus-app
+split the project is built on. An example that drifted in here would be the first thing to blur it.
 
 ## The spec is the framework
 
@@ -97,6 +97,12 @@ cmake -S sdk/c -B build-dev -DQONCLAVE_PROFILE=minimal \
       -DQONCLAVE_PORT_SOURCE=/path/to/your_port.c
 ```
 
+**Distribution**: no package-registry listing yet (ESP-IDF component registry, PlatformIO, and
+Zephyr module are all real future options — see [`ROADMAP.md`](../ROADMAP.md)). For now,
+**vendor it**: either a git submodule pointing at this repo's `framework/sdk/c/` directory, or a
+plain copy into your firmware project. Either way you own the CMake integration on your side
+(supplying `QONCLAVE_PORT_SOURCE` for your target), same as the host build above.
+
 ## Test
 
 ```bash
@@ -107,12 +113,23 @@ python -m pytest sdk/python/tests -v
 parsing imports — including the rule that role packages never import each other, which is what
 keeps an edge install free of a web framework.
 
-## Relationship to `hub/` and `edge/`
+## Docs
 
-`hub/framework/` still runs the working demo, but it is no longer untouched by this package:
-`adapter.py`, `events.py`, `transport.py`, `policy.py`, `device_registry.py`, `discovery.py`,
-`vlm.py`, and `llm.py` are now either thin re-export shims or wrappers over `qonclave.*` modules.
-`edge/` still imports nothing from `qonclave.*`. Pointing the rest of `hub/server.py` at
-`qonclave.hub.app` (a Flask app factory, still a placeholder) remains a later, separate change.
-[CONVENTIONS.md](docs/CONVENTIONS.md)'s "Where existing code lands" table carries the current,
-maintained module-by-module map.
+The narrative docs in `docs/` plus a generated API reference build into a static site via
+[MkDocs](https://www.mkdocs.org/):
+
+```bash
+pip install -e "sdk/python[docs]"
+mkdocs serve      # live-reloading local preview at http://127.0.0.1:8000
+mkdocs build      # -> framework/site/ (gitignored, not committed)
+```
+
+## Relationship to `examples/hub` and `examples/edge`
+
+`examples/hub/framework/` still runs the working demo, but it is no longer untouched by this
+package: `adapter.py`, `events.py`, `transport.py`, `policy.py`, `device_registry.py`,
+`discovery.py`, `vlm.py`, and `llm.py` are now either thin re-export shims or wrappers over
+`qonclave.*` modules. `examples/edge/` still imports nothing from `qonclave.*`. Pointing the rest
+of `examples/hub/server.py` at `qonclave.hub.app` (a Flask app factory, still a placeholder)
+remains a later, separate change. [CONVENTIONS.md](docs/CONVENTIONS.md)'s "Where existing code
+lands" table carries the current, maintained module-by-module map.

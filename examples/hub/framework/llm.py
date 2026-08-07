@@ -32,21 +32,31 @@ Return dict shape (always, never raises for the caller):
         "latency_s": float | None,
         "error": str | None,
         "profile": {"generated_tokens", "decode_speed", "stop_reason"} | None,
+        "mock": bool,
     }
+
+Mock fallback (QONCLAVE_MOCK_INFERENCE=1): same opt-in fallback as vlm.py,
+same reasoning -- see that module's docstring. system/thinking are
+GenieX-specific kwargs MockBackend.infer() doesn't accept, so generate()
+drops them when the mock is active rather than passing them through.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 
 from qonclave.core.enums import Complexity
 from qonclave.inference.local.geniex import GenieXBackend
+from qonclave.inference.local.mock import MockBackend
 
 log = logging.getLogger("qonclave.llm")
 
 MODEL_ID = "ai-hub-models/Qwen3-4B"
 DEVICE_MAP = "qairt"
 DEFAULT_MAX_NEW_TOKENS = 512
+
+MOCK_INFERENCE_ENV = "QONCLAVE_MOCK_INFERENCE"
 
 
 class LLMBackend:
@@ -57,19 +67,44 @@ class LLMBackend:
         self.device_map = device_map
         self._backend = GenieXBackend(model_id=model_id, device_map=device_map,
                                       max_complexity=Complexity.LLM_REASON)
+        self._mock: MockBackend | None = None
+
+    def _resolve(self) -> tuple[object, bool]:
+        """See vlm.py's VLMBackend._resolve() -- same opt-in mock fallback,
+        same reasoning. Returns (backend, is_mock)."""
+        if self._backend.available():
+            return self._backend, False
+        if os.environ.get(MOCK_INFERENCE_ENV, "0") == "1":
+            if self._mock is None:
+                self._mock = MockBackend(max_complexity=Complexity.LLM_REASON)
+            return self._mock, True
+        return self._backend, False
 
     # --- capability probe ---------------------------------------------------
 
     def is_available(self) -> bool:
-        """True only if the model is (or can be) loaded on this machine."""
-        return self._backend.available()
+        """True if the model is (or can be) loaded on this machine, OR the
+        mock fallback is active."""
+        backend, _ = self._resolve()
+        return backend.available()
 
     def status(self) -> dict:
         # available(), matching vlm.py's VLMBackend.status() -- the FIRST
         # status call (e.g. /health before anything else warmed this up)
         # triggers the lazy load itself, rather than under-reporting
         # availability until something else happens to trigger a load.
-        s = self._backend.status()
+        backend, is_mock = self._resolve()
+        if is_mock:
+            return {
+                "available": True,
+                "model_id": "mock",
+                "device_map": "mock",
+                "arch": self._backend.status()["arch"],
+                "load_attempted": True,
+                "load_error": None,
+                "mock": True,
+            }
+        s = backend.status()
         return {
             "available": s["available"],
             "model_id": s["model_id"],
@@ -77,12 +112,14 @@ class LLMBackend:
             "arch": s["arch"],
             "load_attempted": s["load_attempted"],
             "load_error": s["load_error"],
+            "mock": False,
         }
 
     def warmup(self) -> bool:
-        """Eagerly load the model; returns True on success."""
+        """Eagerly load the model; returns True on success. Only attempts
+        the real GenieX load -- see vlm.py's warmup() for why."""
         self._backend.warmup()
-        return self._backend.available()
+        return self.is_available()
 
     # --- inference ----------------------------------------------------------
 
@@ -94,6 +131,7 @@ class LLMBackend:
             "latency_s": None,
             "error": self._backend.status()["load_error"] or "LLM not available on this machine",
             "profile": None,
+            "mock": False,
         }
 
     def generate(self, prompt: str, system: str | None = None,
@@ -108,21 +146,29 @@ class LLMBackend:
         verbatim. Defaults to True so existing callers are unaffected.
 
         Always returns a dict and never raises for the caller; on an
-        unsupported machine returns {"available": False, ...}.
+        unsupported machine (and QONCLAVE_MOCK_INFERENCE unset) returns
+        {"available": False, ...}.
         """
-        if not self._backend.available():
+        backend, is_mock = self._resolve()
+        if not backend.available():
             return self._unavailable()
 
-        result = self._backend.infer(prompt=prompt, system=system,
-                                     max_tokens=max_new_tokens, thinking=thinking)
+        if is_mock:
+            # system/thinking are GenieX-specific extras MockBackend doesn't
+            # accept -- see the module docstring.
+            result = backend.infer(prompt=prompt, max_tokens=max_new_tokens)
+        else:
+            result = backend.infer(prompt=prompt, system=system,
+                                   max_tokens=max_new_tokens, thinking=thinking)
         if not result.ok:
             return {**self._unavailable(), "available": True,
-                    "error": f"generate failed: {result.error}"}
+                    "error": f"generate failed: {result.error}", "mock": is_mock}
 
         latency_s = round(result.compute_time_ms / 1000.0, 3) \
             if result.compute_time_ms is not None else None
         preview = (result.text or "")[:120].replace("\n", " ")
-        log.info("LLM generate (%.2fs): %s", latency_s or 0.0, preview)
+        log.info("LLM generate (%.2fs)%s: %s", latency_s or 0.0,
+                 " [mock]" if is_mock else "", preview)
         return {
             "available": True,
             "text": result.text,
@@ -130,6 +176,7 @@ class LLMBackend:
             "latency_s": latency_s,
             "error": None,
             "profile": result.extra.get("profile"),
+            "mock": is_mock,
         }
 
     def close(self):

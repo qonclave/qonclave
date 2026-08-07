@@ -20,6 +20,8 @@ Environment:
     QONCLAVE_SMS_ENABLED        1 (default) to enable; 0 to disable
     TWILIO_ACCOUNT_SID          Twilio account SID
     TWILIO_AUTH_TOKEN           Twilio auth token
+    TWILIO_FROM_NUMBER          Twilio-provisioned sending number, E.164
+    TWILIO_TO_NUMBER            trial-mode fixed recipient, E.164
     QONCLAVE_SMS_MIN_RESEND_SEC minimum seconds between sends (default 120);
                                 stops the investigation re-check loop (which
                                 re-fires every cooldown_seconds while someone
@@ -45,8 +47,6 @@ from qonclave.hub.policy import Notification
 
 log = logging.getLogger("qonclave.sms")
 
-_FROM_NUMBER = "REDACTED"
-_TO_NUMBER = "REDACTED"
 _TEMPLATE_BODY = "sms_appointment_reminders"
 
 
@@ -57,6 +57,8 @@ class SMSBus:
         self.enabled = os.environ.get("QONCLAVE_SMS_ENABLED", "1") == "1"
         self._account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
         self._auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
+        self._from_number = os.environ.get("TWILIO_FROM_NUMBER")
+        self._to_number = os.environ.get("TWILIO_TO_NUMBER")
         self._client = None
         self._load_error: str | None = None
         self._load_attempted = False
@@ -111,6 +113,13 @@ class SMSBus:
                 log.warning("SMS unavailable: %s", self._load_error)
                 return False
 
+            if not self._from_number or not self._to_number:
+                self._load_error = (
+                    "TWILIO_FROM_NUMBER and/or TWILIO_TO_NUMBER not set"
+                )
+                log.warning("SMS unavailable: %s", self._load_error)
+                return False
+
             try:
                 from twilio.rest import Client  # type: ignore
             except Exception as e:
@@ -121,7 +130,7 @@ class SMSBus:
             try:
                 self._client = Client(self._account_sid, self._auth_token)
                 log.info("Twilio client initialised (from=%s, to=%s)",
-                         _FROM_NUMBER, _TO_NUMBER)
+                         self._from_number, self._to_number)
                 return True
             except Exception as e:
                 self._load_error = f"Twilio client init failed: {e}"
@@ -221,8 +230,8 @@ class SMSBus:
         try:
             msg = self._client.messages.create(
                 body=_TEMPLATE_BODY,
-                from_=_FROM_NUMBER,
-                to=_TO_NUMBER,
+                from_=self._from_number,
+                to=self._to_number,
             )
             log.info(
                 "SMS sent (SID=%s): %r to %s",

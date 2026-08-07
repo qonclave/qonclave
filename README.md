@@ -1,5 +1,10 @@
 # Qonclave
 
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![Framework CI](https://github.com/qonclave/qonclave/actions/workflows/framework.yml/badge.svg)](https://github.com/qonclave/qonclave/actions/workflows/framework.yml)
+[![Hub CI](https://github.com/qonclave/qonclave/actions/workflows/hub.yml/badge.svg)](https://github.com/qonclave/qonclave/actions/workflows/hub.yml)
+[![Edge CI](https://github.com/qonclave/qonclave/actions/workflows/edge.yml/badge.svg)](https://github.com/qonclave/qonclave/actions/workflows/edge.yml)
+
 **An Open-Source Framework for Privacy-First, Autonomous Distributed Intelligence**
 
 Qonclave is an edge-AI framework for privacy-first autonomous systems: sense local
@@ -9,7 +14,7 @@ models on a hub, and take a minimal, privacy-preserving action — without the c
 ## Core Features
 
 1. **Distributed AI:** Intelligence is pushed to the edge, creating a resilient mesh network that operates entirely without reliance on centralized cloud servers.
-2. **Private Data:** Enforces strict zero-trust air-gapping. Raw sensor data (like video or audio) never leaves the local subnet; only abstracted conclusions or verified events escalate through the network.
+2. **Private Data:** Designed around zero-trust air-gapping — raw sensor data (like video or audio) is never sent to the cloud; only abstracted conclusions or verified events escalate through the network. See [`framework/docs/SECURITY.md`](framework/docs/SECURITY.md#6-implementation-status-enforced-vs-designed) for what's enforced today versus what's designed but not yet built.
 3. **Hierarchical Intelligence:** Employs a multi-tier architecture where lightweight Edge nodes handle continuous sensing and triage, while powerful Hubs and Compute nodes execute heavy Vision-Language Models (VLMs) on demand.
 4. **Auto Discovery:** Network nodes self-organize dynamically using protocols like mDNS. New devices advertise their capabilities (e.g., "Camera: 1080p", "Compute: NPU") and instantly join the mesh without hardcoded IP configurations.
 
@@ -53,7 +58,7 @@ See `examples/hub/README.md` for the framework/app split and how to add a new us
 
 ## Hub environment (Snapdragon X, Windows ARM64)
 
-First sync this repo yourself (`git clone https://github.com/jogendar/Qonclave.git`
+First sync this repo yourself (`git clone https://github.com/qonclave/qonclave.git`
 or `git pull` in an existing checkout). Then, from inside that checkout, **one
 command** bootstraps everything else on a fresh Snapdragon X box:
 
@@ -107,3 +112,33 @@ run unattended, otherwise you'll be prompted:
 
 Copy `.env.example` to `.env` and fill in your values. `.env` is gitignored and must
 never be committed.
+
+## Third-Party Models
+
+Model weights are downloaded separately at setup/runtime and are **not** covered by
+this repository's license (Apache 2.0 for `framework/`, 0BSD for `examples/`) — each
+carries its own license from its publisher:
+
+- **Qwen2.5-VL-7B-Instruct** and **Qwen3-4B** (Qwen license, Alibaba Cloud) —
+  vision-language reasoning and text-only LLM reasoning, via Qualcomm AI Hub's
+  `ai-hub-models` packaging (`examples/hub/framework/vlm.py`, `llm.py`)
+- **CavaFace** and **MediaPipe** face models — face detection/embedding
+  (`examples/hub/framework/face_id/`)
+- **Vosk** — offline speech-to-text (`examples/edge/arduino_uno_q_00/edge_assistant/`)
+- **Piper** (via `qai_hub_models`' `pipertts_en`/`pipertts_de`/`pipertts_it`) — offline
+  text-to-speech (`edge_assistant/`, `examples/hub/apps/assistant/`)
+
+Review each project's own license before redistributing model weights themselves —
+this repository only ships code that downloads and runs them.
+
+## Community
+
+- **Contributing**: see [`CONTRIBUTING.md`](CONTRIBUTING.md) for dev setup, code style, and PR
+  expectations; [`framework/CONTRIBUTING.md`](framework/CONTRIBUTING.md) has SDK-specific detail.
+- **Roadmap**: [`ROADMAP.md`](ROADMAP.md) — an honest list of what's implemented versus a
+  placeholder today, including good-first-issue-sized entry points.
+- **Code of Conduct**: [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
+- **Security**: found a vulnerability? See [`SECURITY.md`](SECURITY.md) for private disclosure
+  — please don't open a public issue for it.
+- **Governance**: [`GOVERNANCE.md`](GOVERNANCE.md) describes how decisions get made.
+- **Credits**: [`CONTRIBUTORS.md`](CONTRIBUTORS.md).
