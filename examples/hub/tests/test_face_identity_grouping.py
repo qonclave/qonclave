@@ -27,19 +27,19 @@ def unit(*values) -> np.ndarray:
 # --- identity_for_path: the one definition of the layout --------------------
 
 def test_flat_filename_is_the_identity(tmp_path):
-    assert fp.identity_for_path(tmp_path / "jogendra.jpg", tmp_path) == "jogendra"
+    assert fp.identity_for_path(tmp_path / "priya.jpg", tmp_path) == "priya"
 
 
 def test_double_underscore_groups_photos_of_one_person(tmp_path):
-    for name in ("jogendra__2.jpg", "jogendra__3.png", "jogendra__side.jpg"):
-        assert fp.identity_for_path(tmp_path / name, tmp_path) == "jogendra"
+    for name in ("priya__2.jpg", "priya__3.png", "priya__side.jpg"):
+        assert fp.identity_for_path(tmp_path / name, tmp_path) == "priya"
 
 
 def test_single_underscore_stays_part_of_the_name(tmp_path):
     # _slugify_name collapses runs of non-alphanumerics to ONE underscore, so a
     # real slug can never contain "__" -- which is what makes it a safe
     # separator, and why a single underscore must keep its old meaning.
-    assert fp.identity_for_path(tmp_path / "jogendra_1.jpg", tmp_path) == "jogendra_1"
+    assert fp.identity_for_path(tmp_path / "priya_1.jpg", tmp_path) == "priya_1"
     assert fp.identity_for_path(tmp_path / "bob_smith.jpg", tmp_path) == "bob_smith"
 
 
@@ -47,18 +47,18 @@ def test_case_does_not_split_one_person_in_two(tmp_path):
     # Grouping exists so hand-named files land on one person; a capital letter
     # must not undo that. Matches _slugify_name, which lowercases, so a
     # hand-dropped file and a dashboard enrollment agree on the name.
-    for name in ("Jogendra__1.jpg", "jogendra__2.jpg", "JOGENDRA__3.png",
-                 "Jogendra.jpg"):
-        assert fp.identity_for_path(tmp_path / name, tmp_path) == "jogendra"
-    assert fp.identity_for_path(tmp_path / "JOGENDRA" / "side.jpg",
-                                tmp_path) == "jogendra"
+    for name in ("Priya__1.jpg", "priya__2.jpg", "PRIYA__3.png",
+                 "Priya.jpg"):
+        assert fp.identity_for_path(tmp_path / name, tmp_path) == "priya"
+    assert fp.identity_for_path(tmp_path / "PRIYA" / "side.jpg",
+                                tmp_path) == "priya"
 
 
 def test_subdirectory_name_is_the_identity(tmp_path):
-    p = tmp_path / "jogendra" / "side.jpg"
-    assert fp.identity_for_path(p, tmp_path) == "jogendra"
-    deeper = tmp_path / "jogendra" / "angles" / "left.jpg"
-    assert fp.identity_for_path(deeper, tmp_path) == "jogendra"
+    p = tmp_path / "priya" / "side.jpg"
+    assert fp.identity_for_path(p, tmp_path) == "priya"
+    deeper = tmp_path / "priya" / "angles" / "left.jpg"
+    assert fp.identity_for_path(deeper, tmp_path) == "priya"
 
 
 # --- match_scores: best across a person's photos, not the mean --------------
@@ -68,14 +68,14 @@ def test_best_photo_wins_not_the_average():
     # neither, so a mean template would make extra photos HURT. The max means
     # each photo can independently rescue a match.
     frontal, profile = unit(1, 0), unit(0, 1)
-    known = {"jogendra": np.stack([frontal, profile])}
+    known = {"priya": np.stack([frontal, profile])}
 
-    assert fp.match_scores(known, frontal)["jogendra"] == pytest.approx(1.0)
-    assert fp.match_scores(known, profile)["jogendra"] == pytest.approx(1.0)
+    assert fp.match_scores(known, frontal)["priya"] == pytest.approx(1.0)
+    assert fp.match_scores(known, profile)["priya"] == pytest.approx(1.0)
 
     # The mean of those two would only score ~0.71 against either pose.
-    mean_template = {"jogendra": (frontal + profile) / np.linalg.norm(frontal + profile)}
-    assert fp.match_scores(mean_template, frontal)["jogendra"] < 0.75
+    mean_template = {"priya": (frontal + profile) / np.linalg.norm(frontal + profile)}
+    assert fp.match_scores(mean_template, frontal)["priya"] < 0.75
 
 
 def test_adding_a_photo_never_lowers_a_persons_score():
@@ -102,59 +102,59 @@ def fake_embeddings(monkeypatch, mapping):
 
 
 def test_load_db_groups_multiple_photos_into_one_person(tmp_path, monkeypatch):
-    for name in ("jogendra.jpg", "jogendra__2.jpg", "alice.jpg"):
+    for name in ("priya.jpg", "priya__2.jpg", "alice.jpg"):
         (tmp_path / name).write_bytes(b"x")
     fake_embeddings(monkeypatch, {
-        "jogendra.jpg": unit(1, 0, 0),
-        "jogendra__2.jpg": unit(0, 1, 0),
+        "priya.jpg": unit(1, 0, 0),
+        "priya__2.jpg": unit(0, 1, 0),
         "alice.jpg": unit(0, 0, 1),
     })
 
     known = fp._load_db(None, None, tmp_path, use_npu=False)
-    assert sorted(known) == ["alice", "jogendra"]
-    assert known["jogendra"].shape == (2, 3)  # both photos kept
+    assert sorted(known) == ["alice", "priya"]
+    assert known["priya"].shape == (2, 3)  # both photos kept
     assert known["alice"].shape == (1, 3)
 
-    # Either jogendra photo identifies him; neither is diluted by the other.
-    assert fp.match_scores(known, unit(0, 1, 0))["jogendra"] == pytest.approx(1.0)
+    # Either priya photo identifies him; neither is diluted by the other.
+    assert fp.match_scores(known, unit(0, 1, 0))["priya"] == pytest.approx(1.0)
 
 
 def test_load_db_groups_per_person_subdirectories(tmp_path, monkeypatch):
-    (tmp_path / "jogendra").mkdir()
-    (tmp_path / "jogendra" / "front.jpg").write_bytes(b"x")
-    (tmp_path / "jogendra" / "side.jpg").write_bytes(b"x")
+    (tmp_path / "priya").mkdir()
+    (tmp_path / "priya" / "front.jpg").write_bytes(b"x")
+    (tmp_path / "priya" / "side.jpg").write_bytes(b"x")
     fake_embeddings(monkeypatch, {"front.jpg": unit(1, 0), "side.jpg": unit(0, 1)})
 
     known = fp._load_db(None, None, tmp_path, use_npu=False)
-    assert sorted(known) == ["jogendra"]
-    assert known["jogendra"].shape == (2, 2)
+    assert sorted(known) == ["priya"]
+    assert known["priya"].shape == (2, 2)
 
 
 def test_photo_with_no_detectable_face_is_skipped(tmp_path, monkeypatch):
-    (tmp_path / "jogendra.jpg").write_bytes(b"x")
-    (tmp_path / "jogendra__2.jpg").write_bytes(b"x")
-    fake_embeddings(monkeypatch, {"jogendra.jpg": unit(1, 0)})  # __2 returns None
+    (tmp_path / "priya.jpg").write_bytes(b"x")
+    (tmp_path / "priya__2.jpg").write_bytes(b"x")
+    fake_embeddings(monkeypatch, {"priya.jpg": unit(1, 0)})  # __2 returns None
 
     known = fp._load_db(None, None, tmp_path, use_npu=False)
-    assert known["jogendra"].shape == (1, 2)
+    assert known["priya"].shape == (1, 2)
 
 
 def test_stale_cache_listing_old_identities_is_rebuilt(tmp_path, monkeypatch):
-    # The regression that motivated this: renaming jogendra_1.jpg to
-    # jogendra__2.jpg can preserve mtimes, so an mtime-only check would keep
-    # serving "jogendra_1" as a separate person forever.
-    (tmp_path / "jogendra.jpg").write_bytes(b"x")
-    (tmp_path / "jogendra__2.jpg").write_bytes(b"x")
-    stale = {"jogendra": unit(1, 0), "jogendra_1": unit(0, 1)}
+    # The regression that motivated this: renaming priya_1.jpg to
+    # priya__2.jpg can preserve mtimes, so an mtime-only check would keep
+    # serving "priya_1" as a separate person forever.
+    (tmp_path / "priya.jpg").write_bytes(b"x")
+    (tmp_path / "priya__2.jpg").write_bytes(b"x")
+    stale = {"priya": unit(1, 0), "priya_1": unit(0, 1)}
     np.save(str(fp._cache_path(tmp_path, False)), stale)
     # Make the cache look newer than every image.
     os.utime(fp._cache_path(tmp_path, False), (1 << 31, 1 << 31))
 
     fake_embeddings(monkeypatch, {
-        "jogendra.jpg": unit(1, 0), "jogendra__2.jpg": unit(0, 1),
+        "priya.jpg": unit(1, 0), "priya__2.jpg": unit(0, 1),
     })
     known = fp._load_db(None, None, tmp_path, use_npu=False)
-    assert sorted(known) == ["jogendra"]  # not jogendra_1
+    assert sorted(known) == ["priya"]  # not priya_1
 
 
 def test_fresh_cache_matching_the_directory_is_reused(tmp_path, monkeypatch):
@@ -187,73 +187,73 @@ def offline_backend(faces_dir, monkeypatch) -> FaceIdentityBackend:
 
 
 def test_known_names_reports_one_name_per_person(tmp_path):
-    for name in ("jogendra.jpg", "jogendra__2.jpg", "jogendra__3.png"):
+    for name in ("priya.jpg", "priya__2.jpg", "priya__3.png"):
         (tmp_path / name).write_bytes(b"x")
     (tmp_path / "alice").mkdir()
     (tmp_path / "alice" / "front.jpg").write_bytes(b"x")
     (tmp_path / "notes.txt").write_bytes(b"x")  # non-image ignored
 
     backend = FaceIdentityBackend(known_faces_dir=tmp_path)
-    assert backend.known_names() == ["alice", "jogendra"]
+    assert backend.known_names() == ["alice", "priya"]
 
 
 def test_photos_for_lists_every_angle(tmp_path):
-    for name in ("jogendra.jpg", "jogendra__2.jpg", "alice.jpg"):
+    for name in ("priya.jpg", "priya__2.jpg", "alice.jpg"):
         (tmp_path / name).write_bytes(b"x")
     backend = FaceIdentityBackend(known_faces_dir=tmp_path)
-    assert [p.name for p in backend.photos_for("jogendra")] == [
-        "jogendra.jpg", "jogendra__2.jpg"]
-    assert [p.name for p in backend.photos_for("Jogendra")] == [
-        "jogendra.jpg", "jogendra__2.jpg"]  # name is slugified
+    assert [p.name for p in backend.photos_for("priya")] == [
+        "priya.jpg", "priya__2.jpg"]
+    assert [p.name for p in backend.photos_for("Priya")] == [
+        "priya.jpg", "priya__2.jpg"]  # name is slugified
 
 
 def test_enroll_additional_keeps_existing_photos(tmp_path, monkeypatch):
     faces, staging = tmp_path / "faces", tmp_path / "upload.jpg"
     faces.mkdir()
-    (faces / "jogendra.jpg").write_bytes(b"first")
+    (faces / "priya.jpg").write_bytes(b"first")
     staging.write_bytes(b"second")
 
     backend = offline_backend(faces, monkeypatch)
-    result = backend.enroll("Jogendra", str(staging), additional=True)
+    result = backend.enroll("Priya", str(staging), additional=True)
 
     assert result["ok"] is True
     assert result["replaced"] is False
     assert result["photo_count"] == 2
-    assert os.path.basename(result["path"]) == "jogendra__2.jpg"
-    assert (faces / "jogendra.jpg").read_bytes() == b"first"  # untouched
-    assert backend.known_names() == ["jogendra"]  # still ONE person
+    assert os.path.basename(result["path"]) == "priya__2.jpg"
+    assert (faces / "priya.jpg").read_bytes() == b"first"  # untouched
+    assert backend.known_names() == ["priya"]  # still ONE person
 
 
 def test_enroll_additional_picks_the_next_free_index(tmp_path, monkeypatch):
     faces, staging = tmp_path / "faces", tmp_path / "upload.jpg"
     faces.mkdir()
-    (faces / "jogendra.jpg").write_bytes(b"a")
-    (faces / "jogendra__2.png").write_bytes(b"b")
+    (faces / "priya.jpg").write_bytes(b"a")
+    (faces / "priya__2.png").write_bytes(b"b")
     staging.write_bytes(b"c")
 
     backend = offline_backend(faces, monkeypatch)
-    result = backend.enroll("jogendra", str(staging), additional=True)
+    result = backend.enroll("priya", str(staging), additional=True)
     # __2 is taken under a different extension; it must not be overwritten.
-    assert os.path.basename(result["path"]) == "jogendra__3.jpg"
-    assert (faces / "jogendra__2.png").read_bytes() == b"b"
+    assert os.path.basename(result["path"]) == "priya__3.jpg"
+    assert (faces / "priya__2.png").read_bytes() == b"b"
     assert result["photo_count"] == 3
 
 
 def test_enroll_default_replaces_every_photo_of_that_person(tmp_path, monkeypatch):
     faces, staging = tmp_path / "faces", tmp_path / "upload.jpg"
     faces.mkdir()
-    (faces / "jogendra.jpg").write_bytes(b"a")
-    (faces / "jogendra__2.png").write_bytes(b"b")
+    (faces / "priya.jpg").write_bytes(b"a")
+    (faces / "priya__2.png").write_bytes(b"b")
     (faces / "alice.jpg").write_bytes(b"keep")
     staging.write_bytes(b"new")
 
     backend = offline_backend(faces, monkeypatch)
-    result = backend.enroll("jogendra", str(staging))
+    result = backend.enroll("priya", str(staging))
 
     assert result["replaced"] is True
     assert result["photo_count"] == 1
-    assert not (faces / "jogendra__2.png").exists()  # no stale angle survives
-    assert (faces / "jogendra.jpg").read_bytes() == b"new"
+    assert not (faces / "priya__2.png").exists()  # no stale angle survives
+    assert (faces / "priya.jpg").read_bytes() == b"new"
     assert (faces / "alice.jpg").read_bytes() == b"keep"  # other people safe
 
 

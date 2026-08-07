@@ -34,7 +34,7 @@ def test_box_and_label_are_drawn_for_a_track():
     frame = _make_frame_jpeg()
     tracks = [{"track_id": 4, "bounding_box_xyxy": (20, 20, 100, 120)}]
     plain = _decode(frame)
-    out = draw_track_overlay(frame, tracks, {4: "Track 4: Jogendra"})
+    out = draw_track_overlay(frame, tracks, {4: "Track 4: Priya"})
     annotated = _decode(out)
     assert annotated is not None
     assert annotated.shape == plain.shape

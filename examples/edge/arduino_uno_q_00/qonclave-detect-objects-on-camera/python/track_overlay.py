@@ -58,7 +58,7 @@ def draw_track_overlay(frame_jpeg: bytes, tracks: list[dict], labels: dict,
 
     tracks: this frame's person_tracks (each needs at least "track_id" and
         "bounding_box_xyxy").
-    labels: track_id -> display text (e.g. "Track 4: Jogendra"). A track
+    labels: track_id -> display text (e.g. "Track 4: Priya"). A track
         missing from labels still gets a box, labeled "Track <id>".
     highlight_track_id: the follow target's id, drawn green (see _draw_tracks).
 

@@ -375,7 +375,7 @@ curl -F "track_id=4" -F "image=@track_4.jpg" \
 
 ```json
 {"track_id": 4,
- "face": {"identity": "Jogendra", "confidence": 0.93, "status": "known"},
+ "face": {"identity": "Priya", "confidence": 0.93, "status": "known"},
  "pose": {"status": "ok", "keypoints": [[96.0, 34.2, 0.87], "... 17 total"], "mean_score": 0.71},
  "latency_ms": {"face": 88.0, "pose": 1.5}}
 ```

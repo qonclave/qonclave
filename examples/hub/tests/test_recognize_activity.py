@@ -17,10 +17,10 @@ from framework import recognize_activity  # noqa: E402
 
 
 def test_record_and_recent_round_trip():
-    recognize_activity.record(4, "Jogendra", 0.93, "known", 12.3, b"fake-jpeg-bytes", source_ip="10.0.0.1")
+    recognize_activity.record(4, "Priya", 0.93, "known", 12.3, b"fake-jpeg-bytes", source_ip="10.0.0.1")
     items = recognize_activity.recent(1)
     assert items[0]["track_id"] == 4
-    assert items[0]["identity"] == "Jogendra"
+    assert items[0]["identity"] == "Priya"
     assert items[0]["status"] == "known"
     assert items[0]["source_ip"] == "10.0.0.1"
     assert "image" not in items[0]  # metadata only, no raw bytes in recent()

@@ -11,7 +11,7 @@ for people no longer enrolled are ignored (and unknown slugs rejected on
 write) rather than deleted, so re-enrolling someone restores their priority.
 
 Persisted format (known_person_priorities.json, gitignored runtime state):
-    {"jogendra": {"priority": 1}}
+    {"priya": {"priority": 1}}
 """
 
 from __future__ import annotations

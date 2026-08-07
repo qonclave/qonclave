@@ -43,8 +43,12 @@ Thumbs.db
 tmp/
 *.tmp
 
-# Face ID embedding cache
-examples/hub/framework/face_id/known_faces/.embeddings_*.npy
+# Enrolled face photos + embedding cache are per-deployment data -- never
+# committed here, regardless of layout (flat <name>.jpg or one directory
+# per person). Excludes the CONTENTS, not the directory itself, so the
+# negated exception below can still track the format-explainer README.
+examples/hub/framework/face_id/known_faces/*
+!examples/hub/framework/face_id/known_faces/README.txt
 
 # Hub runtime uploads (camera frames received from edge devices)
 examples/hub/uploads/

@@ -49,14 +49,14 @@ THRESHOLD = 0.35   # cosine similarity threshold for same/different person
 # monitor needs to keep recognizing them. Two layouts express "these are the
 # same person", and both map to ONE identity:
 #
-#   known_faces/jogendra.jpg          -> jogendra
-#   known_faces/jogendra__2.jpg       -> jogendra   (flat, double underscore)
-#   known_faces/jogendra/side.jpg     -> jogendra   (one directory per person)
+#   known_faces/priya.jpg          -> priya
+#   known_faces/priya__2.jpg       -> priya   (flat, double underscore)
+#   known_faces/priya/side.jpg     -> priya   (one directory per person)
 #
 # The separator is a DOUBLE underscore because _slugify_name collapses every
 # run of non-alphanumerics to a single "_", so no slug can ever contain "__".
-# A single underscore therefore stays part of the name: "jogendra_1.jpg" is a
-# person called jogendra_1, not a second photo of jogendra.
+# A single underscore therefore stays part of the name: "priya_1.jpg" is a
+# person called priya_1, not a second photo of priya.
 PHOTO_SEPARATOR = "__"
 
 
@@ -69,7 +69,7 @@ def identity_for_path(path: Path, db_dir: Path) -> str:
     reports by it, so the two can't drift apart.
 
     Lowercased, because the point of grouping is that files a human names by
-    hand end up as one person: "Jogendra__1.jpg" and "jogendra__2.jpg" are the
+    hand end up as one person: "Priya__1.jpg" and "priya__2.jpg" are the
     same man, and a case difference splitting them back into two identities
     would defeat the whole mechanism. This also matches _slugify_name, so a
     hand-dropped file and a dashboard enrollment agree on the name.
@@ -455,7 +455,7 @@ def _load_db(detector, model, db_dir: Path, use_npu: bool) -> dict:
     by identity_for_path, so several photos of one person collapse to a single
     entry instead of competing as separate identities -- which matters beyond
     accuracy: downstream state (posture timers, follow priorities) is keyed by
-    identity, and a match flip-flopping between "jogendra" and "jogendra_1"
+    identity, and a match flip-flopping between "priya" and "priya_1"
     resets those timers mid-collapse.
     """
     exts      = {".jpg", ".jpeg", ".png", ".webp"}
@@ -466,7 +466,7 @@ def _load_db(detector, model, db_dir: Path, use_npu: bool) -> dict:
 
     # Cache is valid only if it is newer than every image AND describes the
     # same set of people. The mtime check alone is not enough: renaming or
-    # regrouping files (jogendra_1.jpg -> jogendra__2.jpg) can preserve mtimes,
+    # regrouping files (priya_1.jpg -> priya__2.jpg) can preserve mtimes,
     # which would keep serving the old identities indefinitely -- silently, and
     # under the exact names downstream posture timers are keyed by.
     if cache.exists():

@@ -87,7 +87,7 @@ def scaled_pose(pose, factor):
 def test_fall_requires_abnormal_then_motionless_durations():
     clock = Clock()
     machine = PostureStateMachine(PostureSettings(abnormal_seconds=3, motionless_seconds=5), clock)
-    face = {"status": "known", "identity": "Jogendra"}
+    face = {"status": "known", "identity": "Priya"}
 
     first = machine.analyze(7, jpeg(), face, fallen_pose())
     assert first["state"] == "NORMAL"
@@ -96,7 +96,7 @@ def test_fall_requires_abnormal_then_motionless_durations():
     clock.now = 3.1
     suspicious = machine.analyze(7, jpeg(), None, fallen_pose())
     assert suspicious["state"] == "SUSPICIOUS"
-    assert suspicious["identity"] == "Jogendra"
+    assert suspicious["identity"] == "Priya"
 
     clock.now = 8.2
     danger = machine.analyze(7, jpeg(), None, fallen_pose())
@@ -130,7 +130,7 @@ def test_chair_slump_escalates_on_tilt_alone_then_stillness():
     # enough to ask the VLM -- and stillness on top of it reaches DANGER.
     clock = Clock()
     machine = PostureStateMachine(clock=clock)
-    face = {"status": "known", "identity": "Jogendra"}
+    face = {"status": "known", "identity": "Priya"}
 
     first = machine.analyze(7, jpeg(), face, chair_slump_pose())
     assert first["state"] == "NORMAL"  # nothing is sustained yet
@@ -146,7 +146,7 @@ def test_chair_slump_escalates_on_tilt_alone_then_stillness():
     result = machine.analyze(7, jpeg(), None, chair_slump_pose())
     assert result["state"] == "DANGER"
     assert result["posture_score"] == 6
-    assert result["identity"] == "Jogendra"
+    assert result["identity"] == "Priya"
 
 
 def test_forward_slump_escalates_via_head_rule():
@@ -156,7 +156,7 @@ def test_forward_slump_escalates_via_head_rule():
     # therefore be enough to reach the VLM.
     clock = Clock()
     machine = PostureStateMachine(clock=clock)
-    face = {"status": "known", "identity": "Jogendra"}
+    face = {"status": "known", "identity": "Priya"}
 
     first = machine.analyze(9, jpeg(), face, forward_slump_pose())
     assert first["state"] == "NORMAL"
@@ -180,7 +180,7 @@ def test_wide_box_total_stillness_goes_suspicious():
     # SUSPICIOUS -- the VLM investigation filters out naps.
     clock = Clock()
     machine = PostureStateMachine(clock=clock)
-    machine.analyze(2, jpeg(), {"status": "known", "identity": "Jogendra"},
+    machine.analyze(2, jpeg(), {"status": "known", "identity": "Priya"},
                     desk_sitting_pose())
     clock.now = 2.0  # stillness timer arms on the second sample
     assert machine.analyze(2, jpeg(), None, desk_sitting_pose())["state"] == "NORMAL"
@@ -199,7 +199,7 @@ def test_fidgeting_desk_sitting_stays_normal():
     shifted = desk_sitting_pose()
     shifted["keypoints"][15] = [90, 290, .9]  # foot moved -- big normalized delta
     poses = [desk_sitting_pose(), shifted]
-    machine.analyze(2, jpeg(), {"status": "known", "identity": "Jogendra"}, poses[0])
+    machine.analyze(2, jpeg(), {"status": "known", "identity": "Priya"}, poses[0])
     for i, t in enumerate((3.0, 6.0, 9.0, 12.0, 15.0, 30.0, 60.0)):
         clock.now = t
         result = machine.analyze(2, jpeg(), None, poses[(i + 1) % 2])
@@ -220,7 +220,7 @@ def test_standing_still_narrow_box_stays_normal():
 
     clock = Clock()
     machine = PostureStateMachine(clock=clock)
-    machine.analyze(3, jpeg(), {"status": "known", "identity": "Jogendra"}, standing)
+    machine.analyze(3, jpeg(), {"status": "known", "identity": "Priya"}, standing)
     for t in (5.0, 20.0, 120.0):
         clock.now = t
         result = machine.analyze(3, jpeg(), None, standing)
@@ -246,7 +246,7 @@ def test_partial_cue_plus_stillness_reaches_the_vlm():
     # looking costs a missed collapse.
     clock = Clock()
     machine = PostureStateMachine(clock=clock)
-    face = {"status": "known", "identity": "Jogendra"}
+    face = {"status": "known", "identity": "Priya"}
 
     first = machine.analyze(11, jpeg(), face, mild_lean_pose())
     assert 20 <= first["torso_angle"] < 35  # too mild for the full tilt cue
@@ -269,7 +269,7 @@ def test_single_sample_blip_does_not_reset_timers():
     # and a reset here delays the alert indefinitely for someone still down.
     clock = Clock()
     machine = PostureStateMachine(clock=clock)
-    face = {"status": "known", "identity": "Jogendra"}
+    face = {"status": "known", "identity": "Priya"}
 
     machine.analyze(7, jpeg(), face, chair_slump_pose())
     clock.now = 4.0
@@ -290,7 +290,7 @@ def test_sustained_recovery_does_reset_timers():
     # recovery: the abnormal timer restarts from the next abnormal sample.
     clock = Clock()
     machine = PostureStateMachine(clock=clock)
-    face = {"status": "known", "identity": "Jogendra"}
+    face = {"status": "known", "identity": "Priya"}
 
     machine.analyze(7, jpeg(), face, chair_slump_pose())
     clock.now = 4.0
@@ -321,7 +321,7 @@ def test_crop_resize_does_not_look_like_person_movement():
 def test_vertical_bent_knee_sitting_stays_normal():
     clock = Clock()
     machine = PostureStateMachine(clock=clock)
-    result = machine.analyze(2, jpeg(), {"status": "known", "identity": "Jogendra"}, seated_pose())
+    result = machine.analyze(2, jpeg(), {"status": "known", "identity": "Priya"}, seated_pose())
     assert result["normal_seated"] is True
     assert result["posture_score"] == 0
     clock.now = 20
@@ -367,7 +367,7 @@ def test_security_policy_tracks_unknown_people_too():
     assert policy.analyze_track(1, b"image", {"status": "unknown"}, pose) == {"state": "NORMAL"}
     assert policy.analyze_track(2, b"image", None, pose) == {"state": "NORMAL"}
     result = policy.analyze_track(
-        3, b"image", {"status": "known", "identity": "Jogendra"}, pose)
+        3, b"image", {"status": "known", "identity": "Priya"}, pose)
     assert result == {"state": "NORMAL"}
     assert len(policy.posture.calls) == 3
     assert len(policy.investigation.observed) == 3

@@ -72,13 +72,13 @@ priority
 Example:
 
 ```text
-Frame 1: Jogendra is known on track 3 -> follow track 3
+Frame 1: Priya is known on track 3 -> follow track 3
 Frame 2: only unknown track 7       -> wait; do not switch
 Frame 3: only unknown track 7       -> wait
-Frame 4: Jogendra track 3 returns   -> resume track 3
+Frame 4: Priya track 3 returns   -> resume track 3
 ```
 
-If Jogendra remains absent beyond ten detection frames:
+If Priya remains absent beyond ten detection frames:
 
 ```text
 Frame 11: grace expires -> select the best unknown track
@@ -103,7 +103,7 @@ Suggested persisted format:
 
 ```json
 {
-  "jogendra": {
+  "priya": {
     "priority": 1
   },
   "alice": {
@@ -143,7 +143,7 @@ Example response:
 {
   "people": [
     {
-      "identity": "jogendra",
+      "identity": "priya",
       "priority": 1
     },
     {
@@ -171,7 +171,7 @@ The edge maintains an in-memory priority map:
 
 ```python
 {
-    "jogendra": 1,
+    "priya": 1,
     "alice": 2,
 }
 ```
@@ -211,7 +211,7 @@ Example result:
 ```python
 {
     "track_id": 3,
-    "identity": "jogendra",
+    "identity": "priya",
     "status": "known",
     "priority": 1,
     "reason": "highest_priority_known",
@@ -264,7 +264,7 @@ Send target state to the edge Web UI:
 ```json
 {
   "track_id": 3,
-  "identity": "jogendra",
+  "identity": "priya",
   "status": "known",
   "priority": 1,
   "state": "following",
@@ -284,7 +284,7 @@ no_target
 Distinguish the selected target in the preview:
 
 ```text
-Track 3: Jogendra [FOLLOWING, P1]
+Track 3: Priya [FOLLOWING, P1]
 Track 7: Unknown
 ```
 
@@ -292,8 +292,8 @@ Log target transitions and grace-period state without logging unchanged state
 on every frame:
 
 ```text
-Follow target changed: unknown track 7 -> Jogendra track 3 (known priority 1)
-Holding known target Jogendra: missing 3/10 frames
+Follow target changed: unknown track 7 -> Priya track 3 (known priority 1)
+Holding known target Priya: missing 3/10 frames
 Known-target grace expired: falling back to unknown track 7
 ```
 

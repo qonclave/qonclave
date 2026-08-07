@@ -36,11 +36,11 @@ def _unidentified():
 def test_known_person_beats_longer_established_unknown():
     s = FollowTargetSelector()
     sel = s.select([_track(7, frames=50), _track(3, frames=2)],
-                   {7: _unknown(), 3: _known("jogendra")},
-                   {"jogendra": 1})
+                   {7: _unknown(), 3: _known("priya")},
+                   {"priya": 1})
     assert sel["state"] == FOLLOWING
     assert sel["track_id"] == 3
-    assert sel["identity"] == "jogendra"
+    assert sel["identity"] == "priya"
     assert sel["priority"] == 1
     assert sel["reason"] == "highest_priority_known"
     assert sel["track"]["track_id"] == 3
@@ -142,12 +142,12 @@ def test_larger_box_wins_among_unknowns():
 
 def test_grace_holds_while_unknown_visible_and_track_is_none():
     s = FollowTargetSelector(grace_frames=10)
-    s.select([_track(3)], {3: _known("jogendra")}, {"jogendra": 1})
+    s.select([_track(3)], {3: _known("priya")}, {"priya": 1})
     for n in range(1, 10):
-        sel = s.select([_track(7, frames=50)], {7: _unknown()}, {"jogendra": 1})
+        sel = s.select([_track(7, frames=50)], {7: _unknown()}, {"priya": 1})
         assert sel["state"] == KNOWN_TARGET_MISSING, n
         assert sel["track_id"] == 3
-        assert sel["identity"] == "jogendra"
+        assert sel["identity"] == "priya"
         assert sel["priority"] == 1
         assert sel["missing_frames"] == n
         assert sel["reason"] == "grace_hold"
@@ -158,10 +158,10 @@ def test_grace_holds_while_unknown_visible_and_track_is_none():
 
 def test_target_reacquired_during_grace():
     s = FollowTargetSelector()
-    s.select([_track(3)], {3: _known("jogendra")}, {"jogendra": 1})
-    s.select([_track(7)], {7: _unknown()}, {"jogendra": 1})
+    s.select([_track(3)], {3: _known("priya")}, {"priya": 1})
+    s.select([_track(7)], {7: _unknown()}, {"priya": 1})
     sel = s.select([_track(3, frames=4), _track(7, frames=9)],
-                   {3: _known("jogendra"), 7: _unknown()}, {"jogendra": 1})
+                   {3: _known("priya"), 7: _unknown()}, {"priya": 1})
     assert sel["state"] == FOLLOWING
     assert sel["track_id"] == 3
     assert sel["reason"] == "target_reacquired"
@@ -173,13 +173,13 @@ def test_same_id_resumes_after_identity_map_pruned_entry():
     # ~1.5 Hz: the same track_id can come back with its identity entry gone.
     # The selector's retained copy carries the identity across that gap.
     s = FollowTargetSelector()
-    s.select([_track(3)], {3: _known("jogendra")}, {"jogendra": 1})
-    s.select([], {}, {"jogendra": 1})
-    s.select([], {}, {"jogendra": 1})
-    sel = s.select([_track(3, frames=1)], {3: _unidentified()}, {"jogendra": 1})
+    s.select([_track(3)], {3: _known("priya")}, {"priya": 1})
+    s.select([], {}, {"priya": 1})
+    s.select([], {}, {"priya": 1})
+    sel = s.select([_track(3, frames=1)], {3: _unidentified()}, {"priya": 1})
     assert sel["state"] == FOLLOWING
     assert sel["track_id"] == 3
-    assert sel["identity"] == "jogendra"
+    assert sel["identity"] == "priya"
     assert sel["priority"] == 1
     assert sel["reason"] == "target_reacquired"
     assert sel["track"]["track_id"] == 3
@@ -189,18 +189,18 @@ def test_same_id_resumes_after_identity_map_pruned_entry():
 
 def test_grace_expires_exactly_at_grace_plus_one():
     s = FollowTargetSelector(grace_frames=3)
-    s.select([_track(3)], {3: _known("jogendra")}, {"jogendra": 1})
+    s.select([_track(3)], {3: _known("priya")}, {"priya": 1})
     unknown_frame = [_track(7, frames=50)]
     for n in (1, 2, 3):
-        sel = s.select(unknown_frame, {7: _unknown()}, {"jogendra": 1})
+        sel = s.select(unknown_frame, {7: _unknown()}, {"priya": 1})
         assert sel["state"] == KNOWN_TARGET_MISSING
         assert sel["missing_frames"] == n
-    sel = s.select(unknown_frame, {7: _unknown()}, {"jogendra": 1})
+    sel = s.select(unknown_frame, {7: _unknown()}, {"priya": 1})
     assert sel["state"] == FALLBACK_UNKNOWN
     assert sel["track_id"] == 7
     assert sel["reason"] == "grace_expired_fallback"
     # Next frame is plain fallback, not "expired" again.
-    sel = s.select(unknown_frame, {7: _unknown()}, {"jogendra": 1})
+    sel = s.select(unknown_frame, {7: _unknown()}, {"priya": 1})
     assert sel["reason"] == "longest_established_unknown"
 
 
@@ -208,19 +208,19 @@ def test_grace_expires_exactly_at_grace_plus_one():
 
 def test_other_known_selected_mid_grace():
     s = FollowTargetSelector()
-    s.select([_track(3)], {3: _known("jogendra")}, {"jogendra": 1, "bob": 2})
-    s.select([_track(7)], {7: _unknown()}, {"jogendra": 1, "bob": 2})
+    s.select([_track(3)], {3: _known("priya")}, {"priya": 1, "bob": 2})
+    s.select([_track(7)], {7: _unknown()}, {"priya": 1, "bob": 2})
     # bob (a visible known) wins over the missing target, whatever priority.
     sel = s.select([_track(5), _track(7)],
                    {5: _known("bob"), 7: _unknown()},
-                   {"jogendra": 1, "bob": 2})
+                   {"priya": 1, "bob": 2})
     assert sel["state"] == FOLLOWING
     assert sel["track_id"] == 5
     assert sel["identity"] == "bob"
-    # ...and jogendra's return then preempts bob by priority.
+    # ...and priya's return then preempts bob by priority.
     sel = s.select([_track(3), _track(5)],
-                   {3: _known("jogendra"), 5: _known("bob")},
-                   {"jogendra": 1, "bob": 2})
+                   {3: _known("priya"), 5: _known("bob")},
+                   {"priya": 1, "bob": 2})
     assert sel["track_id"] == 3
 
 
@@ -231,7 +231,7 @@ def test_known_preempts_unknown_immediately():
     sel = s.select([_track(7, frames=50)], {7: _unknown()}, {})
     assert sel["state"] == FALLBACK_UNKNOWN
     sel = s.select([_track(7, frames=51), _track(3, frames=1)],
-                   {7: _unknown(), 3: _known("jogendra")}, {"jogendra": 1})
+                   {7: _unknown(), 3: _known("priya")}, {"priya": 1})
     assert sel["state"] == FOLLOWING
     assert sel["track_id"] == 3
     assert sel["reason"] == "preempted_unknown"
@@ -239,12 +239,12 @@ def test_known_preempts_unknown_immediately():
 
 def test_higher_priority_known_preempts_lower():
     s = FollowTargetSelector()
-    s.select([_track(5)], {5: _known("bob")}, {"bob": 2, "jogendra": 1})
+    s.select([_track(5)], {5: _known("bob")}, {"bob": 2, "priya": 1})
     sel = s.select([_track(5, frames=2), _track(3, frames=1)],
-                   {5: _known("bob"), 3: _known("jogendra")},
-                   {"bob": 2, "jogendra": 1})
+                   {5: _known("bob"), 3: _known("priya")},
+                   {"bob": 2, "priya": 1})
     assert sel["track_id"] == 3
-    assert sel["identity"] == "jogendra"
+    assert sel["identity"] == "priya"
     assert sel["reason"] == "preempted_lower_priority"
 
 
@@ -256,8 +256,8 @@ def test_missing_identity_defaults_to_100():
     assert sel["priority"] == DEFAULT_PRIORITY
     # An explicitly prioritized person beats the default.
     sel = s.select([_track(1), _track(2)],
-                   {1: _known("stranger"), 2: _known("jogendra")},
-                   {"jogendra": 99})
+                   {1: _known("stranger"), 2: _known("priya")},
+                   {"priya": 99})
     assert sel["track_id"] == 2
 
 
@@ -265,13 +265,13 @@ def test_missing_identity_defaults_to_100():
 
 def test_recreated_track_needs_recognition_then_follows():
     s = FollowTargetSelector(grace_frames=5)
-    s.select([_track(3)], {3: _known("jogendra")}, {"jogendra": 1})
+    s.select([_track(3)], {3: _known("priya")}, {"priya": 1})
     # New id 9, not yet recognized: grace holds instead of following it.
-    sel = s.select([_track(9, frames=1)], {9: _unidentified()}, {"jogendra": 1})
+    sel = s.select([_track(9, frames=1)], {9: _unidentified()}, {"priya": 1})
     assert sel["state"] == KNOWN_TARGET_MISSING
     assert sel["track"] is None
     # Recognition confirms the new id: now it is followed.
-    sel = s.select([_track(9, frames=2)], {9: _known("jogendra")}, {"jogendra": 1})
+    sel = s.select([_track(9, frames=2)], {9: _known("priya")}, {"priya": 1})
     assert sel["state"] == FOLLOWING
     assert sel["track_id"] == 9
     assert sel["track"]["track_id"] == 9
@@ -281,14 +281,14 @@ def test_recreated_track_needs_recognition_then_follows():
 
 def test_empty_frames_tick_grace_then_no_target():
     s = FollowTargetSelector(grace_frames=2)
-    s.select([_track(3)], {3: _known("jogendra")}, {"jogendra": 1})
-    sel = s.select([], {}, {"jogendra": 1})
+    s.select([_track(3)], {3: _known("priya")}, {"priya": 1})
+    sel = s.select([], {}, {"priya": 1})
     assert sel["state"] == KNOWN_TARGET_MISSING
     assert sel["missing_frames"] == 1
     assert sel["track"] is None
-    sel = s.select([], {}, {"jogendra": 1})
+    sel = s.select([], {}, {"priya": 1})
     assert sel["missing_frames"] == 2
-    sel = s.select([], {}, {"jogendra": 1})
+    sel = s.select([], {}, {"priya": 1})
     assert sel["state"] == NO_TARGET
     assert sel["track_id"] is None
     assert sel["track"] is None

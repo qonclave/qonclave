@@ -39,7 +39,7 @@ def _tmp_path():
     return path
 
 
-def _store(known=("jogendra", "alice"), path=None):
+def _store(known=("priya", "alice"), path=None):
     return KnownPersonPriorityStore(path=path or _tmp_path(),
                                     known_names=lambda: list(known))
 
@@ -49,19 +49,19 @@ def _store(known=("jogendra", "alice"), path=None):
 def test_enrolled_people_default_to_100():
     s = _store()
     assert s.list_people() == [{"identity": "alice", "priority": 100},
-                               {"identity": "jogendra", "priority": 100}]
+                               {"identity": "priya", "priority": 100}]
 
 
 def test_no_known_names_source_means_empty_roster():
     s = KnownPersonPriorityStore(path=_tmp_path(), known_names=None)
     assert s.list_people() == []
-    assert s.set_priority("jogendra", 1) is None
+    assert s.set_priority("priya", 1) is None
 
 
 def test_list_sorts_by_priority_then_identity():
-    s = _store(known=("jogendra", "alice", "bob"))
-    s.set_priority("jogendra", 1)
-    assert s.list_people() == [{"identity": "jogendra", "priority": 1},
+    s = _store(known=("priya", "alice", "bob"))
+    s.set_priority("priya", 1)
+    assert s.list_people() == [{"identity": "priya", "priority": 1},
                                {"identity": "alice", "priority": 100},
                                {"identity": "bob", "priority": 100}]
 
@@ -72,7 +72,7 @@ def test_validation_rejects_bad_priorities():
     s = _store()
     for bad in (0, -1, "abc", 1.5, True, None):
         try:
-            s.set_priority("jogendra", bad)
+            s.set_priority("priya", bad)
         except ValueError:
             continue
         raise AssertionError(f"{bad!r} should have been rejected")
@@ -80,13 +80,13 @@ def test_validation_rejects_bad_priorities():
 
 def test_validation_accepts_int_and_numeric_string():
     s = _store()
-    assert s.set_priority("jogendra", 1) == {"identity": "jogendra", "priority": 1}
+    assert s.set_priority("priya", 1) == {"identity": "priya", "priority": 1}
     assert s.set_priority("alice", "2") == {"identity": "alice", "priority": 2}
 
 
 def test_equal_priorities_are_allowed():
     s = _store()
-    s.set_priority("jogendra", 3)
+    s.set_priority("priya", 3)
     s.set_priority("alice", 3)
     assert [p["priority"] for p in s.list_people()] == [3, 3]
 
@@ -95,11 +95,11 @@ def test_equal_priorities_are_allowed():
 
 def test_priorities_persist_across_instances():
     path = _tmp_path()
-    _store(path=path).set_priority("jogendra", 1)
+    _store(path=path).set_priority("priya", 1)
     again = _store(path=path)
-    assert again.list_people()[0] == {"identity": "jogendra", "priority": 1}
+    assert again.list_people()[0] == {"identity": "priya", "priority": 1}
     with open(path, encoding="utf-8") as f:
-        assert json.load(f) == {"jogendra": {"priority": 1}}
+        assert json.load(f) == {"priya": {"priority": 1}}
 
 
 def test_save_is_atomic_via_os_replace_and_leaves_no_tmp():
@@ -113,7 +113,7 @@ def test_save_is_atomic_via_os_replace_and_leaves_no_tmp():
         return real_replace(src, dst)
 
     with patch.object(kpp.os, "replace", side_effect=recording_replace):
-        s.set_priority("jogendra", 1)
+        s.set_priority("priya", 1)
     assert replaces, "save must go through os.replace"
     assert replaces[0][1] == path
     assert not os.path.exists(path + ".tmp")
@@ -133,9 +133,9 @@ def test_corrupt_or_missing_file_loads_as_empty():
 def test_stale_stored_slug_is_omitted_and_rejected():
     path = _tmp_path()
     with open(path, "w", encoding="utf-8") as f:
-        json.dump({"ghost": {"priority": 1}, "jogendra": {"priority": 2}}, f)
+        json.dump({"ghost": {"priority": 1}, "priya": {"priority": 2}}, f)
     s = _store(path=path)  # "ghost" is not enrolled
-    assert s.list_people() == [{"identity": "jogendra", "priority": 2},
+    assert s.list_people() == [{"identity": "priya", "priority": 2},
                                {"identity": "alice", "priority": 100}]
     assert s.set_priority("ghost", 1) is None
 
@@ -198,36 +198,36 @@ def _make_app(policy):
 
 
 def test_get_returns_people_sorted():
-    store = _store(known=("jogendra", "alice"))
-    store.set_priority("jogendra", 1)
+    store = _store(known=("priya", "alice"))
+    store.set_priority("priya", 1)
     client = _make_app(_HookedPolicy(store)).test_client()
     body = client.get("/user/known-person-priorities").get_json()
-    assert body == {"people": [{"identity": "jogendra", "priority": 1},
+    assert body == {"people": [{"identity": "priya", "priority": 1},
                                {"identity": "alice", "priority": 100}]}
 
 
 def test_put_persists_and_slugifies_the_path_param():
-    store = _store(known=("jogendra",))
+    store = _store(known=("priya",))
     client = _make_app(_HookedPolicy(store)).test_client()
-    resp = client.put("/user/known-person-priorities/Jogendra",
+    resp = client.put("/user/known-person-priorities/Priya",
                       json={"priority": 1})
     body = resp.get_json()
     assert resp.status_code == 200, body
-    assert body == {"ok": True, "identity": "jogendra", "priority": 1}
-    assert store.list_people() == [{"identity": "jogendra", "priority": 1}]
+    assert body == {"ok": True, "identity": "priya", "priority": 1}
+    assert store.list_people() == [{"identity": "priya", "priority": 1}]
 
 
 def test_put_bad_body_is_400():
-    store = _store(known=("jogendra",))
+    store = _store(known=("priya",))
     client = _make_app(_HookedPolicy(store)).test_client()
     for bad in ({"priority": 0}, {"priority": "abc"}, {}, None):
-        resp = client.put("/user/known-person-priorities/jogendra", json=bad)
+        resp = client.put("/user/known-person-priorities/priya", json=bad)
         assert resp.status_code == 400, bad
         assert resp.get_json()["ok"] is False
 
 
 def test_put_unknown_slug_is_404():
-    store = _store(known=("jogendra",))
+    store = _store(known=("priya",))
     client = _make_app(_HookedPolicy(store)).test_client()
     resp = client.put("/user/known-person-priorities/nobody",
                       json={"priority": 1})
@@ -238,7 +238,7 @@ def test_put_unknown_slug_is_404():
 def test_hookless_policy_404s_on_both_routes():
     client = _make_app(_HookLessPolicy()).test_client()
     assert client.get("/user/known-person-priorities").status_code == 404
-    assert client.put("/user/known-person-priorities/jogendra",
+    assert client.put("/user/known-person-priorities/priya",
                       json={"priority": 1}).status_code == 404
 
 

@@ -176,7 +176,7 @@ directory.
 
 ```json
 {"track_id": 4,
- "face": {"identity": "Jogendra", "confidence": 0.93, "status": "known"},
+ "face": {"identity": "Priya", "confidence": 0.93, "status": "known"},
  "pose": {"status": "ok", "keypoints": [[0,0,0]], "mean_score": 0.71},
  "latency_ms": {"face": 88.0, "pose": 1.5}}
 ```
