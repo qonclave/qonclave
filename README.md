@@ -130,3 +130,15 @@ carries its own license from its publisher:
 
 Review each project's own license before redistributing model weights themselves —
 this repository only ships code that downloads and runs them.
+
+## Community
+
+- **Contributing**: see [`CONTRIBUTING.md`](CONTRIBUTING.md) for dev setup, code style, and PR
+  expectations; [`framework/CONTRIBUTING.md`](framework/CONTRIBUTING.md) has SDK-specific detail.
+- **Roadmap**: [`ROADMAP.md`](ROADMAP.md) — an honest list of what's implemented versus a
+  placeholder today, including good-first-issue-sized entry points.
+- **Code of Conduct**: [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
+- **Security**: found a vulnerability? See [`SECURITY.md`](SECURITY.md) for private disclosure
+  — please don't open a public issue for it.
+- **Governance**: [`GOVERNANCE.md`](GOVERNANCE.md) describes how decisions get made.
+- **Credits**: [`CONTRIBUTORS.md`](CONTRIBUTORS.md).
