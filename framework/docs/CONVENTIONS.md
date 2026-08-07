@@ -162,7 +162,8 @@ merge on either side of the framework/`hub/` split can tell what it's actually c
 |---|---|---|
 | `adapter.py`, `transport.py` | `hub/ingest.py` — the Flask half (upload handling) stays in the app | ✅ done |
 | `events.py` | `hub/events.py` | ✅ done |
-| `recognize_activity.py` | `hub/events.py` | ⬜ not started |
+| `recognize_activity.py` | **stays app-level** | n/a — decided 2026-08-06, see below |
+| `track_store.py` | **stays app-level** | n/a — decided 2026-08-06, see below (missing from this table until now) |
 | `policy.py` | `hub/policy.py` | ✅ done — lifted, reverted, redone; see below |
 | `server.py` | `hub/app.py` | ⬜ not started |
 | `mqtt_bus.py` | **stays put**, now wrapping `transport/mqtt.py`'s `MQTTTransport` (`PubSubTransport`) | ✅ done — JSON encoding, ring buffer, dual-topic publish, registry wiring all stay hub-side |
@@ -315,11 +316,23 @@ framework's default install surface matters for the open-source privacy-claims a
 so there's nothing to migrate it *for* — the same "no second consumer to prove it generalizes"
 reasoning `sms_bus.py`'s note above landed on for a different file.
 
-Two more of the table's rows are worth explaining.
+Three more of the table's rows are worth explaining.
 
 `icons.py` is LED-icon rendering — use-case-specific logic that already violates `AGENTS.md`'s own
 rule against app logic in the framework. The new layout gives it nowhere to go, which is the
 correct outcome rather than an oversight.
+
+`recognize_activity.py` and `track_store.py` are dashboard ring buffers (`/recognize` calls,
+`/track/analyze` history + live MJPEG pose frames), not wire-spec state — reclassified from
+"not started" (`recognize_activity.py`) and simply missing from this table (`track_store.py`) to
+"stays app-level" on the same 2026-08-06 pass that finished `policy.py`'s `analyze_track`/
+`track_settings` hooks, specifically to check whether either backs that new data closely enough to
+be worth promoting. Neither does: `track_store.py` stores `Policy.analyze_track()`'s return value
+as an opaque blob for the dashboard to display, same as it already stores `face_result`/
+`pose_result` from the (app-owned) face-ID and pose analyzers — it doesn't interpret any of the
+three, and moving a passthrough container for other-app-owned data into the framework would just
+relocate the coupling, not remove it. Both also have no `Origin:` pointer in any SDK stub, unlike
+every file that did move in this same round of migrations.
 
 `sms_bus.py` is the same mistake, less visibly, because "notifications" sounds infrastructural.
 It is 195 lines of `TWILIO_ACCOUNT_SID`, `from twilio.rest import Client`, and one hardcoded

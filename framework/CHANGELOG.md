@@ -105,7 +105,12 @@ permanently rather than migrating (decided, not deferred — see `docs/CONVENTIO
 for the routes that used to live in `framework/server.py`) — deliberately *without* a generic SDK
 counterpart; a `qonclave.hub.egress.sms.SMSTransport` contract was drafted and then removed once
 nothing outside `hub/framework/server.py`'s untyped `.status()`/`.send()` duck typing turned out to
-need it. Pointing the rest of `hub/server.py` at `qonclave.hub` remains a separate, later change.
+need it. `hub/framework/recognize_activity.py` and `track_store.py` were reclassified the same
+day from "not started"/missing entirely to "stays app-level" — both are dashboard ring buffers
+with no wire-spec state and no `Origin:` pointer in any SDK stub; `track_store.py` specifically
+was checked against the new `analyze_track`/`track_settings` hooks and found to only store their
+result as an opaque blob, nothing worth promoting. Pointing the rest of `hub/server.py` at
+`qonclave.hub` remains a separate, later change.
 
 `hub/apps/security/placement.py`'s `SecurityPlacement` had zero callers until now — clean usage of
 `qonclave.placement`, but unproven under real traffic. `create_app()` gained an optional
