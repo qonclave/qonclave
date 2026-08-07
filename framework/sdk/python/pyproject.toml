@@ -65,6 +65,11 @@ dev = [
   "cbor2>=5.6",
   "ruff>=0.4",
 ]
+docs = [
+  "mkdocs>=1.6",
+  "mkdocs-material>=9.5",
+  "mkdocstrings[python]>=0.25",
+]
 all = ["qonclave[edge,hub,compute,archive,cbor,sms]"]
 
 [project.scripts]
