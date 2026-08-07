@@ -108,6 +108,32 @@ run unattended, otherwise you'll be prompted:
 - Already-installed face ID is detected and skipped, and a face-ID failure warns
   rather than aborting the bootstrap.
 
+## Run on any machine (no Snapdragon required)
+
+The full HTTP surface, policies, and dashboard run anywhere; only real VLM/LLM inference needs
+Snapdragon hardware. A deterministic mock backend stands in for it when you opt in with one
+environment variable:
+
+```bash
+git clone https://github.com/qonclave/qonclave.git
+cd qonclave
+python -m venv .venv
+source .venv/bin/activate              # Windows: .venv\Scripts\activate
+pip install -e framework/sdk/python
+pip install -r examples/hub/requirements.txt
+
+export QONCLAVE_MOCK_INFERENCE=1       # PowerShell: $env:QONCLAVE_MOCK_INFERENCE = "1"
+cd examples/hub
+python server.py
+```
+
+Then open `http://localhost:8000/test/edge` (the Edge Simulator), upload any image, and send a
+`motion_detected` event — the whole edge → hub → policy → verdict pipeline runs end-to-end.
+Mock responses always carry `"mock": true` (also reported at `/health`), so they can never be
+confused with real inference. The fallback is opt-in only and never masks a real load failure
+on hardware that should work. Full walkthrough:
+[`framework/docs/DEVELOPER_GUIDE.md`](framework/docs/DEVELOPER_GUIDE.md).
+
 ## Configuration
 
 Copy `.env.example` to `.env` and fill in your values. `.env` is gitignored and must
@@ -130,6 +156,15 @@ carries its own license from its publisher:
 
 Review each project's own license before redistributing model weights themselves —
 this repository only ships code that downloads and runs them.
+
+## Team
+
+| Name | Email |
+|---|---|
+| Vamsi Krishna Adsumilli | vamsi765@yahoo.com |
+| Vinay Kumar Chapala | vinay.chapala@gmail.com |
+| Deepak Dinesh | maximus.deepak@gmail.com |
+| Jogendra Kumar Ponnamanda | jogendar.jo@gmail.com |
 
 ## Community
 
