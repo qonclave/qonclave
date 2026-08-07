@@ -13,7 +13,7 @@ syntax = "proto3";
 
 package qonclave.v1;
 
-option go_package = "github.com/jogendar/qonclave/gen/go/qonclave/v1;qonclavev1";
+option go_package = "github.com/qonclave/qonclave/gen/go/qonclave/v1;qonclavev1";
 option java_package = "dev.qonclave.v1";
 
 service Compute {

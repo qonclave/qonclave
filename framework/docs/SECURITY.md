@@ -159,3 +159,52 @@ Verification behavior is pinned by fixtures rather than by prose:
 [`../conformance/cases/grant/`](../conformance/cases/grant/) covers valid, expired, not-yet-valid,
 revoked, wrong-audience, wrong-audience-kind, untrusted-issuer, scope-denied, and both cross-tenant
 outcomes.
+
+## 6. Implementation Status: Enforced vs. Designed
+
+Everything above is the design. This section says plainly, as of 2026-08-07, what actually runs
+today versus what's specified but not yet built — a security document that doesn't distinguish
+the two is a liability, not a feature.
+
+**Enforced today (real, tested):**
+
+* **Capability grant verification** (`qonclave.security.capability`) — offline verification of
+  expiry, audience, scope, tenant, and revocation. 171 lines, pinned by conformance fixtures
+  covering valid/expired/revoked/wrong-audience/cross-tenant outcomes.
+* **Canonical signing** (`qonclave.security.signing`) — RFC 8785 (JCS) for JSON, RFC 8949 for
+  CBOR; HS256 via stdlib, Ed25519/ES256 via `cryptography`.
+* **PSK-authenticated messages on constrained devices** (C SDK `psk.c`) — HMAC over canonical
+  CBOR with directional domain separators, host-tested.
+* **The layering itself**: role packages (`hub/`, `edge/`, `compute/`, `archive/`) never import
+  each other, enforced by `test_layering.py` — an edge install genuinely cannot pull in a web
+  framework.
+
+**Specified but not yet implemented** (the SDK modules below are 7-15 line docstring
+placeholders — real API surface, no logic yet):
+
+* **Grant issuance** (`hub.broker`) — verification works; nothing in this SDK mints a grant yet.
+* **Local CA / commissioning / mTLS** (`security.ca`, `security.commissioning`, `security.mtls`,
+  `security.psk` in Python, `security.federation`) — §3's certificate-based trust establishment
+  is designed, not coded.
+* **Encryption at rest** (`security.at_rest`) — §4's AES-256-at-rest and cryptographic-erasure
+  claims describe intended behavior, not a shipped mechanism.
+* **Tenancy enforcement at the route layer** (`security.tenancy`) — the grant-level cross-tenant
+  check exists (`capability.py`); the placement-level `no_egress` refusal §2 describes is not
+  yet wired to it.
+* **Node identity** (`security.identity`) — no per-node keypair generation/storage yet.
+
+**The reference deployment gap** (`examples/hub`, `examples/edge`): this is where the design and
+the running code diverge most. `examples/hub/framework/server.py` has **no authentication on any
+route** — every endpoint, including `/edge/event` and the MQTT publish proxy, is open to anyone
+who can reach it. `examples/hub/setup_ngrok.ps1` says so explicitly in its own help text. This is
+intentional for a LAN-trusted demo, but it means today's reference hub does **not** implement the
+zero-trust posture this document describes — closing that gap (shared-secret auth as an interim
+step, then the real grant/commissioning flow once the SDK modules above exist) is tracked, ongoing
+work, not an oversight nobody has noticed. Treat any deployment reachable from outside a trusted
+LAN as requiring additional hardening beyond what ships here today.
+
+**Bottom line for an adopter:** the wire formats, schemas, and conformance fixtures are
+normative and stable. The trust-establishment machinery (commissioning, CA, mTLS, at-rest
+encryption, grant issuance) is designed and partially scaffolded, not production-ready. Air-gap
+and the capability-grant *shape* are real; automatically enforcing them end-to-end in a running
+deployment is not, yet.

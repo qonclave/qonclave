@@ -71,8 +71,8 @@ all = ["qonclave[edge,hub,compute,archive,cbor,sms]"]
 qonclave = "qonclave.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/jogendar/Qonclave"
-Specification = "https://github.com/jogendar/Qonclave/tree/main/framework/spec/v1"
+Homepage = "https://github.com/qonclave/qonclave"
+Specification = "https://github.com/qonclave/qonclave/tree/main/framework/spec/v1"
 
 [tool.setuptools.packages.find]
 where = ["src"]

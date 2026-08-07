@@ -155,7 +155,7 @@ $ServerPy = Join-Path $RepoDir 'examples\hub\server.py'
 if (-not (Test-Path $ServerPy)) {
     throw ("examples\hub\server.py not found under $RepoDir. This script assumes the repo is " +
            "already git-synced and that this script is at <repo>\examples\hub\setup_hub.ps1. " +
-           "Run 'git clone https://github.com/jogendar/Qonclave.git' (or 'git pull' in an " +
+           "Run 'git clone https://github.com/qonclave/qonclave.git' (or 'git pull' in an " +
            "existing checkout) first, then re-run this script from inside it.")
 }
 Write-Ok "found checkout at $RepoDir"
