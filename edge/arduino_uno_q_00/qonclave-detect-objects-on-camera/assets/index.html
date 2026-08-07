@@ -163,22 +163,12 @@ SPDX-License-Identifier: MPL-2.0
       const placeholder = document.getElementById('videoPlaceholder');
       const streamUrl = `${window.location.origin}/camera-preview`;
 
-      let intervalId;
-
-      iframe.onload = () => {
-        if (intervalId) {
-          clearInterval(intervalId);
-        }
-        placeholder.style.display = 'none';
-        iframe.style.display = 'block';
-      };
-
-      const startLoading = () => {
-        // Set the src to start loading
-        iframe.src = streamUrl;
-      };
-
-      intervalId = setInterval(startLoading, 1000); // Try to load every second
+      // An MJPEG image is an endless response, so the iframe's load event is
+      // not guaranteed to fire. Load it once and reveal it immediately rather
+      // than continually resetting the stream while waiting for onload.
+      iframe.src = streamUrl;
+      placeholder.style.display = 'none';
+      iframe.style.display = 'block';
     </script>
 
     <script src="libs/socket.io.min.js"></script>
