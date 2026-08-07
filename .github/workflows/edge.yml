@@ -2,13 +2,13 @@ name: edge
 
 on:
   push:
-    paths: ['edge/arduino_uno_q_00/qonclave-detect-objects-on-camera/**', '.github/workflows/edge.yml']
+    paths: ['examples/edge/arduino_uno_q_00/qonclave-detect-objects-on-camera/**', '.github/workflows/edge.yml']
   pull_request:
-    paths: ['edge/arduino_uno_q_00/qonclave-detect-objects-on-camera/**', '.github/workflows/edge.yml']
+    paths: ['examples/edge/arduino_uno_q_00/qonclave-detect-objects-on-camera/**', '.github/workflows/edge.yml']
 
 # Only qonclave-detect-objects-on-camera is covered: it's the one edge app with
 # a real pytest suite (154 tests) that runs on synthetic fixtures, no hardware
-# or model assets required. The other apps under edge/arduino_uno_q_00/ don't
+# or model assets required. The other apps under examples/edge/arduino_uno_q_00/ don't
 # have an equivalent yet:
 #   edge_assistant's test_roundtrip.py is a standalone STT->TTS->STT script
 #     (no pytest functions) that needs real downloaded VOSK/piper models and
@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: edge/arduino_uno_q_00/qonclave-detect-objects-on-camera
+        working-directory: examples/edge/arduino_uno_q_00/qonclave-detect-objects-on-camera
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -1,0 +1,18 @@
+{
+  "schema_version": "0.1",
+  "event_id": "unoq-01-46134750",
+  "received": true,
+  "hub_verified": false,
+  "hub_confidence": null,
+  "alert": "unverified (reasoning unavailable on this hub)",
+  "command": null,
+  "identity_status": "not_enabled",
+  "device_id": "unoq-01",
+  "edge_confidence": 0.7980366349220276,
+  "edge_model": "video_object_detection",
+  "frame": "20260731T215639Z-2b5036f7.jpg",
+  "reasoning_text": null,
+  "reasoning_available": false,
+  "latency_s": null,
+  "received_at": "2026-07-31T21:56:39.752838+00:00"
+}

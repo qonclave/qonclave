@@ -1,0 +1,17 @@
+{
+  "schema_version": "0.1",
+  "event_id": "evt-1",
+  "received": true,
+  "hub_verified": false,
+  "hub_confidence": null,
+  "alert": "stub",
+  "command": null,
+  "device_id": "unoq-01",
+  "edge_confidence": 0.87,
+  "edge_model": "video_object_detection",
+  "frame": "20260806T234654Z-92d666a4.jpg",
+  "reasoning_text": null,
+  "reasoning_available": null,
+  "latency_s": null,
+  "received_at": "2026-08-06T23:46:54.442351+00:00"
+}

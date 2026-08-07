@@ -1,0 +1,17 @@
+{
+  "schema_version": "0.1",
+  "event_id": "unoq-01-0ef1aca6",
+  "received": true,
+  "hub_verified": false,
+  "hub_confidence": null,
+  "alert": "stub",
+  "command": null,
+  "device_id": "unoq-01",
+  "edge_confidence": 0.9,
+  "edge_model": null,
+  "frame": "20260807T003417Z-3f56f8c6.jpg",
+  "reasoning_text": null,
+  "reasoning_available": null,
+  "latency_s": null,
+  "received_at": "2026-08-07T00:34:18.104328+00:00"
+}

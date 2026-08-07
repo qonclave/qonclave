@@ -2,9 +2,9 @@ name: hub
 
 on:
   push:
-    paths: ['hub/**', 'framework/sdk/python/**', '.github/workflows/hub.yml']
+    paths: ['examples/hub/**', 'framework/sdk/python/**', '.github/workflows/hub.yml']
   pull_request:
-    paths: ['hub/**', 'framework/sdk/python/**', '.github/workflows/hub.yml']
+    paths: ['examples/hub/**', 'framework/sdk/python/**', '.github/workflows/hub.yml']
 
 jobs:
   tests:
@@ -25,20 +25,20 @@ jobs:
 
       # requirements.txt deliberately omits geniex (Snapdragon-only) and
       # opencv/numpy (arrive with the ARM64 face-ID/pose setup) -- see the
-      # NOTEs in hub/requirements.txt. Installed here so pose/face-ID modules
+      # NOTEs in examples/hub/requirements.txt. Installed here so pose/face-ID modules
       # still import cleanly in CI; PoseBackend/FaceIdentityBackend degrade to
       # "unavailable" without a GPU/NPU regardless, which is what the tests
       # that exercise them expect. amqtt is test-only: an in-process MQTT
       # broker so test_mqtt_bus.py exercises the real MQTTBus (and paho)
       # without an external service.
       - run: |
-          pip install -r hub/requirements.txt
+          pip install -r examples/hub/requirements.txt
           pip install pytest numpy opencv-python-headless amqtt
 
       - name: hub package compiles
-        run: python -m compileall -q hub
+        run: python -m compileall -q examples/hub
 
       - name: hub test suite
-        run: python -m pytest hub/tests -v
+        run: python -m pytest examples/hub/tests -v
         env:
           QONCLAVE_RTT_PROBE_ENABLED: "0"
