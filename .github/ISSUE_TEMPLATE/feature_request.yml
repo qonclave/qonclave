@@ -1,0 +1,65 @@
+name: Feature Request
+description: Propose new functionality for the framework or a reference app
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before proposing a change to `framework/spec/v1/`: it's normative
+        and additive-only (see `CONTRIBUTING.md`) — a spec change is a
+        bigger ask than a code change, and worth flagging as such below.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: What does this feature touch?
+      options:
+        - framework/sdk/python
+        - framework/sdk/c
+        - framework/spec (new/changed schema — read the note above)
+        - examples/hub
+        - examples/edge
+        - Documentation
+        - Other / not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: >
+        Describe the situation this doesn't currently handle well. A
+        feature request grounded in a real use case is much easier to
+        evaluate than an abstract capability.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would you want the framework to do instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you thought about, and why you didn't prefer them.
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Anything else — links, prior art in other frameworks, sketches.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and didn't find a duplicate
+          required: true
