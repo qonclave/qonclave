@@ -80,3 +80,7 @@ edge/**/track_crops/
 # C conformance emits interop artifacts here; Python decodes them. Build output, not source.
 framework/conformance/generated/*
 !framework/conformance/generated/.gitkeep
+.claude/
+.gemini/
+.obsidian/
+QUAD/
