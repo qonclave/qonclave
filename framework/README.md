@@ -7,7 +7,8 @@ and the **documentation** for both.
 framework/
 ├─ spec/v1/        NORMATIVE. Schemas, profiles, encodings. The contract.
 ├─ conformance/    Language-neutral fixtures every binding must pass.
-├─ sdk/python/     `full` binding — all four roles. Contracts done, I/O in progress.
+├─ sdk/python/     `full` binding — all four roles. Contracts done; hub ingest/policy,
+│                  discovery registry/announce/udp, and local inference (GenieX) have real I/O.
 ├─ sdk/c/          Constrained binding — edge only, C99, no malloc.
 └─ docs/           Architecture, security, communication, placement, profiles.
 ```
@@ -108,7 +109,10 @@ keeps an edge install free of a web framework.
 
 ## Relationship to `hub/` and `edge/`
 
-`hub/framework/` still runs the working demo and is **not** modified by this package.
-`framework/` is the forward-looking implementation; pointing `hub/server.py` at `qonclave.hub` is
-a later, separate change. [CONVENTIONS.md](docs/CONVENTIONS.md) carries the module-by-module map for
-when that happens.
+`hub/framework/` still runs the working demo, but it is no longer untouched by this package:
+`adapter.py`, `events.py`, `transport.py`, `policy.py`, `device_registry.py`, `discovery.py`,
+`vlm.py`, and `llm.py` are now either thin re-export shims or wrappers over `qonclave.*` modules.
+`edge/` still imports nothing from `qonclave.*`. Pointing the rest of `hub/server.py` at
+`qonclave.hub.app` (a Flask app factory, still a placeholder) remains a later, separate change.
+[CONVENTIONS.md](docs/CONVENTIONS.md)'s "Where existing code lands" table carries the current,
+maintained module-by-module map.

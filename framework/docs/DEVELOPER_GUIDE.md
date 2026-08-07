@@ -14,12 +14,12 @@ This architecture outlines the separation between the generic framework and a sp
 - **`framework/`** is reusable across use cases: it knows how to accept a frame + edge event over HTTP, run VLM inference, keep a ring buffer of recent events for a dashboard, and serve an app's static test pages. It has no idea what "person_present" or "fall_detected" means.
 - **`apps/security/`** (in `hub/apps/security`) declares everything specific to stationary person-detection. A new use case (fall detection, hazard detection, ...) means writing a new `Policy` subclass in a new `apps/<name>/` package — no framework code changes.
 
-The `Policy` contract (`framework/policy.py`):
+The `Policy` contract (`framework/policy.py`, a re-export shim over `qonclave.hub.policy`):
 ```python
 class Policy(ABC):
     name: str
-    def evaluate(self, image_path: str, event: dict) -> Verdict: ...
-    def command_for(self, verdict: Verdict, event: dict) -> dict | None:
+    def evaluate(self, event: EdgeEvent, image_path: str | None = None) -> Verdict: ...
+    def command_for(self, verdict: Verdict, event: EdgeEvent) -> Command | None:
         return None   # override to route a hub->edge command
 ```
 
@@ -77,9 +77,11 @@ framework/               # reusable, use-case agnostic
   events.py              # event ring buffer for the dashboard
   vlm.py                 # VLMBackend: reason() + structured_query()
   mqtt_bus.py            # MQTTBus: publish_command() hub->edge push channel
-  sms_bus.py             # SMSBus: send() SMS notifications via Twilio
   policy.py              # Policy ABC + Verdict + Notification dataclasses
   face_id/               # face detection + identification
+
+apps/security/egress/
+  twilio_sms.py          # SMSBus: send() SMS notifications via Twilio (app-owned, not framework/)
 ```
 
 ## Push Channels
@@ -88,7 +90,7 @@ framework/               # reusable, use-case agnostic
 `/edge/event`'s `command` field only reaches a device if it has an HTTP request open at that moment. `framework/mqtt_bus.py` gives the hub a second, independent path to push the same command over MQTT.
 
 ### SMS notifications (hub->operator push channel)
-`framework/sms_bus.py`'s `SMSBus` gives a Policy a way to push an SMS to an operator when a significant event is verified. The framework just sends whatever the Policy's `notify_for()` method returns.
+`apps/security/egress/twilio_sms.py`'s `SMSBus` gives a Policy a way to push an SMS to an operator when a significant event is verified — this is app-owned, not `framework/`, since the vendor (Twilio) is the developer's choice, not part of the framework contract. The framework just sends whatever the Policy's `notify_for()` method returns.
 
 ## Quickstart: Build Your First App
 
@@ -129,9 +131,9 @@ class CoffeePolicy(Policy):
         # Backends arrive here, not in evaluate() — see "Framework vs. app" above.
         self.vlm = vlm
 
-    def evaluate(self, image_path: str, event: dict) -> Verdict:
+    def evaluate(self, event: EdgeEvent, image_path: str | None = None) -> Verdict:
         # We only care about motion events
-        if event.get("event_type") != "motion_detected":
+        if event.trigger != "motion_detected":
             return Verdict(verified=False, confidence=None,
                            alert="Ignored: not a motion event.")
 

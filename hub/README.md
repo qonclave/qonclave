@@ -111,8 +111,8 @@ The `Policy` contract (`framework/policy.py`):
 ```python
 class Policy(ABC):
     name: str
-    def evaluate(self, image_path: str, event: dict) -> Verdict: ...
-    def command_for(self, verdict: Verdict, event: dict) -> dict | None:
+    def evaluate(self, event: EdgeEvent, image_path: str | None = None) -> Verdict: ...
+    def command_for(self, verdict: Verdict, event: EdgeEvent) -> Command | None:
         return None   # override to route a hub->edge command
 ```
 
@@ -137,7 +137,7 @@ sequenceDiagram
     Server->>Transport: save_incoming_image()
     Transport-->>Server: saved frame path
 
-    Server->>Policy: evaluate(path, event)
+    Server->>Policy: evaluate(event, image_path=path)
     Policy->>VLM: structured_query(path, VERIFY_PROMPT, json_mode=True)
     alt VLM available (ARM64 + GenieX loaded)
         VLM->>Model: reset(), then generate() with json_mode=True, temperature=0.1
