@@ -20,6 +20,11 @@ Environment:
     QONCLAVE_SMS_ENABLED        1 (default) to enable; 0 to disable
     TWILIO_ACCOUNT_SID          Twilio account SID
     TWILIO_AUTH_TOKEN           Twilio auth token
+    QONCLAVE_SMS_MIN_RESEND_SEC minimum seconds between sends (default 120);
+                                stops the investigation re-check loop (which
+                                re-fires every cooldown_seconds while someone
+                                stays down) from texting the same alert again
+                                and again with just reworded VLM text
 """
 
 from __future__ import annotations
@@ -29,6 +34,7 @@ import datetime as _dt
 import logging
 import os
 import threading
+import time
 
 from .policy import Notification
 
@@ -51,6 +57,9 @@ class SMSBus:
         self._load_attempted = False
         self._suppressed = False
         self._user_disabled = True
+        self._min_resend_interval = float(
+            os.environ.get("QONCLAVE_SMS_MIN_RESEND_SEC", "40"))
+        self._last_sent_monotonic: float | None = None
         self._lock = threading.Lock()
         self._activity: collections.deque = collections.deque(maxlen=50)
 
@@ -186,6 +195,17 @@ class SMSBus:
             )
             return False
 
+        now = time.monotonic()
+        if (self._last_sent_monotonic is not None
+                and now - self._last_sent_monotonic < self._min_resend_interval):
+            log.info(
+                "SMS resend throttled (last sent %.1fs ago, min interval %.1fs). "
+                "Skipping message: %r to %s",
+                now - self._last_sent_monotonic, self._min_resend_interval,
+                notification.message, notification.recipient,
+            )
+            return False
+
         if not self.is_available():
             log.warning(
                 "Skipping SMS (unavailable: %s). Intended message: %r to %s",
@@ -203,6 +223,7 @@ class SMSBus:
                 "SMS sent (SID=%s): %r to %s",
                 msg.sid, notification.message, notification.recipient,
             )
+            self._last_sent_monotonic = now
             self.record_sent(notification.message, ok=True)
             return True
         except Exception as e:
