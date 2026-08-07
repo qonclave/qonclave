@@ -1,0 +1,1279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Qonclave Hub — Dashboard</title>
+<style>
+  :root { --bg:#0f1115; --card:#1a1d24; --fg:#e6e8ec; --muted:#8b93a1;
+          --accent:#4f9dff; --ok:#3ecf8e; --err:#ff6b6b; --warn:#f5b74f;
+          --border:#2a2e37; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,Segoe UI,Roboto,sans-serif;
+         background:var(--bg); color:var(--fg); }
+  .wrap { max-width:1040px; margin:0 auto; padding:24px 16px 64px; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  .sub { color:var(--muted); font-size:14px; margin-bottom:20px; }
+  .card { background:var(--card); border:1px solid var(--border);
+          border-radius:12px; padding:18px; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:18px; margin-bottom:18px; }
+  @media (max-width:760px){ .grid{ grid-template-columns:1fr; } }
+  label { display:block; font-size:12px; color:var(--muted); margin-bottom:8px;
+          text-transform:uppercase; letter-spacing:.04em; }
+  img#frame { max-width:100%; border-radius:8px; border:1px solid var(--border);
+              background:#0f1218; min-height:120px; }
+  .big { font-size:28px; font-weight:700; margin:2px 0 12px; }
+  .pill { font-size:12px; padding:3px 10px; border-radius:999px;
+          border:1px solid var(--border); display:inline-block; }
+  .pill.ok { color:var(--ok); border-color:var(--ok); }
+  .pill.err { color:var(--err); border-color:var(--err); }
+  .pill.warn { color:var(--warn); border-color:var(--warn); }
+  .kv { display:flex; justify-content:space-between; padding:6px 0;
+        border-bottom:1px solid var(--border); font-size:14px; }
+  .kv:last-child { border-bottom:none; }
+  .kv span:first-child { color:var(--muted); }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--border); }
+  th { color:var(--muted); font-weight:600; }
+  td.alert-yes { color:var(--ok); }
+  td.alert-no { color:var(--muted); }
+  .headrow { display:flex; align-items:center; gap:12px; margin-bottom:18px; }
+  .reason { font-size:13px; color:var(--fg); line-height:1.5; white-space:pre-wrap;
+            max-height:120px; overflow:auto; }
+  nav { display:flex; gap:14px; margin-bottom:14px; font-size:14px; }
+  nav a { color:var(--muted); text-decoration:none; }
+  nav a:hover { color:var(--fg); }
+  .btn-link { margin-left:auto; padding:8px 18px; background:var(--accent);
+        color:#06101f; border-radius:8px; font-size:14px; font-weight:600;
+        text-decoration:none; white-space:nowrap; }
+  .btn-link:hover { filter:brightness(1.1); }
+  .enroll { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  .enroll input[type=text] { flex:1 1 200px; min-width:160px; padding:8px 10px;
+        background:#0f1218; color:var(--fg); border:1px solid var(--border);
+        border-radius:8px; font-size:14px; }
+  .enroll input[type=file] { flex:1 1 200px; color:var(--muted); font-size:13px; }
+  .enroll button { padding:8px 18px; background:var(--accent); color:#06101f;
+        border:none; border-radius:8px; font-size:14px; font-weight:600;
+        cursor:pointer; }
+  .enroll button:disabled { opacity:.5; cursor:default; }
+  .enroll-msg { font-size:13px; margin-top:10px; min-height:18px; }
+  .enroll-msg.ok { color:var(--ok); }
+  .enroll-msg.err { color:var(--err); }
+  .known-list { margin-top:12px; display:flex; gap:8px; flex-wrap:wrap; }
+  .known-list .pill { color:var(--muted); }
+  .known-list .prio-row { display:flex; align-items:center; gap:6px;
+        padding:4px 8px; background:#0f1218; border:1px solid var(--border);
+        border-radius:8px; }
+  .known-list .prio-row input[type=number] { width:64px; padding:5px 7px;
+        background:var(--bg); color:var(--fg); border:1px solid var(--border);
+        border-radius:6px; font-size:13px; }
+  .known-list .prio-row button { padding:5px 10px; background:var(--accent);
+        color:#06101f; border:0; border-radius:6px; cursor:pointer;
+        font-size:12px; font-weight:600; }
+  .robot-head { display:flex; align-items:end; justify-content:space-between;
+                gap:16px; flex-wrap:wrap; }
+  .robot-fields { display:flex; align-items:end; gap:10px; flex-wrap:wrap; }
+  .robot-fields label { margin:0; }
+  .robot-fields input { display:block; margin-top:5px; padding:7px 9px;
+        background:#0f1218; color:var(--fg); border:1px solid var(--border);
+        border-radius:8px; font-size:14px; }
+  #robotDevice { width:150px; }
+  #robotMagnitude { width:80px; }
+  .robot-dpad { display:grid; grid-template-columns:repeat(3,58px);
+        grid-template-areas:". forward ." "left stop right" ". backward .";
+        gap:8px; justify-content:center; margin:16px auto 10px; }
+  .robot-dpad button { height:48px; border:0; border-radius:9px; color:#fff;
+        font-weight:700; cursor:pointer; transition:transform .1s, opacity .15s; }
+  .robot-dpad button:active { transform:scale(.95); }
+  .robot-dpad button:disabled { opacity:.45; cursor:default; }
+  .robot-move { background:var(--accent); font-size:20px; }
+  .robot-stop { background:var(--err); font-size:11px; grid-area:stop; }
+  .robot-forward { grid-area:forward; }
+  .robot-left { grid-area:left; }
+  .robot-right { grid-area:right; }
+  .robot-backward { grid-area:backward; }
+  .robot-status { min-height:18px; color:var(--muted); font-size:13px;
+                  text-align:center; }
+  .robot-status.ok { color:var(--ok); }
+  .robot-status.err { color:var(--err); }
+  .inv-btn { border:0; border-radius:9px; background:var(--accent); color:#fff;
+    padding:10px 16px; font-size:14px; cursor:pointer; white-space:nowrap; }
+  .inv-btn:active { transform:scale(.97); }
+  .inv-btn:disabled { opacity:.45; cursor:default; }
+  .recognize-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(110px,1fr));
+        gap:10px; margin-top:12px; }
+  .recognize-item { background:#0f1218; border:1px solid var(--border);
+        border-radius:8px; overflow:hidden; }
+  .recognize-item img { width:100%; height:84px; object-fit:cover; display:block;
+        background:#000; }
+  .recognize-item .meta { padding:6px 8px; font-size:11px; }
+  .recognize-item .meta .track { color:var(--muted); margin-bottom:4px; }
+  .recognize-item .pill { font-size:10px; padding:1px 7px; }
+  .pose-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr));
+        gap:12px; margin-top:12px; }
+  .pose-item { background:#0f1218; border:1px solid var(--border);
+        border-radius:8px; overflow:hidden; }
+  /* Direct child only: the live pose stream. A bare `.pose-item img` also
+     matched the face thumbnail nested in .meta and, being more specific than
+     a lone .pose-face class, sized it to the full tile -- which covered the
+     skeleton completely. */
+  .pose-item > img { width:100%; height:230px; object-fit:contain; display:block;
+        background:#000; }
+  .pose-item .meta { padding:7px 9px; font-size:11px; display:flex;
+        align-items:center; gap:8px; }
+  .pose-item .meta .who { flex:1; min-width:0; }
+  .pose-item .meta .track { color:var(--muted); display:block; margin-bottom:3px; }
+  .pose-item .meta .stats { color:var(--muted); font-size:10px; display:block;
+        margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .pose-item .pill { font-size:10px; padding:1px 7px; }
+  /* Face crop the person was identified from. Sits in the caption row beside
+     the text, NOT overlaid on the stream -- anything drawn over the video
+     hides part of the skeleton, and the lower body is exactly what matters
+     for fall detection. Selector kept specific enough to beat the rule above. */
+  .pose-item .meta .pose-face { width:40px; height:40px; flex:0 0 40px;
+        object-fit:cover; border-radius:6px; border:1px solid var(--border);
+        background:#000; }
+  .posture-settings { display:flex; gap:10px; flex-wrap:wrap; align-items:end;
+        margin:12px 0; padding:10px; background:#0f1218; border-radius:8px; }
+  .posture-settings label { margin:0; }
+  .posture-settings input { display:block; width:105px; margin-top:5px; padding:6px 8px;
+        background:var(--bg); color:var(--fg); border:1px solid var(--border); border-radius:6px; }
+  .posture-settings button { padding:7px 12px; background:var(--accent); border:0;
+        border-radius:6px; cursor:pointer; }
+  .posture-debug { display:grid; grid-template-columns:1fr 1fr; gap:3px 10px;
+        margin-top:7px; color:var(--muted); font-size:10px; }
+  .posture-debug strong { color:var(--fg); }
+  .posture-state.NORMAL { color:var(--ok); }
+  .posture-state.SUSPICIOUS { color:var(--warn); }
+  .posture-state.DANGER { color:var(--err); font-weight:700; }
+  .chat { display:flex; flex-direction:column; gap:12px; margin-top:12px;
+          max-height:420px; overflow-y:auto; }
+  .exchange { border-bottom:1px solid var(--border); padding-bottom:12px; }
+  .exchange:last-child { border-bottom:none; padding-bottom:0; }
+  .exchange .who { font-size:11px; color:var(--muted); text-transform:uppercase;
+                   letter-spacing:.04em; margin-bottom:3px; }
+  .exchange .said { font-size:14px; line-height:1.45; white-space:pre-wrap;
+                    word-break:break-word; }
+  .exchange .said.q { color:var(--accent); }
+  .exchange .exmeta { margin-top:7px; display:flex; gap:8px; flex-wrap:wrap;
+                      align-items:center; font-size:11px; color:var(--muted); }
+  .exchange .exmeta .pill { font-size:10px; padding:1px 7px; }
+  .fallback { color:var(--warn); font-size:11px; margin-top:5px; }
+  .minimize-btn { background:transparent; border:1px solid var(--border); color:var(--muted);
+        border-radius:6px; width:28px; height:28px; font-size:13px; cursor:pointer;
+        line-height:1; flex:0 0 auto; }
+  .minimize-btn:hover { color:var(--fg); border-color:var(--fg); }
+  .card-body.collapsed { display:none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav>
+    <a href="/test/edge">Test →</a>
+  </nav>
+  <div class="headrow">
+    <div>
+      <h1>Qonclave Hub — Dashboard</h1>
+      <div class="sub">Live view of edge events and hub verification.</div>
+    </div>
+    <span id="hubPill" class="pill">connecting…</span>
+    <span id="vlmPill" class="pill"></span>
+    <a class="btn-link" href="/user/network">Network →</a>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <label>Latest escalation frame</label>
+      <img id="frame" alt="latest frame" />
+    </div>
+    <div class="card">
+      <label>Latest event</label>
+      <div class="big" id="alertBig">—</div>
+      <div class="kv"><span>Hub verified</span><span id="hubVerified">—</span></div>
+      <div class="kv"><span>Edge confidence</span><span id="edgeConf">—</span></div>
+      <div class="kv"><span>Hub confidence</span><span id="hubConf">—</span></div>
+      <div class="kv"><span>Identity</span><span id="identity">—</span></div>
+      <div class="kv"><span>Device</span><span id="device">—</span></div>
+      <div class="kv"><span>Event ID</span><span id="eventId">—</span></div>
+      <div class="kv"><span>Latency</span><span id="latency">—</span></div>
+      <div style="margin-top:12px;">
+        <label>Reasoning</label>
+        <div class="reason" id="reason">—</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:18px;">
+    <label>Edge voice assistant
+      <span id="assistantPill" class="pill" style="margin-left:8px;font-size:11px;">…</span>
+      <span id="assistantCountPill" class="pill" style="margin-left:4px;font-size:11px;"></span>
+    </label>
+    <div class="sub" style="margin-bottom:2px;">
+      Transcribed commands arriving via POST /assistant/query, and what the hub answered.
+    </div>
+    <div id="assistantFeed" class="chat">
+      <div style="color:var(--muted);font-size:13px;">No assistant queries yet.</div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:18px;">
+    <label>Live person tracking <span id="posePill" class="pill" style="margin-left:8px;font-size:11px;"></span></label>
+    <div class="sub" style="margin-bottom:2px;">
+      One tile per tracked person: live skeleton stream, plus the face crop they
+      were identified from. Both come from the same POST /track/analyze sample.
+    </div>
+    <div class="posture-settings">
+      <label>Abnormal seconds<input id="postureAbnormal" type="number" min="0.1" step="0.5"></label>
+      <label>Motionless seconds<input id="postureMotionless" type="number" min="0.1" step="0.5"></label>
+      <label>Movement threshold<input id="postureMovement" type="number" min="0.001" step="0.005"></label>
+      <label>Tilt angle (full)<input id="postureAngle" type="number" min="1" step="5"></label>
+      <label>Tilt angle (partial)<input id="posturePartialAngle" type="number" min="1" step="5"></label>
+      <button id="postureSave" type="button">Apply</button>
+      <span id="postureSettingsMsg" class="sub" style="margin:0"></span>
+    </div>
+    <div id="poseGrid" class="pose-grid">
+      <div style="color:var(--muted);font-size:13px;grid-column:1/-1;">No tracked people yet.</div>
+    </div>
+
+    <details id="recognizeDetails" style="margin-top:14px;">
+      <summary style="cursor:pointer;color:var(--muted);font-size:12px;">
+        Recent recognition samples <span id="recognizePill" class="pill" style="margin-left:6px;font-size:10px;"></span>
+      </summary>
+      <div class="sub" style="margin:8px 0 2px;">
+        Every face crop that arrived, newest first — the raw call history behind the tiles above.
+      </div>
+      <div id="recognizeGrid" class="recognize-grid">
+        <div style="color:var(--muted);font-size:13px;grid-column:1/-1;">No /track/analyze calls yet.</div>
+      </div>
+    </details>
+  </div>
+
+  <div class="card" style="margin-bottom:18px;">
+    <label>Enroll a known face</label>
+    <div class="sub" style="margin-bottom:12px;">
+      Add a photo to the known-faces database. The next inference run will
+      recognize this person by name. The roster below also sets each person's
+      follow priority (1 = highest; the robot follows the lowest number).
+      Tick <em>additional photo</em> to keep an existing person's photos and add
+      another angle — recognition uses the best match across them, so extra
+      angles only help when someone turns away or slumps.
+    </div>
+    <form id="enrollForm" class="enroll">
+      <input id="enrollName" type="text" placeholder="Person's name (e.g. Jane Doe)"
+             autocomplete="off" />
+      <input id="enrollFile" type="file"
+             accept=".jpg,.jpeg,.png,.webp,image/*" />
+      <label class="sub" style="margin:0;display:flex;align-items:center;gap:6px;">
+        <input id="enrollAdditional" type="checkbox" />
+        additional photo (same person)
+      </label>
+      <button id="enrollBtn" type="submit">Enroll</button>
+    </form>
+    <div id="enrollMsg" class="enroll-msg"></div>
+    <div id="knownList" class="known-list"></div>
+    <div id="knownListMsg" class="enroll-msg"></div>
+  </div>
+
+  <div class="card" style="margin-bottom:18px;">
+    <div class="robot-head">
+      <div>
+        <label>Robot control</label>
+        <div class="sub" style="margin:0;">Commands are sent to the edge over MQTT.</div>
+      </div>
+      <div class="robot-fields">
+        <label>Device ID
+          <input id="robotDevice" type="text" value="unoq-01" autocomplete="off" />
+        </label>
+        <label>Duration (sec)
+          <input id="robotMagnitude" type="number" min="1" max="360" step="1" value="1" />
+        </label>
+      </div>
+    </div>
+    <div class="robot-dpad" aria-label="Robot direction controls">
+      <button type="button" class="robot-move robot-forward" data-direction="FORWARD" aria-label="Move forward">▲</button>
+      <button type="button" class="robot-move robot-left" data-direction="LEFT" aria-label="Turn left">◀</button>
+      <button type="button" class="robot-stop" data-direction="STOP" aria-label="Stop robot">STOP</button>
+      <button type="button" class="robot-move robot-right" data-direction="RIGHT" aria-label="Turn right">▶</button>
+      <button type="button" class="robot-move robot-backward" data-direction="BACKWARD" aria-label="Move backward">▼</button>
+    </div>
+    <div id="robotStatus" class="robot-status" role="status" aria-live="polite">Ready</div>
+  </div>
+
+  <div class="card" style="margin-bottom:18px;" id="investigateCard">
+    <div class="robot-head">
+      <div>
+        <label>VLM investigation <span id="invStatePill" class="pill" style="margin-left:8px;font-size:11px;"></span></label>
+        <div class="sub" style="margin:0;">
+          On-demand check: asks the edge for a fresh capture and runs one VLM
+          analysis. Also fires automatically on persistent DANGER posture, or
+          by texting CAPTURE to the hub.
+        </div>
+      </div>
+      <button id="investigateBtn" type="button" class="inv-btn">Capture &amp; analyze</button>
+    </div>
+    <div id="invMsg" class="robot-status" role="status" aria-live="polite"></div>
+    <div id="invResult" style="display:none;margin-top:10px;">
+      <div class="grid">
+        <div>
+          <label>Investigation image</label>
+          <img id="invImage" alt="investigation frame" style="width:100%;border-radius:8px;" />
+        </div>
+        <div>
+          <div class="kv"><span>Classification</span><span id="invClassification">—</span></div>
+          <div class="kv"><span>Confidence</span><span id="invConfidence">—</span></div>
+          <div class="kv"><span>Trigger</span><span id="invTrigger">—</span></div>
+          <div class="kv"><span>Image source</span><span id="invSource">—</span></div>
+          <div class="kv"><span>Event ID</span><span id="invEventId">—</span></div>
+          <div class="kv"><span>SMS sent</span><span id="invSms">—</span></div>
+          <div class="kv"><span>VLM latency</span><span id="invLatency">—</span></div>
+          <div style="margin-top:12px;">
+            <label>Observations &amp; recommended action</label>
+            <div class="reason" id="invReason">—</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:18px;">
+    <div class="robot-head">
+      <div>
+        <label>Modulino Buzzer control</label>
+        <div class="sub" style="margin:0;">Control edge buzzer: choose between custom frequency tone mode or song melody mode.</div>
+      </div>
+      <button type="button" class="minimize-btn" id="buzzerMinimizeBtn" aria-label="Minimize" aria-expanded="true" aria-controls="buzzerBody">▾</button>
+    </div>
+    <div id="buzzerBody" class="card-body">
+    <!-- Target Device Row -->
+    <div style="margin-top:10px; max-width:220px;">
+      <label style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em;">Target Device ID</label>
+      <input id="buzzerDevice" type="text" value="unoq-01" style="width:100%; padding:7px 9px; margin-top:4px; background:#0f1218; color:var(--fg); border:1px solid var(--border); border-radius:6px; font-size:13px;" />
+    </div>
+
+    <!-- Mode 1: Custom Frequency Tone -->
+    <div style="margin-top:14px; padding:12px; background:#14171f; border:1px solid var(--border); border-radius:8px;">
+      <div style="font-size:12px; font-weight:700; color:var(--warn); margin-bottom:8px;">🔊 MODE 1: CUSTOM FREQUENCY TONE</div>
+      <div style="display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end;">
+        <div style="flex:2 1 200px;">
+          <label style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em;">Frequency (<span id="freqVal" style="color:var(--accent); font-weight:bold;">440</span> Hz)</label>
+          <div style="display:flex; gap:8px; align-items:center; margin-top:4px;">
+            <input type="range" id="freqSlider" min="100" max="4000" step="10" value="440" style="flex:1;" />
+            <input type="number" id="buzzerFreq" min="20" max="20000" value="440" style="width:75px; padding:7px 9px; background:#0f1218; color:var(--fg); border:1px solid var(--border); border-radius:6px; font-size:13px;" />
+          </div>
+        </div>
+        <div style="flex:1 1 120px;">
+          <label style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em;">Duration (ms, 0=cont)</label>
+          <input type="number" id="buzzerDuration" min="0" max="60000" step="100" value="0" style="width:100%; padding:7px 9px; margin-top:4px; background:#0f1218; color:var(--fg); border:1px solid var(--border); border-radius:6px; font-size:13px;" />
+        </div>
+      </div>
+      <div style="display:flex; gap:8px; margin-top:10px; flex-wrap:wrap; align-items:center;">
+        <button type="button" onclick="setBuzzerFreq(440)" style="padding:4px 8px; font-size:11px; background:#242833; color:var(--fg); border:1px solid var(--border); border-radius:4px; cursor:pointer;">A4 (440Hz)</button>
+        <button type="button" onclick="setBuzzerFreq(880)" style="padding:4px 8px; font-size:11px; background:#242833; color:var(--fg); border:1px solid var(--border); border-radius:4px; cursor:pointer;">A5 (880Hz)</button>
+        <button type="button" onclick="setBuzzerFreq(1000)" style="padding:4px 8px; font-size:11px; background:#242833; color:var(--fg); border:1px solid var(--border); border-radius:4px; cursor:pointer;">Alarm (1kHz)</button>
+        <button type="button" onclick="setBuzzerFreq(2000)" style="padding:4px 8px; font-size:11px; background:#242833; color:var(--fg); border:1px solid var(--border); border-radius:4px; cursor:pointer;">High (2kHz)</button>
+        <button type="button" id="btnBuzzerStart" onclick="sendBuzzerCommand('start')" style="margin-left:auto; padding:6px 14px; font-weight:700; font-size:12px; background:linear-gradient(135deg, #f5b74f, #ff6b6b); color:#0f1115; border:none; border-radius:6px; cursor:pointer;">▶ PLAY TONE</button>
+      </div>
+    </div>
+
+    <!-- Mode 2: Song Melody & Stop Controls -->
+    <div style="margin-top:12px; display:flex; gap:12px; flex-wrap:wrap; align-items:center;">
+      <div style="flex:1 1 220px; padding:10px 14px; background:#14171f; border:1px solid var(--border); border-radius:8px; display:flex; justify-content:space-between; align-items:center;">
+        <div>
+          <div style="font-size:12px; font-weight:700; color:var(--accent);">🎵 MODE 2: SONG MELODY</div>
+          <div style="font-size:11px; color:var(--muted);">Imagine Dragons - Believer</div>
+        </div>
+        <button type="button" id="btnBuzzerBeliever" onclick="sendBuzzerCommand('believer')" style="padding:8px 14px; font-weight:700; font-size:12px; background:linear-gradient(135deg, #4f9dff, #9b51e0); color:#ffffff; border:none; border-radius:6px; cursor:pointer;">▶ PLAY "BELIEVER"</button>
+      </div>
+      
+      <button type="button" id="btnBuzzerStop" onclick="sendBuzzerCommand('stop')" style="padding:10px 18px; font-weight:700; font-size:13px; background:#242833; color:var(--err); border:2px solid var(--err); border-radius:8px; cursor:pointer;">⏹ STOP BUZZER</button>
+    </div>
+
+    <div id="buzzerStatus" class="robot-status" style="margin-top:10px;" role="status">Ready</div>
+    </div>
+  </div>
+
+  <!-- Auto-Buzzer on Unknown Face -->
+  <div class="card" style="margin-bottom:18px;">
+    <div class="robot-head">
+      <div>
+        <label>🚨 Auto-Buzzer on Unknown Face</label>
+        <div class="sub" style="margin:0;">Automatically trigger a buzzer tone when an unrecognized person is detected by Face ID.</div>
+      </div>
+      <button type="button" class="minimize-btn" id="autoBuzzerMinimizeBtn" aria-label="Minimize" aria-expanded="true" aria-controls="autoBuzzerBody">▾</button>
+    </div>
+    <div id="autoBuzzerBody" class="card-body">
+    <div style="margin-top:12px; display:flex; gap:16px; flex-wrap:wrap; align-items:center;">
+      <!-- Enable toggle -->
+      <label style="display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none;">
+        <input type="checkbox" id="autoBuzzerEnabled" style="width:18px; height:18px; accent-color:#f5b74f; cursor:pointer;" />
+        <span style="font-size:13px; font-weight:700; color:var(--fg);">Enable</span>
+      </label>
+
+      <!-- Target Device Dropdown -->
+      <div style="flex:1 1 180px; max-width:260px;">
+        <label style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em;">Target Device</label>
+        <select id="autoBuzzerDevice" style="width:100%; padding:7px 9px; margin-top:4px; background:#0f1218; color:var(--fg); border:1px solid var(--border); border-radius:6px; font-size:13px; cursor:pointer;">
+          <option value="">— select a device —</option>
+        </select>
+      </div>
+    </div>
+
+    <div style="margin-top:12px; padding:12px; background:#14171f; border:1px solid var(--border); border-radius:8px;">
+      <div style="display:flex; gap:14px; flex-wrap:wrap; align-items:flex-end;">
+        <div style="flex:1 1 100px;">
+          <label style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em;">Frequency (Hz)</label>
+          <input type="number" id="autoBuzzerFreq" min="20" max="20000" value="1000" style="width:100%; padding:7px 9px; margin-top:4px; background:#0f1218; color:var(--fg); border:1px solid var(--border); border-radius:6px; font-size:13px;" />
+        </div>
+        <div style="flex:1 1 100px;">
+          <label style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em;">Duration (ms)</label>
+          <input type="number" id="autoBuzzerDuration" min="100" max="60000" step="100" value="3000" style="width:100%; padding:7px 9px; margin-top:4px; background:#0f1218; color:var(--fg); border:1px solid var(--border); border-radius:6px; font-size:13px;" />
+        </div>
+        <div style="flex:1 1 100px;">
+          <label style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em;">Cooldown (s)</label>
+          <input type="number" id="autoBuzzerCooldown" min="0" max="600" step="5" value="30" style="width:100%; padding:7px 9px; margin-top:4px; background:#0f1218; color:var(--fg); border:1px solid var(--border); border-radius:6px; font-size:13px;" />
+        </div>
+        <button type="button" id="btnAutoBuzzerSave" style="padding:8px 18px; font-weight:700; font-size:12px; background:linear-gradient(135deg, #f5b74f, #ff6b6b); color:#0f1115; border:none; border-radius:6px; cursor:pointer;">💾 SAVE</button>
+      </div>
+    </div>
+
+    <div id="autoBuzzerStatus" class="robot-status" style="margin-top:10px;" role="status">Loading settings…</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <label>Recent events</label>
+    <table>
+      <thead>
+        <tr><th>Time</th><th>Event ID</th><th>Device</th><th>Edge</th>
+            <th>Hub</th><th>Verified</th><th>Alert</th></tr>
+      </thead>
+      <tbody id="rows"><tr><td colspan="7" style="color:var(--muted)">No events yet.</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="card" style="margin-top:18px;" id="llmCard">
+    <label>LLM response <span id="llmPill" class="pill" style="margin-left:8px;font-size:11px;"></span></label>
+    <div id="llmEmpty" style="color:var(--muted);font-size:13px;">No LLM analysis yet — send an SMS reply that isn't a keyword.</div>
+    <div id="llmContent" style="display:none;">
+      <div class="kv"><span>From</span><span id="llmFrom">—</span></div>
+      <div class="kv"><span>Message</span><span id="llmMessage" style="max-width:60%;text-align:right;word-break:break-word;">—</span></div>
+      <div class="kv"><span>Intent</span><span id="llmIntent">—</span></div>
+      <div class="kv"><span>MQTT command</span><span id="llmCommand">—</span></div>
+      <div class="kv"><span>Latency</span><span id="llmLatency">—</span></div>
+      <div style="margin-top:12px;">
+        <label>Reply sent to operator</label>
+        <div class="reason" id="llmReply">—</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:18px;">
+    <label>SMS activity
+      <label class="sub" style="margin:0;float:right;display:flex;align-items:center;gap:6px;">
+        <input id="smsToggle" type="checkbox" />
+        Send SMS
+      </label>
+    </label>
+    <table id="smsTable">
+      <thead>
+        <tr><th>Time</th><th>Dir</th><th>Content</th><th>Status</th></tr>
+      </thead>
+      <tbody id="smsRows"><tr><td colspan="4" style="color:var(--muted)">No SMS activity yet.</td></tr></tbody>
+    </table>
+    <div id="smsSuppressed" style="display:none;margin-top:10px;">
+      <span class="pill warn">SMS suppressed — STOP was received. Restarts server to resume.</span>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const fmtConf = (c) => (c == null ? "—" : (typeof c === "number" ? c.toFixed(2) : c));
+const shortTime = (iso) => { try { return new Date(iso).toLocaleTimeString(); } catch { return iso || "—"; } };
+let latestDeviceId = null;
+
+async function refresh() {
+  try {
+    const r = await fetch("/user/events");
+    const j = await r.json();
+
+    $("hubPill").textContent = "hub: ok";
+    $("hubPill").className = "pill ok";
+    $("vlmPill").textContent = "VLM " + (j.vlm_available ? "available" : "unavailable");
+    $("vlmPill").className = "pill " + (j.vlm_available ? "ok" : "warn");
+
+    // latest frame (cache-bust)
+    if (j.latest_frame) {
+      $("frame").src = "/user/latest.jpg?ts=" + Date.now();
+    }
+
+    const latest = (j.events && j.events[0]) || null;
+    if (latest) {
+      latestDeviceId = latest.device_id || latestDeviceId;
+      if (latestDeviceId && document.activeElement !== $("robotDevice")) {
+        $("robotDevice").value = latestDeviceId;
+      }
+      $("alertBig").textContent = latest.alert || "—";
+      const v = latest.hub_verified;
+      $("hubVerified").innerHTML = v
+        ? '<span class="pill ok">true</span>'
+        : '<span class="pill err">false</span>';
+      $("edgeConf").textContent = fmtConf(latest.edge_confidence);
+      $("hubConf").textContent = fmtConf(latest.hub_confidence);
+      const idStatus = latest.identity_status;
+      if (latest.identity_name) {
+        $("identity").innerHTML = `<span class="pill ok">${idStatus}</span>`;
+      } else if (idStatus === "unknown") {
+        $("identity").innerHTML = `<span class="pill warn">unknown</span>`;
+      } else {
+        $("identity").textContent = idStatus || "—";
+      }
+      $("device").textContent = latest.device_id || "—";
+      $("eventId").textContent = latest.event_id || "—";
+      $("latency").textContent = latest.latency_s != null ? latest.latency_s + "s" : "—";
+      $("reason").textContent = latest.reasoning_text
+        || (latest.reasoning_available === false ? "(reasoning unavailable on this hub)" : "—");
+    }
+
+    // table
+    const rows = $("rows");
+    if (j.events && j.events.length) {
+      rows.innerHTML = j.events.map(e => `
+        <tr>
+          <td>${shortTime(e.received_at)}</td>
+          <td>${e.event_id || "—"}</td>
+          <td>${e.device_id || "—"}</td>
+          <td>${fmtConf(e.edge_confidence)}</td>
+          <td>${fmtConf(e.hub_confidence)}</td>
+          <td>${e.hub_verified ? '<span class="pill ok">yes</span>' : '<span class="pill err">no</span>'}</td>
+          <td class="${e.hub_verified ? 'alert-yes' : 'alert-no'}">${e.alert || "—"}</td>
+        </tr>`).join("");
+    }
+  } catch (e) {
+    $("hubPill").textContent = "hub: unreachable";
+    $("hubPill").className = "pill err";
+  }
+}
+
+async function loadKnownFaces() {
+  // Roster with follow-priority controls. Slugs are server-normalized to
+  // [a-z0-9_], so templating them into innerHTML is safe. Falls back to the
+  // plain pill roster when the app doesn't provide the priorities hooks.
+  try {
+    const r = await fetch("/user/known-person-priorities");
+    if (r.status === 404) return loadKnownFacesLegacy();
+    const j = await r.json();
+    const el = $("knownList");
+    if (!j.people || !j.people.length) {
+      el.innerHTML = '<span class="pill">no faces enrolled yet</span>';
+      return;
+    }
+    el.innerHTML = j.people.map(p => `
+      <span class="prio-row">
+        <span class="pill">${p.identity}</span>
+        <input type="number" min="1" step="1" value="${p.priority}"
+               id="prio-${p.identity}" aria-label="priority for ${p.identity}" />
+        <button type="button" data-slug="${p.identity}">Set</button>
+      </span>`).join("");
+    el.querySelectorAll("button[data-slug]").forEach(btn => {
+      btn.addEventListener("click", () => setKnownPersonPriority(btn.dataset.slug));
+    });
+  } catch (e) { /* leave prior state */ }
+}
+
+async function loadKnownFacesLegacy() {
+  try {
+    const r = await fetch("/user/known_faces");
+    const j = await r.json();
+    const el = $("knownList");
+    if (!j.available) {
+      el.innerHTML = '<span class="pill warn">face ID not available on this hub</span>';
+      return;
+    }
+    el.innerHTML = j.names && j.names.length
+      ? j.names.map(n => `<span class="pill">${n}</span>`).join("")
+      : '<span class="pill">no faces enrolled yet</span>';
+  } catch (e) { /* leave prior state */ }
+}
+
+async function setKnownPersonPriority(slug) {
+  const msg = $("knownListMsg");
+  const value = Number(document.getElementById(`prio-${slug}`).value);
+  try {
+    const j = await fetch(`/user/known-person-priorities/${slug}`, {
+      method: "PUT", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({priority: value}),
+    }).then(r => r.json());
+    if (j.ok) {
+      msg.className = "enroll-msg ok";
+      msg.textContent = `Priority ${j.priority} saved for ${j.identity}. The edge picks it up within ~15 s.`;
+      loadKnownFaces();
+    } else {
+      msg.className = "enroll-msg err";
+      msg.textContent = j.error || "Save failed.";
+    }
+  } catch (e) {
+    msg.className = "enroll-msg err";
+    msg.textContent = "Network error — hub unreachable.";
+  }
+}
+
+async function enroll(ev) {
+  ev.preventDefault();
+  const name = $("enrollName").value.trim();
+  const file = $("enrollFile").files[0];
+  const msg = $("enrollMsg");
+  if (!name) { msg.className = "enroll-msg err"; msg.textContent = "Enter a name."; return; }
+  if (!file) { msg.className = "enroll-msg err"; msg.textContent = "Choose a photo."; return; }
+
+  const fd = new FormData();
+  fd.append("name", name);
+  fd.append("image", file);
+  if ($("enrollAdditional").checked) fd.append("additional", "1");
+
+  $("enrollBtn").disabled = true;
+  msg.className = "enroll-msg"; msg.textContent = "Enrolling…";
+  try {
+    const r = await fetch("/user/known_faces", { method: "POST", body: fd });
+    const j = await r.json();
+    if (r.ok && j.ok) {
+      msg.className = "enroll-msg ok";
+      const photos = j.photo_count > 1 ? ` — ${j.photo_count} photos on file` : "";
+      msg.textContent = `Enrolled "${j.name}"${j.replaced ? " (replaced existing photo)" : ""}${photos}. Future inference will recognize them.`;
+      $("enrollName").value = ""; $("enrollFile").value = "";
+      $("enrollAdditional").checked = false;
+      loadKnownFaces();
+    } else {
+      msg.className = "enroll-msg err";
+      msg.textContent = j.error || "Enrollment failed.";
+    }
+  } catch (e) {
+    msg.className = "enroll-msg err";
+    msg.textContent = "Network error — hub unreachable.";
+  } finally {
+    $("enrollBtn").disabled = false;
+  }
+}
+
+async function sendRobotCommand(direction) {
+  const status = $("robotStatus");
+  const deviceId = $("robotDevice").value.trim();
+  let magnitude = Number.parseInt($("robotMagnitude").value, 10);
+  if (!Number.isFinite(magnitude)) magnitude = 1;
+  magnitude = Math.min(360, Math.max(1, magnitude));
+  $("robotMagnitude").value = magnitude;
+
+  status.className = "robot-status";
+  status.textContent = `Sending ${direction}…`;
+  try {
+    const r = await fetch("/user/robot-command", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({device_id: deviceId, direction, magnitude}),
+    });
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.error || "Command failed");
+    status.className = "robot-status ok";
+    status.textContent = direction === "STOP"
+      ? `Stop sent to ${j.device_id}`
+      : `${direction} for ${magnitude} second${magnitude === 1 ? "" : "s"} sent to ${j.device_id}`;
+  } catch (e) {
+    status.className = "robot-status err";
+    status.textContent = e.message || "Command failed";
+  }
+}
+
+document.querySelectorAll(".robot-dpad button").forEach(button => {
+  button.addEventListener("click", () => sendRobotCommand(button.dataset.direction));
+});
+
+function setBuzzerFreq(val) {
+  $("buzzerFreq").value = val;
+  $("freqSlider").value = val;
+  $("freqVal").textContent = val;
+}
+$("freqSlider")?.addEventListener("input", (e) => {
+  $("buzzerFreq").value = e.target.value;
+  $("freqVal").textContent = e.target.value;
+});
+$("buzzerFreq")?.addEventListener("input", (e) => {
+  $("freqSlider").value = e.target.value;
+  $("freqVal").textContent = e.target.value;
+});
+
+async function sendBuzzerCommand(action) {
+  const status = $("buzzerStatus");
+  const deviceId = $("buzzerDevice").value.trim() || "unoq-01";
+  const frequency = Number.parseInt($("buzzerFreq").value, 10) || 440;
+  const duration = Number.parseInt($("buzzerDuration").value, 10) || 0;
+
+  status.className = "robot-status";
+  status.textContent = `Sending ${action}...`;
+
+  try {
+    const r = await fetch("/user/buzzer-command", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ device_id: deviceId, action, frequency, duration })
+    });
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.error || "Buzzer command failed");
+    status.className = "robot-status ok";
+    status.textContent = `Buzzer ${action.toUpperCase()} sent to ${j.device_id}`;
+  } catch (e) {
+    status.className = "robot-status err";
+    status.textContent = e.message || "Buzzer command failed";
+  }
+}
+
+$("enrollForm").addEventListener("submit", enroll);
+loadKnownFaces();
+
+async function refreshSMS() {
+  try {
+    const r = await fetch("/user/sms_activity");
+    const j = await r.json();
+
+    // suppressed banner
+    $("smsSuppressed").style.display = j.suppressed ? "block" : "none";
+
+    const tbody = $("smsRows");
+    if (!j.activity || !j.activity.length) {
+      tbody.innerHTML = '<tr><td colspan="4" style="color:var(--muted)">No SMS activity yet.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = j.activity.map(a => {
+      const dirHtml = a.direction === "out"
+        ? '<span class="pill" style="color:var(--accent);border-color:var(--accent)">&#8594; out</span>'
+        : '<span class="pill warn">&#8592; in</span>';
+      let statusHtml;
+      if (a.status === "sent")           statusHtml = '<span class="pill ok">sent ✓</span>';
+      else if (a.status === "failed")    statusHtml = '<span class="pill err">failed ✗</span>';
+      else if (a.status === "mqtt_published") statusHtml = '<span class="pill" style="color:var(--accent);border-color:var(--accent)">mqtt ✓</span>';
+      else if (a.status === "suppressed") statusHtml = '<span class="pill warn">suppressed</span>';
+      else                               statusHtml = `<span class="pill" style="color:var(--muted)">${a.status}</span>`;
+      return `<tr>
+        <td>${shortTime(a.time)}</td>
+        <td>${dirHtml}</td>
+        <td>${a.content || "—"}</td>
+        <td>${statusHtml}</td>
+      </tr>`;
+    }).join("");
+  } catch (e) { /* leave prior state */ }
+}
+
+async function loadSmsToggle() {
+  try {
+    const j = await fetch("/user/sms-settings").then(r => r.json());
+    if (j.ok) $("smsToggle").checked = !j.disabled;
+  } catch (_) {}
+}
+
+$("smsToggle").addEventListener("change", async (e) => {
+  const disabled = !e.target.checked;
+  try {
+    const j = await fetch("/user/sms-settings", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ disabled }),
+    }).then(r => r.json());
+    if (!j.ok) e.target.checked = !disabled; // revert on failure
+  } catch (_) { e.target.checked = !disabled; }
+});
+
+async function refreshLLM() {
+  try {
+    const r = await fetch("/user/llm_response");
+    const j = await r.json();
+
+    const pill = $("llmPill");
+    if (!j.available) {
+      pill.textContent = "unavailable";
+      pill.className = "pill warn";
+    } else {
+      pill.textContent = "Qwen3-4B";
+      pill.className = "pill ok";
+    }
+
+    const a = j.analysis;
+    if (!a) {
+      $("llmEmpty").style.display = "";
+      $("llmContent").style.display = "none";
+      return;
+    }
+    $("llmEmpty").style.display = "none";
+    $("llmContent").style.display = "";
+
+    $("llmFrom").textContent = a.from || "—";
+    $("llmMessage").textContent = a.message || "—";
+
+    const intentColors = { dispatch:"ok", acknowledge:"ok", query:"warn", unknown:"" };
+    const ic = intentColors[a.intent] || "";
+    $("llmIntent").innerHTML = a.intent
+      ? `<span class="pill ${ic}">${a.intent}</span>`
+      : "—";
+
+    $("llmCommand").textContent = a.mqtt_command
+      ? JSON.stringify(a.mqtt_command)
+      : "—";
+
+    $("llmLatency").textContent = a.latency_s != null ? a.latency_s + "s" : "—";
+    $("llmReply").textContent = a.reply || "(no reply generated)";
+  } catch (e) { /* leave prior state */ }
+}
+
+const statusClass = (s) => s === "known" ? "ok" : s === "unknown" ? "warn"
+  : s === "no_face" ? "" : s ? "err" : "";
+
+// Raw per-call history, collapsed under the tiles. Takes the already-fetched
+// payload -- refreshPersonTracking() does the one request both views need.
+function renderRecognizeActivity(j) {
+  $("recognizePill").textContent = j.count ? `${j.count} recent` : "idle";
+  $("recognizePill").className = "pill" + (j.count ? " ok" : "");
+
+  // Skip the DOM work entirely while the section is collapsed.
+  if (!$("recognizeDetails").open) return;
+
+  const grid = $("recognizeGrid");
+  if (!j.activity || !j.activity.length) {
+    grid.innerHTML = '<div style="color:var(--muted);font-size:13px;grid-column:1/-1;">No /track/analyze calls yet.</div>';
+    return;
+  }
+  const statusLabel = (a) => a.status === "known" ? a.identity : a.status.replace("_", " ");
+  grid.innerHTML = j.activity.map(a => `
+    <div class="recognize-item">
+      <img src="/user/recognize_activity/${a.id}.jpg" alt="track ${a.track_id} crop" loading="lazy" />
+      <div class="meta">
+        <div class="track">Track ${a.track_id} · ${shortTime(a.received_at)} · ${a.latency_ms}ms</div>
+        <span class="pill ${statusClass(a.status)}">${statusLabel(a)}</span>
+      </div>
+    </div>`).join("");
+}
+
+// Tracks currently rendered as <img> tiles. The MJPEG stream lives in the
+// element itself, so tiles are created/removed only when the set of live
+// tracks changes -- re-rendering the grid every poll would tear down and
+// reopen every stream, which shows as a constant flicker.
+let poseRendered = new Set();
+
+// Newest face-recognition entry per track, so each tile can show the crop the
+// person was actually identified from. Pose-only samples don't feed the
+// activity buffer, so for a resolved track this stays pinned to the crop that
+// resolved it -- which is the useful thing to look at.
+function latestFaceByTrack(activity) {
+  const byTrack = {};
+  for (const a of activity || []) {          // newest first
+    if (!(a.track_id in byTrack)) byTrack[a.track_id] = a;
+  }
+  return byTrack;
+}
+
+// Speech transcripts and model output are free text — escape before innerHTML.
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g,
+  (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+async function refreshAssistant() {
+  try {
+    const r = await fetch("/user/assistant_activity?limit=12");
+    const j = await r.json();
+
+    const pill = $("assistantPill");
+    const llm = j.llm || {};
+    if (!llm.enabled) {
+      pill.textContent = "LLM off — templates";
+      pill.className = "pill warn";
+      pill.title = "ASSISTANT_LLM_ENABLED=0 on the hub";
+    } else if (llm.available) {
+      pill.textContent = (llm.model_id || "LLM").split("/").pop();
+      pill.className = "pill ok";
+      pill.title = llm.model_id || "";
+    } else {
+      pill.textContent = "LLM unavailable";
+      pill.className = "pill err";
+      pill.title = llm.error || "model not loaded";
+    }
+
+    $("assistantCountPill").textContent = j.count ? `${j.count} recent` : "";
+    $("assistantCountPill").className = "pill";
+
+    const feed = $("assistantFeed");
+    if (!j.activity || !j.activity.length) {
+      feed.innerHTML = '<div style="color:var(--muted);font-size:13px;">No assistant queries yet.</div>';
+      return;
+    }
+    feed.innerHTML = j.activity.map(a => {
+      const srcPill = a.source === "llm"
+        ? '<span class="pill ok">llm</span>'
+        : `<span class="pill warn">${esc(a.tool_used || "template")}</span>`;
+      const llmLatency = a.llm_latency_s != null ? ` · gen ${a.llm_latency_s}s` : "";
+      const fallback = a.fallback_reason
+        ? `<div class="fallback">fell back to template — ${esc(a.fallback_reason)}</div>`
+        : "";
+      return `
+        <div class="exchange">
+          <div class="who">${esc(a.device_id)} asked · ${shortTime(a.received_at)}</div>
+          <div class="said q">${esc(a.query)}</div>
+          <div class="who" style="margin-top:8px;">hub replied</div>
+          <div class="said">${esc(a.response)}</div>
+          ${fallback}
+          <div class="exmeta">${srcPill}<span>${a.latency_ms}ms total${llmLatency}</span></div>
+        </div>`;
+    }).join("");
+  } catch (e) {
+    $("assistantPill").textContent = "unreachable";
+    $("assistantPill").className = "pill err";
+  }
+}
+
+async function refreshPersonTracking() {
+  let faces = {};
+  try {
+    const [tr, ar] = await Promise.all([
+      fetch("/user/tracks"),
+      fetch("/user/recognize_activity?limit=16"),
+    ]);
+    const j = await tr.json();
+    const act = await ar.json();
+    faces = latestFaceByTrack(act.activity);
+
+    renderRecognizeActivity(act);   // the collapsed raw-history section
+
+    const tracks = j.tracks || {};
+    const ids = Object.keys(tracks);
+
+    $("posePill").textContent = ids.length ? `${ids.length} tracked` : "idle";
+    $("posePill").className = "pill" + (ids.length ? " ok" : "");
+
+    const grid = $("poseGrid");
+    if (!ids.length) {
+      if (poseRendered.size) { grid.innerHTML = ""; poseRendered.clear(); }
+      if (!grid.children.length) {
+        grid.innerHTML = '<div style="color:var(--muted);font-size:13px;grid-column:1/-1;">No tracked people yet.</div>';
+      }
+      return;
+    }
+
+    const wanted = new Set(ids);
+    if (poseRendered.size && [...poseRendered].every(id => wanted.has(id)) && poseRendered.size === wanted.size) {
+      // Same tracks as last poll: refresh captions only, leave streams alone.
+    } else {
+      if (!poseRendered.size) grid.innerHTML = "";
+      for (const id of poseRendered) {
+        if (!wanted.has(id)) document.getElementById(`poseItem-${id}`)?.remove();
+      }
+      for (const id of ids) {
+        if (poseRendered.has(id)) continue;
+        const el = document.createElement("div");
+        el.className = "pose-item";
+        el.id = `poseItem-${id}`;
+        el.innerHTML = `
+          <img src="/user/tracks/${id}/stream.mjpg" alt="track ${id} pose" />
+          <div class="meta">
+            <img class="pose-face" id="poseFace-${id}" alt="" title="face crop this person was identified from" style="display:none;" />
+            <span class="who">
+              <span class="track">Track ${id}</span>
+              <span class="pill" id="posePill-${id}"></span>
+              <span class="stats" id="poseStats-${id}"></span>
+              <span class="posture-debug" id="poseDebug-${id}"></span>
+            </span>
+          </div>`;
+        grid.appendChild(el);
+      }
+      poseRendered = wanted;
+    }
+
+    for (const id of ids) {
+      const t = tracks[id];
+      const face = faces[id];
+      const pill = document.getElementById(`posePill-${id}`);
+      if (!pill) continue;
+
+      const score = t.latest_pose && t.latest_pose.mean_score;
+      const status = t.status || (face && face.status);
+      const name = t.identity || (face && face.identity);
+      pill.textContent = status === "known" ? name : (status || "tracking").replace("_", " ");
+      pill.className = "pill " + statusClass(status);
+
+      const bits = [];
+      if (face && face.status === "known" && face.confidence != null) {
+        bits.push(`face ${(face.confidence * 100).toFixed(0)}%`);
+      }
+      if (score != null) bits.push(`pose ${score.toFixed(2)}`);
+      if (t.history_len) bits.push(`${t.history_len} samples`);
+      document.getElementById(`poseStats-${id}`).textContent = bits.join(" · ");
+
+      const posture = t.posture;
+      const debug = document.getElementById(`poseDebug-${id}`);
+      if (debug && posture) {
+        debug.innerHTML = `
+          <span>Torso <strong>${posture.torso_angle.toFixed(1)}°</strong></span>
+          <span>Movement <strong>${posture.movement}</strong></span>
+          <span>Score <strong>${posture.posture_score}</strong></span>
+          <span>State <strong class="posture-state ${posture.state}">${posture.state}</strong></span>
+          <span>Duration <strong>${posture.duration_seconds.toFixed(1)} sec</strong></span>`;
+      } else if (debug) {
+        debug.innerHTML = '<span style="grid-column:1/-1">Waiting for a valid pose sample…</span>';
+      }
+
+      // Inset the crop this track was identified from, once there is one.
+      const thumb = document.getElementById(`poseFace-${id}`);
+      if (thumb && face) {
+        const src = `/user/recognize_activity/${face.id}.jpg`;
+        if (thumb.dataset.src !== src) { thumb.dataset.src = src; thumb.src = src; }
+        thumb.style.display = "block";
+      }
+    }
+  } catch (e) {
+    $("posePill").textContent = "unreachable";
+    $("posePill").className = "pill err";
+  }
+}
+
+const INV_BUSY_STATES = ["WAITING_FOR_CAPTURE", "VLM_RUNNING"];
+
+async function refreshInvestigation() {
+  try {
+    const j = await fetch("/user/investigation").then(r => r.json());
+    if (!j.available) { $("investigateCard").style.display = "none"; return; }
+
+    const busy = INV_BUSY_STATES.includes(j.state);
+    const pill = $("invStatePill");
+    pill.textContent = j.state + (j.state === "COOLDOWN" && j.cooldown_seconds_left
+      ? ` (${Math.ceil(j.cooldown_seconds_left)}s)` : "");
+    pill.className = "pill " + (busy ? "warn" : j.state === "MONITORING" ? "ok" : "");
+    $("investigateBtn").disabled = busy;
+    if (busy) {
+      $("invMsg").className = "robot-status";
+      $("invMsg").textContent = j.state === "WAITING_FOR_CAPTURE"
+        ? `Waiting for the edge capture (${j.active_event_id || ""})…`
+        : "VLM analyzing…";
+    } else if ($("invMsg").textContent.includes("…")) {
+      $("invMsg").textContent = "";
+    }
+
+    const res = j.last_result;
+    if (!res) return;
+    $("invResult").style.display = "block";
+    const cls = res.classification || "—";
+    const clsPill = cls === "EMERGENCY_LIKELY" ? "err" : cls === "SAFE_LIKELY" ? "ok" : "warn";
+    $("invClassification").innerHTML = `<span class="pill ${clsPill}">${cls}</span>`;
+    $("invConfidence").textContent = fmtConf(res.confidence);
+    $("invTrigger").textContent = res.manual
+      ? (res.source === "manual_sms" ? "SMS (CAPTURE)" : "dashboard")
+      : `posture: ${res.posture_state || "—"} (${res.identity || "—"})`;
+    $("invSource").textContent = res.image_source === "edge_capture"
+      ? "fresh edge capture" : (res.image_source || "—");
+    $("invEventId").textContent = res.event_id || "—";
+    $("invSms").textContent = res.sms_sent ? "yes" : "no";
+    $("invLatency").textContent = res.latency_s != null ? res.latency_s + "s" : "—";
+    const obs = (res.observations || []).join("; ");
+    $("invReason").textContent =
+      (obs || (res.vlm_available ? "no observations" : "(VLM unavailable — classified UNCERTAIN)"))
+      + (res.recommended_action ? ` → ${res.recommended_action}` : "");
+    if (res.frame) {
+      const src = `/user/frames/${res.frame}`;
+      const img = $("invImage");
+      if (img.dataset.src !== src) { img.dataset.src = src; img.src = src + "?ts=" + Date.now(); }
+      img.style.display = "block";
+    } else {
+      $("invImage").style.display = "none";
+    }
+  } catch (_) { /* leave prior state */ }
+}
+
+$("investigateBtn").addEventListener("click", async () => {
+  const msg = $("invMsg");
+  $("investigateBtn").disabled = true;
+  msg.className = "robot-status";
+  msg.textContent = "Requesting capture…";
+  try {
+    const r = await fetch("/user/investigate", { method: "POST" });
+    const j = await r.json();
+    if (j.ok) {
+      msg.className = "robot-status ok";
+      msg.textContent = `Investigation ${j.event_id} started`
+        + (j.capture_requested ? " — capture requested from the edge…" : " — using buffered frame…");
+    } else {
+      msg.className = "robot-status err";
+      msg.textContent = j.error || "Could not start an investigation.";
+    }
+  } catch (e) {
+    msg.className = "robot-status err";
+    msg.textContent = "Network error — hub unreachable.";
+  }
+  refreshInvestigation();
+});
+
+async function loadPostureSettings() {
+  try {
+    const j = await fetch("/user/track-settings").then(r => r.json());
+    if (!j.ok) return;
+    $("postureAbnormal").value = j.settings.abnormal_seconds;
+    $("postureMotionless").value = j.settings.motionless_seconds;
+    $("postureMovement").value = j.settings.movement_threshold;
+    $("postureAngle").value = j.settings.horizontal_angle;
+    $("posturePartialAngle").value = j.settings.partial_angle;
+  } catch (_) {}
+}
+
+$("postureSave").addEventListener("click", async () => {
+  const body = {
+    abnormal_seconds: Number($("postureAbnormal").value),
+    motionless_seconds: Number($("postureMotionless").value),
+    movement_threshold: Number($("postureMovement").value),
+    horizontal_angle: Number($("postureAngle").value),
+    partial_angle: Number($("posturePartialAngle").value),
+  };
+  const msg = $("postureSettingsMsg");
+  try {
+    const j = await fetch("/user/track-settings", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body),
+    }).then(r => r.json());
+    msg.textContent = j.ok ? "Saved" : `Error: ${j.error}`;
+  } catch (_) { msg.textContent = "Unreachable"; }
+});
+
+refresh();
+setInterval(refresh, 2000);
+refreshPersonTracking();
+setInterval(refreshPersonTracking, 2000);
+loadPostureSettings();
+refreshSMS();
+setInterval(refreshSMS, 2000);
+loadSmsToggle();
+refreshLLM();
+setInterval(refreshLLM, 2000);
+refreshInvestigation();
+setInterval(refreshInvestigation, 2000);
+refreshAssistant();
+setInterval(refreshAssistant, 1500);
+// refreshRecognizeActivity() from main is this branch's refreshPersonTracking()
+// (renamed when the raw call history moved into the tiles' card); it is already
+// started above, so polling it again here would double the request rate.
+//
+// Expanding the raw-history section renders it immediately rather than
+// waiting for the next poll tick.
+// ---- Auto-Buzzer on Unknown Face ----------------------------------------
+let _autoBuzzerDevicesLoaded = false;
+
+async function loadAutoBuzzerDevices() {
+  try {
+    const r = await fetch("/user/devices");
+    const j = await r.json();
+    const sel = $("autoBuzzerDevice");
+    const current = sel.value;
+    // Preserve the placeholder option, then rebuild
+    sel.innerHTML = '<option value="">— select a device —</option>';
+    (j.devices || []).forEach(d => {
+      const id = d.device_id || d.ip || "";
+      if (!id) return;
+      const state = d.state || "";
+      const opt = document.createElement("option");
+      opt.value = id;
+      opt.textContent = `${id}${state ? " (" + state + ")" : ""}`;
+      sel.appendChild(opt);
+    });
+    // Restore selection if still present
+    if (current) sel.value = current;
+    _autoBuzzerDevicesLoaded = true;
+  } catch (_) { /* leave prior list */ }
+}
+
+async function loadAutoBuzzerSettings() {
+  const status = $("autoBuzzerStatus");
+  try {
+    const r = await fetch("/user/auto-buzzer-settings");
+    if (r.status === 404) {
+      status.textContent = "Auto-buzzer not supported by this app";
+      return;
+    }
+    const j = await r.json();
+    $("autoBuzzerEnabled").checked = !!j.enabled;
+    $("autoBuzzerFreq").value = j.frequency || 1000;
+    $("autoBuzzerDuration").value = j.duration || 3000;
+    $("autoBuzzerCooldown").value = j.cooldown_s != null ? j.cooldown_s : 30;
+
+    // Load device list then select the saved device
+    if (!_autoBuzzerDevicesLoaded) await loadAutoBuzzerDevices();
+    if (j.device_id) $("autoBuzzerDevice").value = j.device_id;
+
+    if (j.enabled) {
+      const last = j.last_triggered
+        ? "last triggered " + new Date(j.last_triggered * 1000).toLocaleTimeString()
+        : "not yet triggered";
+      status.className = "robot-status ok";
+      status.textContent = `Enabled — targeting ${j.device_id || "(none)"} — ${last}`;
+    } else {
+      status.className = "robot-status";
+      status.textContent = "Disabled";
+    }
+  } catch (_) {
+    status.className = "robot-status err";
+    status.textContent = "Could not load settings";
+  }
+}
+
+$("btnAutoBuzzerSave").addEventListener("click", async () => {
+  const status = $("autoBuzzerStatus");
+  status.className = "robot-status";
+  status.textContent = "Saving…";
+  try {
+    const body = {
+      enabled: $("autoBuzzerEnabled").checked,
+      device_id: $("autoBuzzerDevice").value || null,
+      frequency: Number.parseInt($("autoBuzzerFreq").value, 10) || 1000,
+      duration: Number.parseInt($("autoBuzzerDuration").value, 10) || 3000,
+      cooldown_s: Number.parseFloat($("autoBuzzerCooldown").value) || 30,
+    };
+    const r = await fetch("/user/auto-buzzer-settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    if (j.enabled) {
+      status.className = "robot-status ok";
+      status.textContent = `Saved ✓ — enabled, targeting ${j.device_id || "(none)"}`;
+    } else {
+      status.className = "robot-status";
+      status.textContent = "Saved ✓ — disabled";
+    }
+  } catch (e) {
+    status.className = "robot-status err";
+    status.textContent = e.message || "Save failed";
+  }
+});
+
+loadAutoBuzzerSettings();
+// Refresh device list periodically so new devices appear in the dropdown
+setInterval(loadAutoBuzzerDevices, 15000);
+// Refresh auto-buzzer status (last triggered time) alongside events
+setInterval(loadAutoBuzzerSettings, 10000);
+
+$("recognizeDetails").addEventListener("toggle", () => {
+  if ($("recognizeDetails").open) refreshPersonTracking();
+});
+
+// ---- Card minimize/expand (Buzzer control + Auto-Buzzer) ----------------
+function setupMinimizable(btnId, bodyId, storageKey) {
+  const btn = $(btnId);
+  const body = $(bodyId);
+  if (!btn || !body) return;
+  const apply = (collapsed) => {
+    body.classList.toggle("collapsed", collapsed);
+    btn.textContent = collapsed ? "▸" : "▾";
+    btn.setAttribute("aria-expanded", String(!collapsed));
+    btn.setAttribute("aria-label", collapsed ? "Expand" : "Minimize");
+  };
+  apply(localStorage.getItem(storageKey) === "1");
+  btn.addEventListener("click", () => {
+    const collapsed = !body.classList.contains("collapsed");
+    apply(collapsed);
+    localStorage.setItem(storageKey, collapsed ? "1" : "0");
+  });
+}
+setupMinimizable("buzzerMinimizeBtn", "buzzerBody", "qonclave.buzzerCollapsed");
+setupMinimizable("autoBuzzerMinimizeBtn", "autoBuzzerBody", "qonclave.autoBuzzerCollapsed");
+</script>
+</body>
+</html>

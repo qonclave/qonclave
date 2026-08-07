@@ -38,6 +38,35 @@ jobs:
       - run: python -m qonclave.cli spec-validate
         working-directory: framework
 
+  build:
+    name: build + install artifact
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # The other jobs test against `pip install -e ...`, which never exercises what
+      # actually ships. This builds the real sdist/wheel and installs *that*, so a
+      # packaging mistake (missing LICENSE, bad MANIFEST.in, a file excluded from the
+      # wheel) fails CI instead of surfacing after a PyPI upload.
+      - run: pip install build twine
+      - run: python -m build --outdir dist framework/sdk/python
+      - run: twine check dist/*
+
+      - name: install the built wheel into a clean venv and smoke-test it
+        run: |
+          python -m venv /tmp/qonclave-smoke
+          /tmp/qonclave-smoke/bin/pip install dist/*.whl
+          /tmp/qonclave-smoke/bin/python -c "import qonclave; from qonclave.cli import main"
+          /tmp/qonclave-smoke/bin/qonclave doctor
+
+      - name: LICENSE ships in both artifacts
+        run: |
+          tar tzf dist/*.tar.gz | grep -q '/LICENSE$'
+          unzip -l dist/*.whl | grep -q 'licenses/LICENSE'
+
   isolation:
     name: extras stay isolated
     runs-on: ubuntu-latest

@@ -98,3 +98,43 @@ class Policy(ABC):
     def reply_for(self, sender: str, body: str) -> str | None:
         """Optional text to send back after `on_reply`."""
         return None
+
+    def analyze_track(self, track_id: int, image_bytes: bytes, face: dict[str, Any] | None,
+                      pose: dict[str, Any] | None) -> dict[str, Any] | None:
+        """Optional app-specific analysis for a per-person tracking sample.
+
+        Called once per /track/analyze request that already ran the framework's
+        own face/pose analyzers; face and pose are their results (None if that
+        analyzer wasn't requested or is unavailable). Return value is merged
+        into the response as-is; the framework doesn't interpret it.
+        """
+        return None
+
+    def track_settings(self) -> dict[str, Any] | None:
+        """Optional UI-tunable settings for app-specific track analysis.
+
+        Returning None — the default — means the app has no such settings,
+        matching dashboard_state's "nothing yet" convention.
+        """
+        return None
+
+    def update_track_settings(self, values: dict[str, Any]) -> dict[str, Any] | None:
+        """Validate and apply app-specific track-analysis settings.
+
+        `values` is the raw request body; a Policy that doesn't implement
+        this returns None and the caller reports the setting as unsupported."""
+        return None
+
+    def dashboard_state(self) -> dict[str, Any] | None:
+        """Optional app-specific state for the operator UI.
+
+        The framework serves whatever this returns without interpreting it, which
+        is the point: an app that reasons about operator replies, tracks a
+        occupancy count, or holds a calibration state has somewhere to surface it
+        without the framework growing a method per use case.
+
+        Returning None — the default — means the app has no such state, and the
+        framework reports that rather than an empty object, so a UI can tell
+        "nothing yet" from "not applicable".
+        """
+        return None

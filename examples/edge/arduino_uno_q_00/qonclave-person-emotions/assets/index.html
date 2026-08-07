@@ -1,0 +1,133 @@
+<!--
+SPDX-FileCopyrightText: Copyright (C) Arduino s.r.l. / Qonclave Team
+SPDX-License-Identifier: MPL-2.0
+-->
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Qonclave Person Emotions & LED Matrix</title>
+    <link rel="stylesheet" type="text/css" href="style.css" />
+  </head>
+  <body>
+    <div>
+      <div class="header">
+        <h1 class="arduino-text">🎭 Qonclave Person Emotions & 12x8 LED Matrix</h1>
+        <img class="arduino-logo" src="./img/logo.svg" alt="Arduino Logo" />
+      </div>
+
+      <div class="main-content">
+        <div class="container" id="video-container">
+          <div id="videoFeedContainer">
+            <div id="videoPlaceholder" class="camera-status">
+              <img src="./img/no-face.svg" alt="Searching webcam" />
+              <p class="feedback-text">Searching Webcam for Facial Expressions...</p>
+            </div>
+            <iframe
+              id="dynamicIframe"
+              title="Video stream"
+              width="1024px"
+              height="768px"
+              frameborder="0"
+              style="display: none"></iframe>
+          </div>
+
+          <div class="tester-panel">
+            <h3 class="tester-title">🎮 Interactive 12x8 LED Matrix Tester / Override</h3>
+            <p class="tester-subtitle">Click any button below to immediately render and test the corresponding facial expression on both the physical UNO Q LED Matrix and the virtual display:</p>
+            <div class="button-grid">
+              <button class="btn-emo emo-happy" onclick="testEmotion('happy')">😃 Happy</button>
+              <button class="btn-emo emo-sad" onclick="testEmotion('sad')">😢 Sad</button>
+              <button class="btn-emo emo-surprise" onclick="testEmotion('surprise')">😲 Surprise</button>
+              <button class="btn-emo emo-angry" onclick="testEmotion('angry')">😠 Angry</button>
+              <button class="btn-emo emo-neutral" onclick="testEmotion('neutral')">😐 Neutral</button>
+              <button class="btn-emo emo-fear" onclick="testEmotion('fear')">😨 Fear</button>
+              <button class="btn-emo emo-clear" onclick="testEmotion('clear')">✓ Clear</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="right-column">
+          <div class="container container-right">
+            <div class="feedback-section">
+              <div style="display: flex; align-items: center; justify-content: space-between;">
+                <h2 class="recent-scans-title" style="margin: 0">12x8 LED Matrix Display</h2>
+                <span id="activeEmotionBadge" class="emo-badge">✓ CLEAR (Safe)</span>
+              </div>
+              <div id="virtualMatrixGrid" class="matrix-grid"></div>
+            </div>
+          </div>
+
+          <div class="container container-right">
+            <div class="controls-section">
+              <div class="control-group">
+                <div class="control-confidence">
+                  <div style="display: flex; align-items: center; gap: 8px;">
+                    <label for="confidenceSlider">Knob / Confidence Threshold</label>
+                  </div>
+                  <button id="confidenceResetButton" class="btn-tertiary">
+                    <input type="number" id="confidenceInput" class="confidence-input" min="0" max="1" step="0.05" value="0.50" />
+                    <img src="img/icon-reset.svg" alt="Reset" class="reset-icon" />
+                  </button>
+                </div>
+                <div class="slider-box">
+                  <span class="confidence-limits">0</span>
+                  <div class="slider-container">
+                    <div class="slider-progress" id="sliderProgress"></div>
+                    <div class="confidence-value-display" id="confidenceValueDisplay">0.50</div>
+                    <input type="range" id="confidenceSlider" min="0" max="1" step="0.01" value="0.5" />
+                  </div>
+                  <span class="confidence-limits">1</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="container container-right">
+            <div class="feedback-section">
+              <h2 class="recent-scans-title">Live Emotion Analysis</h2>
+              <div id="emotionBarsContainer" class="bars-container">
+                <div class="emo-bar"><span class="bar-label">😃 Happy</span><div class="bar-bg"><div id="bar-happy" class="bar-fill" style="width:0%">0%</div></div></div>
+                <div class="emo-bar"><span class="bar-label">😢 Sad</span><div class="bar-bg"><div id="bar-sad" class="bar-fill" style="width:0%">0%</div></div></div>
+                <div class="emo-bar"><span class="bar-label">😲 Surprise</span><div class="bar-bg"><div id="bar-surprise" class="bar-fill" style="width:0%">0%</div></div></div>
+                <div class="emo-bar"><span class="bar-label">😠 Angry</span><div class="bar-bg"><div id="bar-angry" class="bar-fill" style="width:0%">0%</div></div></div>
+                <div class="emo-bar"><span class="bar-label">😐 Neutral</span><div class="bar-bg"><div id="bar-neutral" class="bar-fill" style="width:0%">0%</div></div></div>
+                <div class="emo-bar"><span class="bar-label">😨 Fear</span><div class="bar-bg"><div id="bar-fear" class="bar-fill" style="width:0%">0%</div></div></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="container container-right">
+            <div class="recent-detections-section">
+              <h2 class="recent-scans-title">Recent Detections</h2>
+              <ul id="recentDetections"></ul>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div id="error-container" class="error-message" style="display: none"></div>
+    </div>
+
+    <script>
+      const iframe = document.getElementById('dynamicIframe');
+      const placeholder = document.getElementById('videoPlaceholder');
+      const currentHostname = window.location.hostname;
+      const targetPort = 4912;
+      const targetPath = '/embed';
+      const streamUrl = `http://${currentHostname}:${targetPort}${targetPath}`;
+
+      let intervalId;
+      iframe.onload = () => {
+        if (intervalId) clearInterval(intervalId);
+        placeholder.style.display = 'none';
+        iframe.style.display = 'block';
+      };
+      const startLoading = () => { iframe.src = streamUrl; };
+      intervalId = setInterval(startLoading, 1000);
+    </script>
+    <script src="libs/socket.io.min.js"></script>
+    <script src="libs/arduino.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

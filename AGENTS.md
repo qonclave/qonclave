@@ -12,7 +12,7 @@
 - Keep the summary line under 72 characters.
 - Separate the subject from the body with a blank line.
 - Use the body to explain *what* and *why* the change was made. Use clear bullet points for the notes, wrapping text at 72 characters.
-- In the end of the commit message body, always append the AI assistant along with harness if needed: `*Gemini 3.1 Pro (Antigravity IDE) by Google Deepmind*`
+- In the end of the commit message body, always append AI attribution as a standard git trailer naming the model, e.g. `Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>`.
 - Example: `Add orientation-aware robot turning fallback`
 
 ## Code Placement & Modification Rules

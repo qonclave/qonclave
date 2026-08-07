@@ -1,0 +1,7 @@
+name: Qonclave Person Emotions
+description: Live webcam Facial Emotion Recognition (FER) and interactive 12x8 LED Matrix expression controller.
+ports: []
+bricks:
+- arduino:video_object_detection: {}
+- arduino:web_ui: {}
+icon: 🎭

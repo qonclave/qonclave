@@ -14,14 +14,18 @@ This architecture outlines the separation between the generic framework and a sp
 - **`framework/`** is reusable across use cases: it knows how to accept a frame + edge event over HTTP, run VLM inference, keep a ring buffer of recent events for a dashboard, and serve an app's static test pages. It has no idea what "person_present" or "fall_detected" means.
 - **`apps/security/`** (in `hub/apps/security`) declares everything specific to stationary person-detection. A new use case (fall detection, hazard detection, ...) means writing a new `Policy` subclass in a new `apps/<name>/` package — no framework code changes.
 
-The `Policy` contract (`framework/policy.py`):
+The `Policy` contract (`framework/policy.py`, a re-export shim over `qonclave.hub.policy`):
 ```python
 class Policy(ABC):
     name: str
-    def evaluate(self, image_path: str, event: dict, vlm, llm, face_id) -> Verdict: ...
-    def command_for(self, verdict: Verdict, event: dict) -> dict | None:
+    def evaluate(self, event: EdgeEvent, image_path: str | None = None) -> Verdict: ...
+    def command_for(self, verdict: Verdict, event: EdgeEvent) -> Command | None:
         return None   # override to route a hub->edge command
 ```
+
+Backends (`vlm`, `llm`, `face_id`) reach a Policy through its **constructor**, not through
+`evaluate()`. That keeps the call signature stable: adding a capability would otherwise force
+every existing Policy to change in order to gain something it does not use.
 
 ### Request flow: `POST /edge/event`
 
@@ -73,9 +77,11 @@ framework/               # reusable, use-case agnostic
   events.py              # event ring buffer for the dashboard
   vlm.py                 # VLMBackend: reason() + structured_query()
   mqtt_bus.py            # MQTTBus: publish_command() hub->edge push channel
-  sms_bus.py             # SMSBus: send() SMS notifications via Twilio
   policy.py              # Policy ABC + Verdict + Notification dataclasses
   face_id/               # face detection + identification
+
+apps/security/egress/
+  twilio_sms.py          # SMSBus: send() SMS notifications via Twilio (app-owned, not framework/)
 ```
 
 ## Push Channels
@@ -84,7 +90,7 @@ framework/               # reusable, use-case agnostic
 `/edge/event`'s `command` field only reaches a device if it has an HTTP request open at that moment. `framework/mqtt_bus.py` gives the hub a second, independent path to push the same command over MQTT.
 
 ### SMS notifications (hub->operator push channel)
-`framework/sms_bus.py`'s `SMSBus` gives a Policy a way to push an SMS to an operator when a significant event is verified. The framework just sends whatever the Policy's `notify_for()` method returns.
+`apps/security/egress/twilio_sms.py`'s `SMSBus` gives a Policy a way to push an SMS to an operator when a significant event is verified — this is app-owned, not `framework/`, since the vendor (Twilio) is the developer's choice, not part of the framework contract. The framework just sends whatever the Policy's `notify_for()` method returns.
 
 ## Quickstart: Build Your First App
 
@@ -121,28 +127,42 @@ from framework.policy import Policy, Verdict
 class CoffeePolicy(Policy):
     name = "coffeecam"
 
-    def evaluate(self, image_path: str, event: dict, vlm, llm, face_id) -> Verdict:
+    def __init__(self, vlm):
+        # Backends arrive here, not in evaluate() — see "Framework vs. app" above.
+        self.vlm = vlm
+
+    def evaluate(self, event: EdgeEvent, image_path: str | None = None) -> Verdict:
         # We only care about motion events
-        if event.get("trigger") != "motion_detected":
-            return Verdict(False, "Ignored: not a motion event.")
+        if event.trigger != "motion_detected":
+            return Verdict(verified=False, confidence=None,
+                           alert="Ignored: not a motion event.")
 
         # Ask the heavy Compute Node (VLM) to verify the image
         prompt = "Is there a person in this image? If so, are they holding a coffee cup? Return a JSON object with keys 'person' (bool) and 'holding_coffee' (bool)."
-        
-        result = vlm.structured_query(image_path, prompt, max_new_tokens=100)
-        
-        if not result.get("available", True):
-            return Verdict(False, "Compute node unavailable.")
 
-        has_person = result.get("person", False)
-        has_coffee = result.get("holding_coffee", False)
+        result = self.vlm.structured_query(image_path, prompt, max_new_tokens=100)
+
+        if not result.get("available"):
+            return Verdict(verified=False, confidence=None,
+                           alert="Compute node unavailable.",
+                           reasoning_available=False)
+
+        # structured_query returns the model's JSON under "parsed", alongside the
+        # raw "text" — read your fields out of parsed, never off the top level.
+        parsed = result.get("parsed") or {}
+        has_person = parsed.get("person", False)
+        has_coffee = parsed.get("holding_coffee", False)
 
         if has_person and has_coffee:
-            return Verdict(True, "Alert: Person with coffee detected!")
+            return Verdict(verified=True, confidence=None,
+                           alert="Alert: Person with coffee detected!",
+                           latency_s=result.get("latency_s"))
         elif has_person:
-            return Verdict(False, "Person detected, but no coffee.")
+            return Verdict(verified=False, confidence=None,
+                           alert="Person detected, but no coffee.")
         else:
-            return Verdict(False, "False alarm. No person.")
+            return Verdict(verified=False, confidence=None,
+                           alert="False alarm. No person.")
 ```
 
 ### 4. Hook It Into The Server
@@ -157,8 +177,8 @@ from apps.coffeecam.policy import CoffeePolicy
 
 # ...
 
-# 2. Instantiate it
-policy = CoffeePolicy()
+# 2. Instantiate it, handing it the backends it needs
+policy = CoffeePolicy(vlm)
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "apps", "coffeecam", "static")
 
 # 3. Pass it to the framework factory
@@ -177,7 +197,7 @@ Open a web browser and navigate to `http://localhost:8000/test/edge`.
 This is the Edge Simulator. It pretends to be an IoT camera. 
 
 1. Click **Choose File** and upload an image of yourself holding a coffee cup.
-2. Ensure the trigger is set to `motion_detected`.
+2. Ensure the event type is set to `motion_detected`.
 3. Click **Send Event to Hub**.
 
 The image will be securely sent to the Hub. The Hub will execute your `CoffeePolicy`, route the image to the local VLM Compute instance, parse the JSON, and return the `Verdict(True)` alert!

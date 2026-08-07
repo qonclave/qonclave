@@ -12,8 +12,8 @@
     "data": "/9j/4AAQSkZJRg=="
   },
   "task": {
-    "complexity": 4,
-    "urgency": 2,
+    "complexity": "vlm_reason",
+    "urgency": "high",
     "privacy": "unrestricted",
     "use_case": "perimeter",
     "deadline_ms": 2000,

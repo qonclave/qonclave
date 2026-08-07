@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Qonclave Hub — Network</title>
+<style>
+  :root { --bg:#0f1115; --card:#1a1d24; --fg:#e6e8ec; --muted:#8b93a1;
+          --accent:#4f9dff; --ok:#3ecf8e; --err:#ff6b6b; --warn:#f5b74f;
+          --border:#2a2e37; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,Segoe UI,Roboto,sans-serif;
+         background:var(--bg); color:var(--fg); }
+  .wrap { max-width:1040px; margin:0 auto; padding:24px 16px 64px; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  .sub { color:var(--muted); font-size:14px; margin-bottom:20px; }
+  .card { background:var(--card); border:1px solid var(--border);
+          border-radius:12px; padding:18px; }
+  label { display:block; font-size:12px; color:var(--muted); margin-bottom:8px;
+          text-transform:uppercase; letter-spacing:.04em; }
+  .pill { font-size:12px; padding:3px 10px; border-radius:999px;
+          border:1px solid var(--border); display:inline-block; }
+  .pill.ok { color:var(--ok); border-color:var(--ok); }
+  .pill.err { color:var(--err); border-color:var(--err); }
+  .pill.muted { color:var(--muted); }
+  .headrow { display:flex; align-items:center; gap:12px; margin-bottom:18px; }
+  nav { display:flex; gap:14px; margin-bottom:14px; font-size:14px; }
+  nav a { color:var(--muted); text-decoration:none; }
+  nav a:hover { color:var(--fg); }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--border); }
+  th { color:var(--muted); font-weight:600; }
+  .mono { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+          font-size:12px; }
+
+  /* --- radar ------------------------------------------------------------- */
+  .radar-wrap { position:relative; width:100%; max-width:640px; margin:0 auto; }
+  svg { display:block; width:100%; height:auto; }
+  .ring { fill:none; stroke:var(--border); stroke-width:1; }
+  .ring-label { fill:var(--muted); font-size:10px; }
+  .hub-core { fill:var(--accent); }
+  .hub-glow { fill:var(--accent); opacity:.15; }
+  .hub-label { fill:var(--fg); font-size:11px; font-weight:600; text-anchor:middle; }
+  .sweep { transform-origin:center; animation:spin 6s linear infinite; opacity:.35; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .dev { transition:transform 1.2s ease; cursor:default; }
+  .dev circle.dot { stroke:var(--bg); stroke-width:1.5; }
+  .dev.online circle.dot { fill:var(--ok); }
+  .dev.idle circle.dot { fill:var(--warn); }
+  .dev.offline circle.dot { fill:var(--err); }
+  .dev.online circle.halo { fill:var(--ok); opacity:.18; }
+  .dev.idle circle.halo, .dev.offline circle.halo { display:none; }
+  .dev text { fill:var(--fg); font-size:11px; text-anchor:middle; }
+  .dev text.rtt { fill:var(--muted); font-size:9px; }
+  .legend { display:flex; gap:14px; justify-content:center; flex-wrap:wrap;
+            margin-top:10px; font-size:12px; color:var(--muted); }
+  .legend .dot { display:inline-block; width:8px; height:8px; border-radius:50%;
+                 margin-right:6px; vertical-align:0; }
+  .empty-note { display:none; margin-top:12px; text-align:center;
+                color:var(--warn); font-size:13px; }
+
+  .tooltip { position:fixed; z-index:10; pointer-events:none; opacity:0;
+             transition:opacity .1s ease; background:var(--card);
+             border:1px solid var(--border); border-radius:8px;
+             padding:10px 12px; font-size:12px; line-height:1.5;
+             box-shadow:0 6px 20px rgba(0,0,0,.35); max-width:260px; }
+  .tooltip.show { opacity:1; }
+  .tooltip .t-title { font-weight:600; margin-bottom:4px; }
+  .tooltip .t-row { display:flex; gap:8px; color:var(--muted); }
+  .tooltip .t-row span:last-child { color:var(--fg); font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav>
+    <a href="/user/dashboard">← Dashboard</a>
+    <a href="/test/edge">Test →</a>
+  </nav>
+  <div class="headrow">
+    <div>
+      <h1>Qonclave Hub — Network</h1>
+      <div class="sub">Devices on the network, placed by distance from the hub
+        (network round-trip time).</div>
+    </div>
+    <span id="hubPill" class="pill">connecting…</span>
+    <span id="deviceCount" class="pill muted"></span>
+    <button id="clearBtn" style="background:var(--err);color:var(--fg);border:none;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:500;">Clear</button>
+  </div>
+
+  <div class="card" style="margin-bottom:18px;">
+    <div class="radar-wrap">
+      <svg id="radar" viewBox="0 0 640 640" role="img"
+           aria-label="Network map: devices placed around the hub by round-trip time">
+        <defs>
+          <linearGradient id="sweepGrad" gradientTransform="rotate(90)">
+            <stop offset="0%"  stop-color="#4f9dff" stop-opacity="0"/>
+            <stop offset="100%" stop-color="#4f9dff" stop-opacity=".25"/>
+          </linearGradient>
+        </defs>
+        <g id="rings"></g>
+        <path class="sweep" d="M320 320 L320 40 A280 280 0 0 1 460 74 Z" fill="url(#sweepGrad)"/>
+        <circle class="hub-glow" cx="320" cy="320" r="26"/>
+        <circle class="hub-core" cx="320" cy="320" r="9"/>
+        <text class="hub-label" x="320" y="348" id="hubLabel">hub</text>
+        <g id="devices"></g>
+      </svg>
+    </div>
+    <div class="legend">
+      <span><span class="dot" style="background:var(--ok)"></span>online</span>
+      <span><span class="dot" style="background:var(--warn)"></span>idle</span>
+      <span><span class="dot" style="background:var(--err)"></span>offline</span>
+      <span>rings = round-trip time (log scale); outer edge = not yet measured</span>
+    </div>
+    <div id="emptyNote" class="empty-note">
+      ⚠ No devices found — devices appear when they probe discovery,
+      post an event, or publish MQTT status.
+    </div>
+  </div>
+
+  <div class="card">
+    <label>Details</label>
+    <table>
+      <thead>
+        <tr><th>Device</th><th>IP address</th><th>Distance (RTT)</th>
+            <th>State</th><th>Last seen</th><th>Seen via</th></tr>
+      </thead>
+      <tbody id="rows">
+        <tr><td colspan="6" style="color:var(--muted)">No devices seen yet.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div id="tooltip" class="tooltip"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const SVGNS = "http://www.w3.org/2000/svg";
+
+const CX = 320, CY = 320;
+const R_MIN = 96, R_MAX = 250, R_UNKNOWN = 278;
+const RTT_LO = 0.5, RTT_HI = 500;  // ms, log scale between the rings
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c =>
+    ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+function ago(epochS) {
+  const s = Math.max(0, Date.now() / 1000 - epochS);
+  if (s < 60) return `${Math.round(s)}s ago`;
+  if (s < 3600) return `${Math.round(s / 60)}m ago`;
+  if (s < 86400) return `${Math.round(s / 3600)}h ago`;
+  return `${Math.round(s / 86400)}d ago`;
+}
+
+// Stable angle per device so dots don't shuffle between polls. FNV-1a, so
+// near-identical ids ("unoq-01" vs "unoq-02") still land far apart.
+function angleFor(key) {
+  let h = 0x811c9dc5;
+  for (const ch of key) { h ^= ch.charCodeAt(0); h = Math.imul(h, 0x01000193); }
+  return ((h >>> 0) % 3600) / 3600 * 2 * Math.PI;
+}
+
+function radiusFor(rtt) {
+  if (rtt == null) return R_UNKNOWN;
+  const t = (Math.log10(Math.max(RTT_LO, Math.min(RTT_HI, rtt))) - Math.log10(RTT_LO))
+          / (Math.log10(RTT_HI) - Math.log10(RTT_LO));
+  return R_MIN + t * (R_MAX - R_MIN);
+}
+
+function drawRings() {
+  const g = $("rings");
+  for (const ms of [1, 10, 100]) {
+    const r = radiusFor(ms);
+    const ring = document.createElementNS(SVGNS, "circle");
+    ring.setAttribute("class", "ring");
+    ring.setAttribute("cx", CX); ring.setAttribute("cy", CY); ring.setAttribute("r", r);
+    g.appendChild(ring);
+    const lbl = document.createElementNS(SVGNS, "text");
+    lbl.setAttribute("class", "ring-label");
+    lbl.setAttribute("x", CX + 4); lbl.setAttribute("y", CY - r - 4);
+    lbl.textContent = `${ms} ms`;
+    g.appendChild(lbl);
+  }
+  const outer = document.createElementNS(SVGNS, "circle");
+  outer.setAttribute("class", "ring");
+  outer.setAttribute("style", "stroke-dasharray:4 5;");
+  outer.setAttribute("cx", CX); outer.setAttribute("cy", CY); outer.setAttribute("r", R_UNKNOWN);
+  $("rings").appendChild(outer);
+}
+
+// Keyed device groups so position changes animate instead of redrawing.
+const nodes = new Map();
+
+function upsertDevice(d) {
+  const key = d.device_id || `ip:${d.ip}`;
+  const r = radiusFor(d.rtt_ms);
+  const a = angleFor(key);
+  const x = CX + r * Math.cos(a), y = CY + r * Math.sin(a);
+
+  let g = nodes.get(key);
+  if (!g) {
+    g = document.createElementNS(SVGNS, "g");
+    const halo = document.createElementNS(SVGNS, "circle");
+    halo.setAttribute("class", "halo"); halo.setAttribute("r", 14);
+    const dot = document.createElementNS(SVGNS, "circle");
+    dot.setAttribute("class", "dot"); dot.setAttribute("r", 6);
+    const name = document.createElementNS(SVGNS, "text");
+    name.setAttribute("class", "name"); name.setAttribute("y", 22);
+    const rtt = document.createElementNS(SVGNS, "text");
+    rtt.setAttribute("class", "rtt"); rtt.setAttribute("y", 34);
+    g.append(halo, dot, name, rtt);
+    g.addEventListener("mouseenter", ev => { showTooltip(g); positionTooltip(ev); });
+    g.addEventListener("mousemove", positionTooltip);
+    g.addEventListener("mouseleave", hideTooltip);
+    $("devices").appendChild(g);
+    nodes.set(key, g);
+  }
+  g._data = d;
+  g.setAttribute("class", `dev ${d.state}`);
+  g.style.transform = `translate(${x}px, ${y}px)`;
+  g.querySelector("text.name").textContent = d.device_id || d.ip || "?";
+  g.querySelector("text.rtt").textContent =
+      d.rtt_ms != null ? `${d.rtt_ms} ms` : "unmeasured";
+  return key;
+}
+
+function showTooltip(g) {
+  const d = g._data;
+  if (!d) return;
+  const tip = $("tooltip");
+  tip.innerHTML = `
+    <div class="t-title">${d.device_id ? esc(d.device_id) : "(unidentified)"}</div>
+    <div class="t-row"><span>IP</span><span>${d.ip ? esc(d.ip) : "—"}</span></div>
+    <div class="t-row"><span>State</span><span>${esc(d.state)}</span></div>
+    <div class="t-row"><span>RTT</span><span>${d.rtt_ms != null ? d.rtt_ms + " ms" : "unmeasured"}</span></div>
+    <div class="t-row"><span>Last seen</span><span>${ago(d.last_seen)}</span></div>
+    <div class="t-row"><span>First seen</span><span>${ago(d.first_seen)}</span></div>
+    <div class="t-row"><span>Sightings</span><span>${d.sightings}</span></div>
+    <div class="t-row"><span>Seen via</span><span>${d.sources.map(esc).join(", ")}</span></div>`;
+  tip.classList.add("show");
+}
+
+function positionTooltip(ev) {
+  const tip = $("tooltip");
+  const pad = 14;
+  let x = ev.clientX + pad, y = ev.clientY + pad;
+  const rect = tip.getBoundingClientRect();
+  if (x + rect.width > window.innerWidth) x = ev.clientX - rect.width - pad;
+  if (y + rect.height > window.innerHeight) y = ev.clientY - rect.height - pad;
+  tip.style.left = `${x}px`;
+  tip.style.top = `${y}px`;
+}
+
+function hideTooltip() {
+  $("tooltip").classList.remove("show");
+}
+
+async function loadHealth() {
+  const pill = $("hubPill");
+  try {
+    await (await fetch("/health")).json();
+    pill.className = "pill ok"; pill.textContent = "hub online";
+  } catch (e) {
+    pill.className = "pill err"; pill.textContent = "hub unreachable";
+  }
+}
+
+async function loadDevices() {
+  try {
+    const j = await (await fetch("/user/devices")).json();
+    $("hubLabel").textContent = j.hub.ip ? `hub · ${j.hub.ip}` : "hub";
+
+    const online = j.devices.filter(d => d.state === "online").length;
+    $("deviceCount").textContent = `${online} online / ${j.count} known`;
+    $("emptyNote").style.display = j.devices.length ? "none" : "block";
+
+    const seen = new Set(j.devices.map(upsertDevice));
+    for (const [key, g] of nodes) {
+      if (!seen.has(key)) { g.remove(); nodes.delete(key); }
+    }
+
+    const rows = $("rows");
+    if (!j.devices.length) {
+      rows.innerHTML = '<tr><td colspan="6" style="color:var(--muted)">No devices seen yet.</td></tr>';
+      return;
+    }
+    rows.innerHTML = j.devices.map(d => `
+      <tr>
+        <td style="font-weight:600">${d.device_id ? esc(d.device_id) : '<span style="color:var(--muted)">(unidentified)</span>'}</td>
+        <td class="mono">${d.ip ? esc(d.ip) : "—"}</td>
+        <td>${d.rtt_ms != null ? d.rtt_ms + " ms" : '<span style="color:var(--muted)">not yet measured</span>'}</td>
+        <td><span class="pill ${d.state === "online" ? "ok" : d.state === "idle" ? "" : "err"}">${d.state}</span></td>
+        <td>${ago(d.last_seen)}</td>
+        <td class="mono">${d.sources.map(esc).join(", ")}</td>
+      </tr>`).join("");
+  } catch (e) { /* leave prior state; hubPill reflects reachability */ }
+}
+
+drawRings();
+loadHealth(); loadDevices();
+setInterval(loadHealth, 15000);
+setInterval(loadDevices, 3000);
+
+$("clearBtn").addEventListener("click", async () => {
+  if (!confirm("Clear all device history?")) return;
+  try {
+    await fetch("/user/network/clear", { method: "POST" });
+    nodes.clear();
+    $("rows").innerHTML = '<tr><td colspan="6" style="color:var(--muted)">No devices seen yet.</td></tr>';
+    $("deviceCount").textContent = "0 online / 0 known";
+    $("emptyNote").style.display = "block";
+    $("devices").innerHTML = "";
+  } catch (e) { alert("Clear failed: " + e.message); }
+});
+</script>
+</body>
+</html>

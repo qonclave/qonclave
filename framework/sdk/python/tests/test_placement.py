@@ -16,7 +16,7 @@ from __future__ import annotations
 import pytest
 
 from qonclave.core.enums import Complexity, Privacy, Urgency
-from qonclave.core.models import Capabilities, Load, Power
+from qonclave.core.models import Capabilities, EdgeEvent, Load, Power, TaskDescriptor
 from qonclave.placement import (
     DefaultPlacement,
     InferenceTask,
@@ -263,3 +263,56 @@ def test_tierset_without_local_candidate_is_an_error() -> None:
 
     with pytest.raises(LookupError, match="no local candidate"):
         _ = tiers.local
+
+
+# ------------------------------------------------------------------ from_event
+
+def _event(**kw) -> EdgeEvent:
+    return EdgeEvent(event_id="e1", source_node_id="unoq-01", trigger="person_detected",
+                     timestamp="2026-08-06T12:00:00Z", **kw)
+
+
+def test_from_event_without_declared_task_uses_defaults() -> None:
+    """An unmodified device sends no `task` field. Behavior must not change because this
+    exists -- the defaults apply and nothing has a deadline."""
+    task = InferenceTask.from_event(_event(), task_id="t1",
+                                    default_complexity=Complexity.VLM_REASON,
+                                    default_use_case="fallback")
+
+    assert task.descriptor.complexity is Complexity.VLM_REASON
+    assert task.descriptor.use_case == "fallback"
+    assert task.descriptor.deadline_ms is None
+    assert task.descriptor.remaining_ms is None
+
+
+def test_from_event_with_declared_task_carries_it_through() -> None:
+    declared = TaskDescriptor(complexity=Complexity.LLM_REASON, urgency=Urgency.HIGH,
+                              privacy=Privacy.NO_EGRESS, use_case="track_analyze",
+                              deadline_ms=5000, remaining_ms=1200, hops=["edge-1"])
+
+    task = InferenceTask.from_event(_event(task=declared), task_id="t2")
+
+    assert task.descriptor.complexity is Complexity.LLM_REASON
+    assert task.descriptor.urgency is Urgency.HIGH
+    assert task.descriptor.privacy is Privacy.NO_EGRESS
+    assert task.descriptor.use_case == "track_analyze"
+    assert task.descriptor.remaining_ms == 1200
+    assert task.descriptor.hops == ["edge-1"]
+
+
+def test_from_event_declared_use_case_wins_over_default() -> None:
+    declared = TaskDescriptor(use_case="track_analyze")
+
+    task = InferenceTask.from_event(_event(task=declared), task_id="t3",
+                                    default_use_case="fallback")
+
+    assert task.descriptor.use_case == "track_analyze"
+
+
+def test_from_event_falls_back_to_default_use_case_when_undeclared() -> None:
+    declared = TaskDescriptor(complexity=Complexity.LLM_REASON)  # use_case left unset
+
+    task = InferenceTask.from_event(_event(task=declared), task_id="t4",
+                                    default_use_case="fallback")
+
+    assert task.descriptor.use_case == "fallback"
