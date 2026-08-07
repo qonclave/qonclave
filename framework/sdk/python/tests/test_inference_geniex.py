@@ -94,12 +94,14 @@ class _FakeProfile:
 class _FakeTokenizer:
     def __init__(self, accepts_thinking_kwarg=True):
         self._accepts_thinking_kwarg = accepts_thinking_kwarg
+        self.last_messages = None
 
     def apply_chat_template(self, messages, tokenize, add_generation_prompt,
                             enable_thinking=None):
         if enable_thinking is not None and not self._accepts_thinking_kwarg:
             raise TypeError("apply_chat_template() got an unexpected keyword argument "
                             "'enable_thinking'")
+        self.last_messages = messages
         return f"<rendered {len(messages)} messages>"
 
 
@@ -152,6 +154,39 @@ def test_image_path_infer_passes_the_image_through():
 
     assert result.text == "a person is visible"
     assert model.generate_calls[0]["images"] == ["/tmp/some-frame.jpg"]
+
+
+def test_text_only_message_content_is_a_plain_string_not_a_content_list():
+    """A text-only model's chat template generally expects `content` to be a string. Handing it
+    the vision-style [{"type": "text", ...}] list instead doesn't raise -- it silently bakes the
+    Python repr of the list into the rendered prompt in place of the actual question, which the
+    model then (correctly, per its own system prompt) treats as garbled input. This is the
+    regression: assistant queries getting an identical "please repeat that" reply regardless of
+    what was actually asked."""
+    tokenizer = _FakeTokenizer()
+    model = _FakeModel(reply="hello back", tokenizer=tokenizer)
+    backend = _loaded_backend(model)
+
+    backend.infer(prompt="what is the fastest animal in the world", system="be terse")
+
+    user_message = tokenizer.last_messages[-1]
+    assert user_message["role"] == "user"
+    assert user_message["content"] == "what is the fastest animal in the world"
+
+
+def test_image_infer_message_content_is_the_multimodal_part_list():
+    tokenizer = _FakeTokenizer()
+    model = _FakeModel(reply="a person is visible", tokenizer=tokenizer)
+    backend = _loaded_backend(model)
+
+    backend.infer(prompt="describe", image_path="/tmp/some-frame.jpg")
+
+    user_message = tokenizer.last_messages[-1]
+    assert user_message["role"] == "user"
+    assert user_message["content"] == [
+        {"type": "image", "image": "/tmp/some-frame.jpg"},
+        {"type": "text", "text": "describe"},
+    ]
 
 
 def test_payloads_image_is_written_to_a_tempfile_and_cleaned_up():

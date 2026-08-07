@@ -213,10 +213,21 @@ class GenieXBackend(ModelBackend):
                 # each infer() must be an independent single-turn call, or the previous
                 # image/prompt's state bleeds into this one.
 
-                content: list[dict] = []
+                # The multimodal {"type": ...} content-part list is only meaningful (and only
+                # reliably supported by a tokenizer's chat template) when there's an image to
+                # attach. A text-only model's template generally expects `content` to be a plain
+                # string; handing it a list instead doesn't raise -- Jinja's `~` concatenation
+                # auto-stringifies -- but it bakes the Python repr of the list into the rendered
+                # prompt in place of the actual question, which the model then (correctly, per
+                # its own instructions) treats as garbled input.
+                text = prompt or ""
                 if resolved_image is not None:
-                    content.append({"type": "image", "image": resolved_image})
-                content.append({"type": "text", "text": prompt or ""})
+                    content: Any = [
+                        {"type": "image", "image": resolved_image},
+                        {"type": "text", "text": text},
+                    ]
+                else:
+                    content = text
                 messages = []
                 if system:
                     messages.append({"role": "system", "content": system})
