@@ -1,15 +1,16 @@
 """
-llm.py — conditional text-only LLM reasoning for the Qonclave framework.
+llm.py — conditional text-only LLM reasoning for the Qonclave framework, now
+built on qonclave.inference.local.geniex.
 
-Uses the same lazy-load, ARM64-guard, and best-effort philosophy as vlm.py.
-The heavy model (GenieX + Qwen3-4B) is imported and loaded only on demand,
-only on ARM64, and never at module load time — so the rest of the hub runs
-on any machine; on x86 the backend reports "unavailable" and returns a safe
-stub.
+Uses the same lazy-load, ARM64-guard, and best-effort philosophy as vlm.py,
+via the same `GenieXBackend`. Unlike VLMBackend this backend accepts no
+image — it is text-in, text-out, suitable for reasoning over structured text
+such as SMS replies, event summaries, or operator instructions.
 
-Unlike VLMBackend this backend accepts no image — it is text-in, text-out,
-suitable for reasoning over structured text such as SMS replies, event
-summaries, or operator instructions.
+This is a wrapper, not a re-export shim, for the same reason vlm.py is: the
+existing dict-shaped generate() return is what apps/security/policy.py and
+apps/assistant/routes.py already read, so translating GenieXBackend's
+InferResult here means neither caller changes.
 
 Public API:
     backend = LLMBackend()              # cheap, does not import geniex
@@ -37,9 +38,9 @@ Return dict shape (always, never raises for the caller):
 from __future__ import annotations
 
 import logging
-import platform
-import threading
-import time
+
+from qonclave.core.enums import Complexity
+from qonclave.inference.local.geniex import GenieXBackend
 
 log = logging.getLogger("qonclave.llm")
 
@@ -48,88 +49,42 @@ DEVICE_MAP = "qairt"
 DEFAULT_MAX_NEW_TOKENS = 512
 
 
-def _is_arm64() -> bool:
-    m = platform.machine().upper()
-    return "ARM64" in m or "AARCH64" in m
-
-
 class LLMBackend:
     """Lazily loads the GenieX text-only LLM. Safe to construct on any machine."""
 
     def __init__(self, model_id: str = MODEL_ID, device_map: str = DEVICE_MAP):
         self.model_id = model_id
         self.device_map = device_map
-        self._model = None
-        self._load_error: str | None = None
-        self._load_attempted = False
-        self._lock = threading.Lock()  # generation is serialized; model isn't reentrant
-        # None until the first thinking=False call tells us whether this
-        # tokenizer's chat template accepts enable_thinking.
-        self._thinking_kwarg_ok: bool | None = None
+        self._backend = GenieXBackend(model_id=model_id, device_map=device_map,
+                                      max_complexity=Complexity.LLM_REASON)
 
     # --- capability probe ---------------------------------------------------
 
     def is_available(self) -> bool:
         """True only if the model is (or can be) loaded on this machine."""
-        if self._model is not None:
-            return True
-        if self._load_attempted:
-            return False
-        return self._try_load()
+        return self._backend.available()
 
     def status(self) -> dict:
+        # available(), matching vlm.py's VLMBackend.status() -- the FIRST
+        # status call (e.g. /health before anything else warmed this up)
+        # triggers the lazy load itself, rather than under-reporting
+        # availability until something else happens to trigger a load.
+        s = self._backend.status()
         return {
-            "available": self._model is not None,
-            "model_id": self.model_id,
-            "device_map": self.device_map,
-            "arch": platform.machine(),
-            "load_attempted": self._load_attempted,
-            "load_error": self._load_error,
+            "available": s["available"],
+            "model_id": s["model_id"],
+            "device_map": s["device_map"],
+            "arch": s["arch"],
+            "load_attempted": s["load_attempted"],
+            "load_error": s["load_error"],
         }
 
     def warmup(self) -> bool:
         """Eagerly load the model; returns True on success."""
-        return self._try_load()
+        self._backend.warmup()
+        return self._backend.available()
 
-    # --- internal -----------------------------------------------------------
-
-    def _try_load(self) -> bool:
-        with self._lock:
-            if self._model is not None:
-                return True
-            if self._load_attempted:
-                return False
-            self._load_attempted = True
-
-            if not _is_arm64():
-                self._load_error = (
-                    f"non-ARM64 host ({platform.machine()}); GenieX reasoning is "
-                    "Snapdragon-only. Server runs, LLM reasoning disabled."
-                )
-                log.warning("LLM unavailable: %s", self._load_error)
-                return False
-
-            try:
-                from geniex import AutoModelForCausalLM  # type: ignore
-            except Exception as e:
-                self._load_error = f"could not import geniex: {e}"
-                log.warning("LLM unavailable: %s", self._load_error)
-                return False
-
-            try:
-                log.info("Loading LLM model '%s' (device_map=%s)...",
-                         self.model_id, self.device_map)
-                t0 = time.time()
-                self._model = AutoModelForCausalLM.from_pretrained(
-                    self.model_id, device_map=self.device_map,
-                )
-                log.info("LLM model loaded in %.1fs", time.time() - t0)
-                return True
-            except Exception as e:
-                self._load_error = f"model load failed: {e}"
-                log.error("LLM load failed: %s", self._load_error)
-                self._model = None
-                return False
+    # --- inference ----------------------------------------------------------
 
     def _unavailable(self) -> dict:
         return {
@@ -137,39 +92,9 @@ class LLMBackend:
             "text": None,
             "model_id": self.model_id,
             "latency_s": None,
-            "error": self._load_error or "LLM not available on this machine",
+            "error": self._backend.status()["load_error"] or "LLM not available on this machine",
             "profile": None,
         }
-
-    # --- inference ----------------------------------------------------------
-
-    def _apply_chat_template(self, messages: list[dict], thinking: bool) -> str:
-        """
-        Render the chat template, suppressing Qwen3's <think> block when
-        thinking is False.
-
-        enable_thinking is a Qwen3 chat-template kwarg; tokenizers that predate
-        it raise TypeError. We probe once, then remember the answer so a hot
-        path doesn't retry (or re-warn) on every call.
-        """
-        tokenizer = self._model.tokenizer
-        kwargs = {"tokenize": False, "add_generation_prompt": True}
-
-        if not thinking and self._thinking_kwarg_ok is not False:
-            try:
-                chat_prompt = tokenizer.apply_chat_template(
-                    messages, enable_thinking=False, **kwargs,
-                )
-                self._thinking_kwarg_ok = True
-                return chat_prompt
-            except TypeError as e:
-                self._thinking_kwarg_ok = False
-                log.warning(
-                    "tokenizer does not accept enable_thinking (%s); replies may "
-                    "contain a <think> block", e,
-                )
-
-        return tokenizer.apply_chat_template(messages, **kwargs)
 
     def generate(self, prompt: str, system: str | None = None,
                  max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS,
@@ -185,62 +110,27 @@ class LLMBackend:
         Always returns a dict and never raises for the caller; on an
         unsupported machine returns {"available": False, ...}.
         """
-        if not self.is_available():
+        if not self._backend.available():
             return self._unavailable()
 
-        with self._lock:
-            try:
-                reset = getattr(self._model, "reset", None)
-                if callable(reset):
-                    try:
-                        reset()
-                    except Exception as e:
-                        log.debug("model.reset() failed (continuing): %s", e)
+        result = self._backend.infer(prompt=prompt, system=system,
+                                     max_tokens=max_new_tokens, thinking=thinking)
+        if not result.ok:
+            return {**self._unavailable(), "available": True,
+                    "error": f"generate failed: {result.error}"}
 
-                messages = []
-                if system:
-                    messages.append({"role": "system", "content": system})
-                messages.append({"role": "user", "content": prompt})
-
-                chat_prompt = self._apply_chat_template(messages, thinking)
-
-                t0 = time.time()
-                output = self._model.generate(chat_prompt, max_new_tokens=max_new_tokens)
-                latency = time.time() - t0
-
-                text = getattr(output, "text", str(output))
-                profile = None
-                prof = getattr(output, "profile", None)
-                if prof is not None:
-                    profile = {
-                        "generated_tokens": getattr(prof, "generated_tokens", None),
-                        "decode_speed": getattr(prof, "decode_speed", None),
-                        "stop_reason": getattr(prof, "stop_reason", None),
-                    }
-
-                preview = (text or "")[:120].replace("\n", " ")
-                log.info("LLM generate (%.2fs): %s", latency, preview)
-                return {
-                    "available": True,
-                    "text": text,
-                    "model_id": self.model_id,
-                    "latency_s": round(latency, 3),
-                    "error": None,
-                    "profile": profile,
-                }
-            except Exception as e:
-                log.exception("LLM generate failed")
-                return {
-                    **self._unavailable(),
-                    "available": True,
-                    "error": f"generate failed: {e}",
-                }
+        latency_s = round(result.compute_time_ms / 1000.0, 3) \
+            if result.compute_time_ms is not None else None
+        preview = (result.text or "")[:120].replace("\n", " ")
+        log.info("LLM generate (%.2fs): %s", latency_s or 0.0, preview)
+        return {
+            "available": True,
+            "text": result.text,
+            "model_id": result.model_id,
+            "latency_s": latency_s,
+            "error": None,
+            "profile": result.extra.get("profile"),
+        }
 
     def close(self):
-        with self._lock:
-            if self._model is not None:
-                try:
-                    self._model.close()
-                except Exception:
-                    pass
-                self._model = None
+        self._backend.close()

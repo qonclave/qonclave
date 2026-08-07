@@ -169,19 +169,21 @@ merge on either side of the framework/`hub/` split can tell what it's actually c
 | `sms_bus.py` | `apps/security/egress/twilio_sms.py` — **leaves the framework entirely**, no generic contract in the SDK either | ✅ done — see below |
 | `server.py`'s `POST /sms` + `GET /user/sms_activity` routes | `apps/security/sms_routes.py`, a Blueprint registered from `hub/server.py` | ✅ done — see below |
 | `discovery.py` | `discovery/announce.py` + `discovery/backends/udp.py` | ✅ done — payload not yet spec-compliant, `browse.py` not touched; see below |
-| `vlm.py`, `llm.py` | `inference/local/geniex.py` | ⬜ not started |
-| `face_id/` | `inference/local/face_id/` | ⬜ not started |
-| `pose/`, `qnn_session.py` | `inference/local/` — didn't exist when this table was first written | ⬜ not started |
+| `vlm.py`, `llm.py` | `inference/local/geniex.py` — one `GenieXBackend` for both roles | ✅ done — wrapper, not a shim; see below |
+| `face_id/` | **stays app-level**, permanently | n/a — decided 2026-08-06, see below |
+| `pose/`, `qnn_session.py` | **stays app-level**, permanently | n/a — decided 2026-08-06, see below |
 | `device_registry.py` | `discovery/registry.py` — new module; `peers.py`/`health.py` turned out to be placement-scoped (federation candidates, heartbeat liveness), not a general sighting ledger | ✅ done — RTT probing stays hub-local, see below |
 | edge-side `edge_confidence` threshold | a `PlacementPolicy` — no longer hardcoded | ⬜ not started; `edge/` imports nothing from `qonclave.*` yet |
 | `icons.py` | **stays app-level** | n/a — correctly not lifted |
 
 `hub/` is no longer untouched: `adapter.py`, `events.py`, `transport.py`, `policy.py`,
-`device_registry.py`, `discovery.py`, and `mqtt_bus.py` build on the SDK today, proved by
-`hub/tests/` running against all seven (`mqtt_bus.py` is a wrapper rather than a pure re-export
-shim like the others — see below for why). `sms_bus.py` is a different case again: it left
-`hub/framework/` entirely, without gaining any SDK-side counterpart — see below. Everything else
-in the table above is still the pre-convergence, framework-agnostic implementation.
+`device_registry.py`, `discovery.py`, `mqtt_bus.py`, `vlm.py`, and `llm.py` build on the SDK
+today, proved by `hub/tests/` running against all nine (`mqtt_bus.py`, `vlm.py`, and `llm.py` are
+wrappers rather than pure re-export shims like the others — see below for why). `sms_bus.py` is a
+different case again: it left `hub/framework/` entirely, without gaining any SDK-side counterpart
+— see below. `face_id/`, `pose/`, and `qnn_session.py` are staying app-level permanently — also
+below. Everything else in the table above is still the pre-convergence, framework-agnostic
+implementation.
 
 ### `policy.py` was lifted, then reverted, then redone (2026-08-06)
 
@@ -281,11 +283,39 @@ paho client. One small, deliberate behavior delta: the original `MQTTBus.subscri
 logs that case and no-ops rather than surfacing it, so the wrapper's `subscribe()` now returns
 `True` whenever the broker was reachable at all. No test exercised the old failure path.
 
-Three more of the table's rows are worth explaining.
+### `vlm.py`/`llm.py` became one `GenieXBackend`; `face_id`/`pose`/`qnn_session.py` stay app-level (2026-08-06)
 
-`vlm.py`/`llm.py`/`face_id/` land in `inference/local/`, **not** `compute/`. That is rule 2 in
-practice, and it is what lets today's single-laptop hub keep doing its own VLM work with no
-compute node present.
+`vlm.py`/`llm.py` land in `inference/local/`, **not** `compute/`. That is rule 2 in practice, and
+it is what lets today's single-laptop hub keep doing its own VLM work with no compute node
+present. The two files were near-duplicates of each other (lazy ARM64-gated GenieX load, a
+threading lock, a `close()`) differing only in whether a call carries an image, which is exactly
+what `ModelBackend.infer()`'s `image_path`/`payloads` parameters already distinguish — so
+`qonclave.inference.local.geniex.GenieXBackend` is one class, and `hub/server.py` constructs two
+instances of it (`vlm = VLMBackend()` with the Qwen2.5-VL model id, `llm = LLMBackend()` with
+Qwen3-4B), same as before.
+
+Wrappers, not shims, for the same reason `mqtt_bus.py` is one: `GenieXBackend.infer()` returns a
+generic `InferResult`, but `apps/security/policy.py`, `apps/security/investigation.py`, and
+`apps/assistant/routes.py` all read the existing dict-shaped `reason()`/`structured_query()`/
+`generate()` returns. Translating in the wrapper means none of those callers change. One small,
+deliberate behavior fix: `LLMBackend.status()` used to check `self._model is not None` directly,
+under-reporting availability until something else (a real call, or the assistant's own startup
+warmup) happened to trigger a load; it now calls `available()` like `VLMBackend.status()` already
+did (and already explained why), so the first `/health` call after startup is accurate either way.
+
+**`face_id/`, `pose/`, and `qnn_session.py` are not migrating — decided, not deferred.** All three
+exist only to serve `face_id/` and `pose/`'s own vision pipelines (`qnn_session.py` is a raw
+onnxruntime-QNN `InferenceSession` factory used by both; neither `VLMBackend` nor `LLMBackend` ever
+called it — GenieX handles NPU dispatch internally through its own `device_map="qairt"` API).
+Reasons, in order: (1) keeping biometric/PII-adjacent code (face recognition) out of the
+framework's default install surface matters for the open-source privacy-claims audit
+(`steps_to_open_source.md` §7); (2) `inference.ModelBackend` being sufficient to build `vlm.py`/
+`llm.py` on is itself proof an app can supply its own vision backends the same way, without a
+`qonclave.vision` namespace; (3) `qnn_session.py` has no consumer left once face_id/pose stay put,
+so there's nothing to migrate it *for* — the same "no second consumer to prove it generalizes"
+reasoning `sms_bus.py`'s note above landed on for a different file.
+
+Two more of the table's rows are worth explaining.
 
 `icons.py` is LED-icon rendering — use-case-specific logic that already violates `AGENTS.md`'s own
 rule against app logic in the framework. The new layout gives it nowhere to go, which is the
