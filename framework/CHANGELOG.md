@@ -50,12 +50,6 @@ and independently under `spec/v1/`.
   pre-spec ad-hoc shape (not a real `node-manifest.schema.json` document) to stay byte-compatible
   with already-flashed edge devices; `discovery/browse.py` (peer-manifest caching for placement)
   was left untouched since nothing in the old file does that. See `docs/CONVENTIONS.md`.
-- **`qonclave.transport.mqtt.MQTTTransport`** — a `PubSubTransport` implementation over paho-mqtt:
-  lazy connect with a reconnect cooldown, bytes-in/bytes-out publish, and idempotent-by-topic
-  subscribe with a per-topic handler (`client.message_callback_add` underneath). Deliberately just
-  the generic transport primitive; JSON encoding, a message ring buffer, dual-topic legacy
-  publishing, and `discovery.registry` wiring all stay in `hub/framework/mqtt_bus.py`'s `MQTTBus`,
-  which now wraps this class rather than holding a raw paho client. See `docs/CONVENTIONS.md`.
 - **`qonclave.inference.local.geniex.GenieXBackend`** — a `ModelBackend` for GenieX (Qualcomm AI
   Hub, Hexagon NPU via `qairt`), ARM64-gated and lazily imported. One class serves both text-only
   and vision-language calls, distinguished by whether `infer()` is given an image (`image_path` or
@@ -91,15 +85,21 @@ and independently under `spec/v1/`.
 
 `edge/` is still untouched — nothing under it imports `qonclave.*` yet. `hub/` is no longer fully
 untouched: `hub/framework/adapter.py`, `events.py`, `transport.py`, `policy.py`,
-`device_registry.py`, `discovery.py`, `mqtt_bus.py`, `vlm.py`, and `llm.py` build on this SDK
-today. `hub/framework/policy.py` was lifted, reverted while merging `hub/`'s own feature work, and
-redone (all 2026-08-06) — `docs/CONVENTIONS.md`'s "Where existing code lands" section is the
-current, maintained status of every module, including `device_registry.py`'s assumed destination
-not existing (got a new module, `qonclave.discovery.registry`, instead), `discovery.py`'s
-announced payload still being pre-spec, `mqtt_bus.py`/`vlm.py`/`llm.py` all being wrappers around
-an SDK class rather than pure re-export shims (JSON encoding and hub-specific bookkeeping stay
-hub-side; only the underlying I/O moved), and `face_id/`/`pose/`/`qnn_session.py` staying app-level
-permanently rather than migrating (decided, not deferred — see `docs/CONVENTIONS.md`).
+`device_registry.py`, `discovery.py`, `vlm.py`, and `llm.py` build on this SDK today.
+`hub/framework/policy.py` was lifted, reverted while merging `hub/`'s own feature work, and redone
+(all 2026-08-06) — `docs/CONVENTIONS.md`'s "Where existing code lands" section is the current,
+maintained status of every module, including `device_registry.py`'s assumed destination not
+existing (got a new module, `qonclave.discovery.registry`, instead), `discovery.py`'s announced
+payload still being pre-spec, `vlm.py`/`llm.py` being wrappers around an SDK class rather than pure
+re-export shims (JSON encoding and hub-specific bookkeeping stay hub-side; only the underlying I/O
+moved), and `face_id/`/`pose/`/`qnn_session.py` staying app-level permanently rather than migrating
+(decided, not deferred — see `docs/CONVENTIONS.md`). `hub/framework/mqtt_bus.py` briefly gained a
+`qonclave.transport.mqtt.MQTTTransport` counterpart the same day and then lost it again: putting a
+`paho`-backed class in `transport/` directly contradicts this doc's own §2 table (`transport/`
+holds ABCs only, `paho` named explicitly as an example of what doesn't belong there) — a rule the
+dependency-ladder test doesn't check, since it only looks at `qonclave.*`-internal imports, not
+third-party ones. Reverted same-day; `MQTTBus` holds the paho client directly again, and its test
+coverage moved from `framework/sdk/python/tests/` to `hub/tests/test_mqtt_bus.py`.
 `hub/framework/sms_bus.py` left the framework entirely the same day (to
 `hub/apps/security/egress/twilio_sms.py`, plus a new `hub/apps/security/sms_routes.py` blueprint
 for the routes that used to live in `framework/server.py`) — deliberately *without* a generic SDK

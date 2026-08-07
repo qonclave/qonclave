@@ -28,10 +28,12 @@ jobs:
       # NOTEs in hub/requirements.txt. Installed here so pose/face-ID modules
       # still import cleanly in CI; PoseBackend/FaceIdentityBackend degrade to
       # "unavailable" without a GPU/NPU regardless, which is what the tests
-      # that exercise them expect.
+      # that exercise them expect. amqtt is test-only: an in-process MQTT
+      # broker so test_mqtt_bus.py exercises the real MQTTBus (and paho)
+      # without an external service.
       - run: |
           pip install -r hub/requirements.txt
-          pip install pytest numpy opencv-python-headless
+          pip install pytest numpy opencv-python-headless amqtt
 
       - name: hub package compiles
         run: python -m compileall -q hub

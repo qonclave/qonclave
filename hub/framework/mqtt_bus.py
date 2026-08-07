@@ -1,6 +1,5 @@
 """
-mqtt_bus.py — hub->edge push channel for the Qonclave framework, now built
-on qonclave.transport.mqtt.
+mqtt_bus.py — hub->edge push channel for the Qonclave framework.
 
 /edge/event is a synchronous request/response: an edge device gets a
 command back only if it happens to have an HTTP request open at that
@@ -11,12 +10,14 @@ Use-case agnostic: this module knows nothing about what a "command" means
 (navigate_to, capture_now, ...) — it just publishes whatever JSON dict a
 Policy hands it, namespaced by device_id.
 
-The raw connect/publish/subscribe mechanics are `qonclave.transport.mqtt.
-MQTTTransport`, a generic bytes-in/bytes-out PubSubTransport. This module
-wraps it with everything that's hub-specific: JSON encoding, a
-received-message ring buffer for /test/hub, dual-topic legacy publishing
-during the spec migration, and feeding status-topic sightings into the
-network page's registry.
+The paho client lives here, not in the SDK: CONVENTIONS.md is explicit that
+`transport/` holds the `Transport`/`PubSubTransport` ABCs and scheme registry
+only -- "somebody else's library for reaching somebody else's process" is the
+app's (or, as here, the reference hub's) choice, not the framework's. An
+earlier pass (2026-08-06) built a `qonclave.transport.mqtt.MQTTTransport`
+wrapping paho directly in the SDK; that was wrong the same way the doc's own
+table says it already got this wrong twice before, and has been reverted --
+see CONVENTIONS.md's note on this file.
 
 Topics (spec/v1/asyncapi/commands.yaml):
     qonclave/commands/<node_id>    hub -> edge   (JSON)
@@ -45,13 +46,11 @@ logged no-op.
 from __future__ import annotations
 
 import collections
-import datetime as _dt
 import json
 import logging
 import os
 import threading
-
-from qonclave.transport.mqtt import MQTTTransport
+import datetime as _dt
 
 from . import device_registry
 
@@ -65,7 +64,12 @@ LEGACY_TOPICS = os.environ.get("QONCLAVE_MQTT_LEGACY_TOPICS", "1") == "1"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 1883
 DEFAULT_CLIENT_ID = "qonclave-hub"
+CONNECT_TIMEOUT_S = 3
 MESSAGES_MAX = 100
+# How long to keep a failed connect() cached before allowing another attempt.
+# Without this, a broker that isn't up yet at hub-startup (e.g. still binding
+# its port) would be marked unavailable for the rest of the process's life.
+RECONNECT_COOLDOWN_S = 5
 
 
 # --- Topics -----------------------------------------------------------------
@@ -111,53 +115,96 @@ def legacy_status_topic(device_id: str) -> str:
 
 
 class MQTTBus:
-    """Hub-specific facade over qonclave.transport.mqtt.MQTTTransport."""
+    """Lazily connects to a Mosquitto (or any MQTT 3.1.1/5) broker."""
 
     def __init__(self, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT,
                  client_id: str = DEFAULT_CLIENT_ID, enabled: bool = True):
-        self._transport = MQTTTransport(host=host, port=port, client_id=client_id,
-                                        enabled=enabled)
+        self.host = host
+        self.port = port
+        self.client_id = client_id
+        self.enabled = enabled
+        self._client = None
+        self._connect_error: str | None = None
+        self._last_attempt: _dt.datetime | None = None
         self._lock = threading.Lock()
+        self._subscriptions: set[str] = set()
         self._messages: "collections.deque[dict]" = collections.deque(maxlen=MESSAGES_MAX)
-
-    @property
-    def host(self) -> str:
-        return self._transport.host
-
-    @property
-    def port(self) -> int:
-        return self._transport.port
-
-    @property
-    def enabled(self) -> bool:
-        return self._transport.enabled
 
     # --- capability probe ---------------------------------------------------
     def is_available(self) -> bool:
-        return self._transport.is_available()
+        if not self.enabled:
+            return False
+        if self._client is not None:
+            return True
+        return self.connect()
 
     def status(self) -> dict:
-        return self._transport.status()
+        return {
+            "available": self._client is not None,
+            "enabled": self.enabled,
+            "host": self.host,
+            "port": self.port,
+            "connect_attempted": self._last_attempt is not None,
+            "connect_error": self._connect_error,
+        }
 
+    # --- internal -----------------------------------------------------------
     def connect(self) -> bool:
-        return self._transport.connect()
+        with self._lock:
+            if self._client is not None:
+                return True
+            now = _dt.datetime.now(_dt.timezone.utc)
+            if (self._last_attempt is not None and
+                    (now - self._last_attempt).total_seconds() < RECONNECT_COOLDOWN_S):
+                return False
+            self._last_attempt = now
 
-    def _on_message(self, topic: str, payload: bytes) -> None:
+            if not self.enabled:
+                self._connect_error = "MQTT disabled (QONCLAVE_MQTT_ENABLED=0)"
+                log.info("MQTT disabled by config")
+                return False
+
+            try:
+                # Imported HERE (not at module top) so a missing paho-mqtt
+                # install doesn't break hubs that don't need MQTT.
+                import paho.mqtt.client as mqtt  # type: ignore
+            except Exception as e:
+                self._connect_error = f"could not import paho-mqtt: {e}"
+                log.warning("MQTT unavailable: %s", self._connect_error)
+                return False
+
+            try:
+                client = mqtt.Client(
+                    mqtt.CallbackAPIVersion.VERSION2, client_id=self.client_id,
+                )
+                client.on_message = self._on_message
+                client.connect(self.host, self.port, keepalive=30)
+                client.loop_start()
+                self._client = client
+                log.info("Connected to MQTT broker at %s:%s", self.host, self.port)
+                return True
+            except Exception as e:
+                self._connect_error = f"connect to {self.host}:{self.port} failed: {e}"
+                log.warning("MQTT unavailable: %s", self._connect_error)
+                self._client = None
+                return False
+
+    def _on_message(self, client, userdata, msg):
         try:
-            text = payload.decode("utf-8", errors="replace")
+            payload = msg.payload.decode("utf-8", errors="replace")
         except Exception:
-            text = repr(payload)
+            payload = repr(msg.payload)
         entry = {
-            "topic": topic,
-            "payload": text,
+            "topic": msg.topic,
+            "payload": payload,
             "received_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
         }
         with self._lock:
             self._messages.appendleft(entry)
         # A status message carries the node id in its topic; feed the network
         # page's registry. No-op for topics that aren't status topics.
-        device_registry.record_mqtt_topic(topic)
-        log.info("MQTT received on %s: %s", topic, text)
+        device_registry.record_mqtt_topic(msg.topic)
+        log.info("MQTT received on %s: %s", msg.topic, payload)
 
     # --- publish --------------------------------------------------------------
     def publish(self, topic: str, payload: dict) -> bool:
@@ -165,7 +212,20 @@ class MQTTBus:
         Publish a dict as JSON to an arbitrary topic. Returns True if handed
         to the broker; False (logged) if MQTT is unavailable. Never raises.
         """
-        return self._transport.publish(topic, json.dumps(payload).encode("utf-8"))
+        if not self.is_available():
+            log.warning("Skipping MQTT publish to %s (broker unavailable: %s)",
+                        topic, self._connect_error)
+            return False
+
+        try:
+            body = json.dumps(payload)
+            info = self._client.publish(topic, body, qos=1)
+            info.wait_for_publish(timeout=CONNECT_TIMEOUT_S)
+            log.info("Published to %s: %s", topic, body)
+            return True
+        except Exception as e:
+            log.warning("MQTT publish to %s failed: %s", topic, e)
+            return False
 
     def publish_command(self, device_id: str, command: dict) -> bool:
         """Publish a command to this device, on every enabled topic layout.
@@ -190,8 +250,16 @@ class MQTTBus:
         """
         if not self.is_available():
             return False
-        self._transport.subscribe(topic_filter, self._on_message)
-        return True
+        if topic_filter in self._subscriptions:
+            return True
+        try:
+            self._client.subscribe(topic_filter, qos=1)
+            self._subscriptions.add(topic_filter)
+            log.info("Subscribed to %s", topic_filter)
+            return True
+        except Exception as e:
+            log.warning("MQTT subscribe to %s failed: %s", topic_filter, e)
+            return False
 
     def recent_messages(self, limit: int = 50) -> list[dict]:
         """Recently received messages, newest first."""
@@ -199,4 +267,11 @@ class MQTTBus:
             return list(self._messages)[:limit]
 
     def close(self):
-        self._transport.close()
+        with self._lock:
+            if self._client is not None:
+                try:
+                    self._client.loop_stop()
+                    self._client.disconnect()
+                except Exception:
+                    pass
+                self._client = None

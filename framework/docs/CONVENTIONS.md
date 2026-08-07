@@ -166,7 +166,7 @@ merge on either side of the framework/`hub/` split can tell what it's actually c
 | `track_store.py` | **stays app-level** | n/a — decided 2026-08-06, see below (missing from this table until now) |
 | `policy.py` | `hub/policy.py` | ✅ done — lifted, reverted, redone; see below |
 | `server.py` | `hub/app.py` | 🔄 backwards-dependency bug fixed; full move descoped, see below |
-| `mqtt_bus.py` | **stays put**, now wrapping `transport/mqtt.py`'s `MQTTTransport` (`PubSubTransport`) | ✅ done — JSON encoding, ring buffer, dual-topic publish, registry wiring all stay hub-side |
+| `mqtt_bus.py` | **stays put**, entirely — no `qonclave.transport.mqtt` implementation | ✅ done — paho lives here, not in the SDK; see below (amended 2026-08-06) |
 | `sms_bus.py` | `apps/security/egress/twilio_sms.py` — **leaves the framework entirely**, no generic contract in the SDK either | ✅ done — see below |
 | `server.py`'s `POST /sms` + `GET /user/sms_activity` routes | `apps/security/sms_routes.py`, a Blueprint registered from `hub/server.py` | ✅ done — see below |
 | `discovery.py` | `discovery/announce.py` + `discovery/backends/udp.py` | ✅ done — payload not yet spec-compliant, `browse.py` not touched; see below |
@@ -178,13 +178,15 @@ merge on either side of the framework/`hub/` split can tell what it's actually c
 | `icons.py` | **stays app-level** | n/a — correctly not lifted |
 
 `hub/` is no longer untouched: `adapter.py`, `events.py`, `transport.py`, `policy.py`,
-`device_registry.py`, `discovery.py`, `mqtt_bus.py`, `vlm.py`, and `llm.py` build on the SDK
-today, proved by `hub/tests/` running against all nine (`mqtt_bus.py`, `vlm.py`, and `llm.py` are
-wrappers rather than pure re-export shims like the others — see below for why). `sms_bus.py` is a
-different case again: it left `hub/framework/` entirely, without gaining any SDK-side counterpart
-— see below. `face_id/`, `pose/`, and `qnn_session.py` are staying app-level permanently — also
-below. `server.py` had its one concrete, long-flagged bug fixed (the `apps.assistant.routes`
-backwards import) without the full `hub/app.py` move it was originally scoped for — see below for
+`device_registry.py`, `discovery.py`, `vlm.py`, and `llm.py` build on the SDK today, proved by
+`hub/tests/` running against all eight (`vlm.py` and `llm.py` are wrappers rather than pure
+re-export shims like the others — see below for why). `mqtt_bus.py` and `sms_bus.py` are both
+cases where the SDK-side counterpart was tried and then deliberately removed — see below for each;
+`mqtt_bus.py` stays entirely hub-owned, same as `sms_bus.py`'s Twilio implementation, just without
+the file also relocating. `face_id/`, `pose/`, and `qnn_session.py` are staying app-level
+permanently — also below. `server.py` had its one concrete, long-flagged bug fixed (the
+`apps.assistant.routes` backwards import) without the full `hub/app.py` move it was originally
+scoped for — see below for
 why that turned out to be its own, larger effort. Everything else in the table above is still the
 pre-convergence, framework-agnostic implementation.
 
@@ -261,30 +263,33 @@ socket-level send/receive/reply mechanics moved to `discovery/backends/udp.py` (
    There was nothing in the old file to port into `browse.py`; it remains a placeholder until
    something actually needs to browse for peers.
 
-### `mqtt_bus.py` is a wrapper, not a re-export shim (2026-08-06)
+### `mqtt_bus.py` briefly gained a `qonclave.transport.mqtt.MQTTTransport`, then didn't (2026-08-06)
 
-Every earlier migration in this table produced a thin re-export shim — `hub/framework/x.py`
-becomes a handful of lines pointing at the real implementation in `qonclave`, same shape as
-`adapter.py`. `mqtt_bus.py` doesn't, because `transport/base.py`'s `PubSubTransport` ABC and
-`MQTTBus`'s existing public surface are contracts at different altitudes on purpose:
+First pass: every earlier migration in this table produced a thin re-export shim —
+`hub/framework/x.py` becomes a handful of lines pointing at the real implementation in `qonclave`,
+same shape as `adapter.py`. `mqtt_bus.py` got a variant of that instead — a
+`qonclave.transport.mqtt.MQTTTransport` class holding a real `paho.mqtt.Client` (lazy-connect with
+a reconnect cooldown, bytes-in/bytes-out publish, idempotent-by-topic subscribe), with `MQTTBus`
+kept as a thin wrapper composing it for the hub-specific parts (JSON encoding, the `/test/hub`
+ring buffer, dual-topic legacy publishing, `discovery.registry` wiring).
 
-* `PubSubTransport.publish(topic, body: bytes, ...)` / `.subscribe(topic, handler)` — bytes in,
-  bytes out, one handler per topic filter. Generic enough that HTTP, CoAP, and gRPC transports
-  implement the same shape's request/response cousin.
-* `MQTTBus` — JSON dict in/out, a received-message ring buffer (`/test/hub`'s console), dual-topic
-  legacy publishing during the spec migration (`command_topic`/`legacy_command_topic`), and
-  feeding `discovery.registry` from status-topic sightings.
+That was wrong, and this document already said so before it happened: §2's "Where a capability
+goes" table states plainly that `transport/` holds "the ABCs and registry only" and "the client
+library lives in the app," naming `paho` specifically as an example of what does not belong here
+— "the last two rows are what this table originally got wrong, in the same way twice." Landing
+`MQTTTransport` made it three. The mistake survived `test_layering.py` because that test checks
+role-to-role `qonclave.*` imports, not whether a `qonclave` module imports a third-party vendor
+library — a different, review-only rule this file already stated but a change didn't get checked
+against.
 
-None of that second list belongs in a generic transport — a CoAP transport has no ring buffer to
-speak of, and "legacy topic" is meaningless outside this specific migration. So
-`qonclave.transport.mqtt.MQTTTransport` implements only the first list (paho-mqtt underneath,
-lazy-connect with a reconnect cooldown, idempotent-by-topic subscribe), and
-`hub/framework/mqtt_bus.py`'s `MQTTBus` keeps its existing name, existing public methods, and
-existing callers unchanged, now composing `MQTTTransport` internally instead of holding a raw
-paho client. One small, deliberate behavior delta: the original `MQTTBus.subscribe()` could return
-`False` if a connected broker's own `client.subscribe()` call raised; `MQTTTransport.subscribe()`
-logs that case and no-ops rather than surfacing it, so the wrapper's `subscribe()` now returns
-`True` whenever the broker was reachable at all. No test exercised the old failure path.
+**Reverted the same day.** `qonclave/transport/mqtt.py` is back to a placeholder. The paho client
+— connect/publish/subscribe, lazy-connect, reconnect cooldown — moved back into
+`hub/framework/mqtt_bus.py`'s `MQTTBus` directly, alongside the JSON encoding/ring buffer/
+dual-topic logic that never left. Its test coverage moved with it:
+`framework/sdk/python/tests/test_transport_mqtt.py` (real amqtt broker, real paho client) became
+`hub/tests/test_mqtt_bus.py`, and `amqtt` moved from the SDK's `dev` extra to a CI-only
+`hub.yml` install step. `MQTTBus`'s public API and every caller are unchanged throughout — this
+was purely about where the paho-dependent code lives, not what it does.
 
 ### `vlm.py`/`llm.py` became one `GenieXBackend`; `face_id`/`pose`/`qnn_session.py` stay app-level (2026-08-06)
 
@@ -297,7 +302,7 @@ what `ModelBackend.infer()`'s `image_path`/`payloads` parameters already disting
 instances of it (`vlm = VLMBackend()` with the Qwen2.5-VL model id, `llm = LLMBackend()` with
 Qwen3-4B), same as before.
 
-Wrappers, not shims, for the same reason `mqtt_bus.py` is one: `GenieXBackend.infer()` returns a
+Wrappers, not shims: `GenieXBackend.infer()` returns a
 generic `InferResult`, but `apps/security/policy.py`, `apps/security/investigation.py`, and
 `apps/assistant/routes.py` all read the existing dict-shaped `reason()`/`structured_query()`/
 `generate()` returns. Translating in the wrapper means none of those callers change. One small,

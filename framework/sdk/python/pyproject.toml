@@ -64,10 +64,6 @@ dev = [
   "jsonschema>=4.21",
   "cbor2>=5.6",
   "ruff>=0.4",
-  # For MQTTTransport tests: paho-mqtt as the client under test, amqtt as an
-  # in-process broker so the tests need no external service.
-  "paho-mqtt>=2.0",
-  "amqtt>=0.11",
 ]
 all = ["qonclave[edge,hub,compute,archive,cbor,sms]"]
 
