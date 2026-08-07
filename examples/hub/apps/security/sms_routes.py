@@ -14,6 +14,7 @@ Endpoints:
                                policy.on_reply(), optionally publishes an
                                MQTT command, replies via policy.reply_for()
     GET  /user/sms_activity    recent SMS activity (outbound + inbound), JSON
+    GET/POST /user/sms-settings  read/toggle the dashboard's outbound-SMS switch
 """
 
 from __future__ import annotations
@@ -79,5 +80,15 @@ def create_sms_blueprint(policy: Policy, mqtt: MQTTBus, sms: SMSBus) -> Blueprin
             "suppressed": sms._suppressed,
             "activity": sms.recent_activity(limit),
         })
+
+    @bp.route("/user/sms-settings", methods=["GET", "POST"])
+    def user_sms_settings():
+        """Dashboard toggle for enabling/disabling outbound SMS."""
+        if request.method == "POST":
+            body = request.get_json(silent=True) or {}
+            if "disabled" not in body:
+                return jsonify({"ok": False, "error": "missing 'disabled' field"}), 400
+            sms.set_user_disabled(bool(body["disabled"]))
+        return jsonify({"ok": True, "disabled": sms._user_disabled})
 
     return bp

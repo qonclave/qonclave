@@ -21,18 +21,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-# The MCU clamps magnitude to this range (MotorController::move), and the
-# Python dispatcher rejects anything outside it before the Bridge call.
-MIN_MAGNITUDE = 1
-MAX_MAGNITUDE = 360
+# The MCU clamps magnitude to these ranges (MotorController::move), and the
+# Python dispatcher rejects anything outside them before the Bridge call.
+# LEFT/RIGHT magnitude is degrees; FORWARD/BACKWARD magnitude is milliseconds
+# -- two different units sharing one RPC field, so two different ranges.
+MIN_TURN_MAGNITUDE = 1
+MAX_TURN_MAGNITUDE = 360
+MIN_LINEAR_MAGNITUDE_MS = 1
+MAX_LINEAR_MAGNITUDE_MS = 5000
 
 
 @dataclass(frozen=True)
 class ApproachStep:
     """One robot command in the approach.
 
-    ``magnitude`` is degrees for LEFT/RIGHT and *seconds* for FORWARD -- the
-    MCU's own convention (MotorController::move), kept rather than
+    ``magnitude`` is degrees for LEFT/RIGHT and *milliseconds* for FORWARD --
+    the MCU's own convention (MotorController::move), kept rather than
     normalized so what is planned is literally what is commanded.
     """
 
@@ -45,7 +49,9 @@ class ApproachStep:
 def plan_approach(
     bearing_degrees: float | None,
     *,
-    forward_seconds: int = 1,
+    size_ratio: float | None = None,
+    max_size_ratio: float = 0.75,
+    forward_ms: int = 1000,
     tolerance_degrees: float = 8.0,
     max_turn_degrees: float = 45.0,
     ms_per_degree: float = 12.0,
@@ -57,6 +63,16 @@ def plan_approach(
     ``bearing_degrees`` is the signed horizontal bearing to the target
     (negative = left of center), or None when no recent bearing is available.
 
+    ``size_ratio`` is how much of the frame the person already fills (the
+    distance keeper's posture-independent metric, person_distance.py), or
+    None when no recent measurement exists. The capture is allowed to get a
+    LITTLE closer than the everyday safe-follow distance -- a close-up is
+    exactly what the VLM needs -- but ``max_size_ratio`` is the line: a
+    person already filling that much of the frame gains nothing from another
+    forward step, and this robot has no proximity sensing, so the box size is
+    the only thing standing between "close-up" and "contact". At or past the
+    cap the forward step is dropped; the turn still happens.
+
     The turn corrects the FULL measured error, unlike the continuous
     centering controller's damped gain: this is a single one-shot alignment
     before a capture, not a loop that can oscillate, so undershooting just
@@ -64,7 +80,9 @@ def plan_approach(
 
     With no bearing at all the turn is skipped but the forward step still
     runs -- the centering loop has been keeping the target roughly ahead, so
-    forward remains the best available guess at "toward them".
+    forward remains the best available guess at "toward them". An unknown
+    size keeps the forward step too: the everyday distance keeper has been
+    holding the safe band, so one bounded step from inside it is safe.
     """
     steps: list[ApproachStep] = []
     remaining = max(0.0, budget_seconds)
@@ -76,7 +94,7 @@ def plan_approach(
 
     if bearing_degrees is not None and abs(bearing_degrees) > tolerance_degrees:
         degrees = min(abs(bearing_degrees), max_turn_degrees)
-        magnitude = _clamp_magnitude(round(degrees))
+        magnitude = _clamp_magnitude(round(degrees), MIN_TURN_MAGNITUDE, MAX_TURN_MAGNITUDE)
         cost = magnitude * ms_per_degree / 1000.0
         if fits(cost):
             steps.append(ApproachStep(
@@ -87,30 +105,31 @@ def plan_approach(
             ))
             remaining -= cost
 
-    if forward_seconds >= 1:
-        magnitude = _clamp_magnitude(int(forward_seconds))
-        cost = float(magnitude)  # FORWARD magnitude is seconds
+    already_close = size_ratio is not None and size_ratio >= max_size_ratio
+    if forward_ms >= 1 and not already_close:
+        magnitude = _clamp_magnitude(forward_ms, MIN_LINEAR_MAGNITUDE_MS, MAX_LINEAR_MAGNITUDE_MS)
+        cost = magnitude / 1000.0  # FORWARD magnitude is ms
         if fits(cost):
             steps.append(ApproachStep(
                 direction="FORWARD",
                 magnitude=magnitude,
                 estimated_seconds=cost,
-                reason=f"close distance for {magnitude}s before capture",
+                reason=f"close distance for {magnitude}ms before capture",
             ))
 
     return steps
 
 
-def _clamp_magnitude(value: float) -> int:
-    return max(MIN_MAGNITUDE, min(MAX_MAGNITUDE, int(value)))
+def _clamp_magnitude(value: float, min_value: int, max_value: int) -> int:
+    return max(min_value, min(max_value, int(value)))
 
 
 def describe(steps: list[ApproachStep]) -> str:
     """One-line log summary of a plan."""
     if not steps:
-        return "no approach (nothing fits the budget)"
+        return "no approach (already close enough, or nothing fits the budget)"
     return ", ".join(
         f"{s.direction} {s.magnitude}"
-        f"{'deg' if s.direction in ('LEFT', 'RIGHT') else 's'} ({s.reason})"
+        f"{'deg' if s.direction in ('LEFT', 'RIGHT') else 'ms'} ({s.reason})"
         for s in steps
     )

@@ -195,7 +195,7 @@ def test_cooldown_reinvestigates_while_still_abnormal(tmp_path, monkeypatch):
     assert manager.snapshot()["state"] == "COOLDOWN"
 
     # Still DANGER during cooldown: no new event yet.
-    clock.now += 5.0
+    clock.now += manager.cooldown_seconds / 2
     manager.observe(4, b"jpeg", analysis())
     assert len(mqtt.published) == 1
 
@@ -228,22 +228,25 @@ def test_cooldown_resets_once_person_normal(tmp_path, monkeypatch):
     assert mqtt.published[1][1]["event_id"] == "event_002"
 
 
-def test_uncertain_and_unavailable_send_manual_check_sms(tmp_path, monkeypatch):
+def test_uncertain_and_unavailable_send_no_sms(tmp_path, monkeypatch):
+    # Only EMERGENCY_LIKELY routes an SMS; UNCERTAIN still classifies and
+    # records normally, it just never dispatches a message.
     vlm = FakeVLM(parsed={"classification": "UNCERTAIN", "confidence": 0.4,
                           "observations": [], "recommended_action": ""})
     manager, clock, _, sms, _ = make_manager(tmp_path, monkeypatch, vlm=vlm)
     manager.observe(4, b"jpeg", analysis())
     manager.on_capture("event_001", b"frame")
-    assert len(sms.sent) == 1
-    assert "check on Jogendra" in sms.sent[0].message
+    assert manager.snapshot()["last_result"]["classification"] == "UNCERTAIN"
+    assert sms.sent == []
 
-    # VLM unavailable degrades to UNCERTAIN, never to silence.
+    # VLM unavailable degrades to UNCERTAIN, never to silence -- and still
+    # sends no SMS, same as any other UNCERTAIN result.
     vlm2 = FakeVLM(available=False)
     manager2, clock2, _, sms2, _ = make_manager(tmp_path, monkeypatch, vlm=vlm2)
     manager2.observe(4, b"jpeg", analysis())
     manager2.on_capture("event_001", b"frame")
     assert manager2.snapshot()["last_result"]["classification"] == "UNCERTAIN"
-    assert len(sms2.sent) == 1
+    assert sms2.sent == []
 
 
 def test_safe_likely_sends_no_sms(tmp_path, monkeypatch):
@@ -312,23 +315,20 @@ def test_name_is_not_duplicated_when_the_model_complies(tmp_path, monkeypatch):
     assert sms.sent[0].message.count("Jogendra") == 1
 
 
-def test_unidentified_person_is_never_called_unknown(tmp_path, monkeypatch):
-    # posture.py reports the literal string "Unknown" with no face match. An
-    # alert reading "Unknown may need help" is worse than saying nothing about
-    # who, so the placeholder must not leak into the prompt or the SMS.
-    vlm = FakeVLM(parsed={
-        "classification": "EMERGENCY_LIKELY", "confidence": 0.9,
-        "observations": ["An unidentified person is on the floor.", "Lights on."],
-        "recommended_action": "Check now.",
-    })
-    manager, _, _, sms, _ = make_manager(tmp_path, monkeypatch, vlm=vlm)
+def test_unidentified_person_never_triggers_the_vlm(tmp_path, monkeypatch):
+    # An automatic investigation names someone in the alert, and this hub
+    # only knows how to name enrolled people -- a track with no resolvable
+    # identity at all (never enrolled, no prior known sighting on this
+    # track_id) must never open one or call the VLM. Contrast with
+    # test_name_is_recovered_from_the_track_when_the_sample_has_none, where
+    # the track WAS known earlier and still gets investigated.
+    manager, _, vlm, sms, mqtt = make_manager(tmp_path, monkeypatch)
     manager.observe(4, b"jpeg", analysis(identity="Unknown"))
-    manager.on_capture("event_001", b"frame")
 
-    prompt = vlm.calls[0]["prompt"]
-    assert "could not identify" in prompt
-    assert "flagged Unknown" not in prompt
-    assert "Unknown" not in sms.sent[0].message
+    assert manager.snapshot()["state"] == "MONITORING"
+    assert vlm.calls == []
+    assert mqtt.published == []
+    assert sms.sent == []
 
 
 def test_name_is_recovered_from_the_track_when_the_sample_has_none(tmp_path,
@@ -350,10 +350,11 @@ def test_name_is_recovered_from_the_track_when_the_sample_has_none(tmp_path,
         track_store.clear()
 
 
-def test_low_confidence_safe_likely_still_asks_for_a_check(tmp_path, monkeypatch):
+def test_low_confidence_safe_likely_still_demotes_to_uncertain(tmp_path, monkeypatch):
     # A hedged "looks fine" is not evidence that someone is fine. Posture
-    # already saw a persistent DANGER, so an unconvinced SAFE_LIKELY must
-    # not be the sole reason nobody is told.
+    # already saw a persistent DANGER, so an unconvinced SAFE_LIKELY must not
+    # be reported as SAFE_LIKELY on the dashboard -- it demotes to UNCERTAIN,
+    # even though (like any UNCERTAIN result) that sends no SMS.
     vlm = FakeVLM(parsed={"classification": "SAFE_LIKELY", "confidence": 0.35,
                           "observations": ["person is seated, hard to tell"],
                           "recommended_action": ""})
@@ -362,8 +363,7 @@ def test_low_confidence_safe_likely_still_asks_for_a_check(tmp_path, monkeypatch
     manager.on_capture("event_001", b"frame")
 
     assert manager.snapshot()["last_result"]["classification"] == "UNCERTAIN"
-    assert len(sms.sent) == 1
-    assert "check on Jogendra" in sms.sent[0].message
+    assert sms.sent == []
 
     # A missing confidence field is treated the same way.
     vlm2 = FakeVLM(parsed={"classification": "SAFE_LIKELY",
@@ -372,7 +372,7 @@ def test_low_confidence_safe_likely_still_asks_for_a_check(tmp_path, monkeypatch
     manager2.observe(4, b"jpeg", analysis())
     manager2.on_capture("event_001", b"frame")
     assert manager2.snapshot()["last_result"]["classification"] == "UNCERTAIN"
-    assert len(sms2.sent) == 1
+    assert sms2.sent == []
 
 
 def test_vlm_crash_does_not_strand_the_state_machine(tmp_path, monkeypatch):

@@ -28,13 +28,9 @@ env/
 # directory - plain "models/*" would only match <repo>/models/, not the one
 # nested under hub/framework/face_id/.
 **/models/*
-!hub/framework/face_id/models/README.txt
-!hub/framework/pose/models/README.txt
+!examples/hub/framework/face_id/models/README.txt
+!examples/hub/framework/pose/models/README.txt
 
-# Annotated per-track frames written by /track/analyze. Imagery persisting on
-# the hub is exactly what the privacy cascade otherwise avoids, so this is
-# gated by QONCLAVE_TRACK_FRAMES_ENABLED, capped, and never committed.
-hub/track_frames/
 
 # OS / editor
 .DS_Store
@@ -48,28 +44,30 @@ tmp/
 *.tmp
 
 # Face ID embedding cache
-hub/framework/face_id/known_faces/.embeddings_*.npy
+examples/hub/framework/face_id/known_faces/.embeddings_*.npy
 
 # Hub runtime uploads (camera frames received from edge devices)
-hub/uploads/
+examples/hub/uploads/
 
-# Hub per-track annotated pose frames (gated by QONCLAVE_TRACK_FRAMES_ENABLED)
-hub/track_frames/
+# Annotated per-track frames written by /track/analyze (gated by
+# QONCLAVE_TRACK_FRAMES_ENABLED). Imagery persisting on the hub is exactly
+# what the privacy cascade otherwise avoids, so this is never committed.
+examples/hub/track_frames/
 
 # Hub runtime-generated icon cache + VLM placeholder image
-hub/icons_cache.json
-hub/scratch_blank.jpg
+examples/hub/icons_cache.json
+examples/hub/scratch_blank.jpg
 
 # Hub per-deployment known-person follow priorities (dashboard-edited runtime state)
-hub/apps/security/known_person_priorities.json
+examples/hub/apps/security/known_person_priorities.json
 
 # Edge escalation frames saved locally on threshold-triggered detections
-edge/**/escalations/
+examples/edge/**/escalations/
 
 # Edge per-track person crops (track_crop.save_crop_locally). Regenerated at
 # runtime and overwritten per track_id — and they are photographs of whoever
 # walked past the camera, so they must not end up in the repo.
-edge/**/track_crops/
+examples/edge/**/track_crops/
 
 # One-off backups taken on-device before deploying a change
 *.bak-pre-*

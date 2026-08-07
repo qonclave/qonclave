@@ -27,6 +27,10 @@ class MotorController {
  private:
   static constexpr int TURN_LEFT = 1;
   static constexpr int TURN_RIGHT = -1;
+  static constexpr int MIN_TURN_DEGREES = 1;
+  static constexpr int MAX_TURN_DEGREES = 360;
+  static constexpr int MIN_LINEAR_MS = 1;
+  static constexpr int MAX_LINEAR_MS = 5000;
   static constexpr float TURN_TOLERANCE_DEGREES = 1.0f;
   static constexpr float YAW_DIRECTION_DETECTION_DEGREES = 0.25f;
   static constexpr float TURN_MOVEMENT_DETECTION_DEGREES = 0.15f;

@@ -212,9 +212,11 @@ dashboard's roster) → the previously selected known person, held for
 `FOLLOW_KNOWN_GRACE_FRAMES` detection frames while briefly missing (the robot does
 **not** chase an unknown during that grace, and never turns from a stale bounding box —
 motor commands only ever come from a current-frame track) → the longest-established
-unknown track → no target. Equal priorities keep the current target, then prefer more
-`frames_tracked`, then the lower `track_id`. A track that disappears and comes back with
-a *new* id must be re-confirmed by face recognition before it is followed again.
+unknown track → no target. Equal priorities keep the current target, then prefer the
+**larger bounding box** (closest/most prominent person), then more `frames_tracked`,
+then the lower `track_id` — the same box-size-then-frames-then-id order also picks
+among several simultaneously visible unknowns. A track that disappears and comes back
+with a *new* id must be re-confirmed by face recognition before it is followed again.
 
 Priorities live on the hub (`GET /user/known-person-priorities`, per enrolled face
 slug); `python/priority_sync.py` mirrors them every `FOLLOW_PRIORITY_REFRESH_SEC` on a

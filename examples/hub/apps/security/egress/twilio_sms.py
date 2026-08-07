@@ -20,6 +20,11 @@ Environment:
     QONCLAVE_SMS_ENABLED        1 (default) to enable; 0 to disable
     TWILIO_ACCOUNT_SID          Twilio account SID
     TWILIO_AUTH_TOKEN           Twilio auth token
+    QONCLAVE_SMS_MIN_RESEND_SEC minimum seconds between sends (default 120);
+                                stops the investigation re-check loop (which
+                                re-fires every cooldown_seconds while someone
+                                stays down) from texting the same alert again
+                                and again with just reworded VLM text
 
 This is entirely app-owned, by design: which vendor, which credentials, and
 what "activity" means are all specific to this use case, not core framework
@@ -34,6 +39,7 @@ import datetime as _dt
 import logging
 import os
 import threading
+import time
 
 from qonclave.hub.policy import Notification
 
@@ -55,6 +61,10 @@ class SMSBus:
         self._load_error: str | None = None
         self._load_attempted = False
         self._suppressed = False
+        self._user_disabled = True
+        self._min_resend_interval = float(
+            os.environ.get("QONCLAVE_SMS_MIN_RESEND_SEC", "40"))
+        self._last_sent_monotonic: float | None = None
         self._lock = threading.Lock()
         self._activity: collections.deque = collections.deque(maxlen=50)
 
@@ -74,6 +84,7 @@ class SMSBus:
             "available": self._client is not None,
             "enabled": self.enabled,
             "suppressed": self._suppressed,
+            "user_disabled": self._user_disabled,
             "load_attempted": self._load_attempted,
             "load_error": self._load_error,
         }
@@ -128,6 +139,17 @@ class SMSBus:
         self._suppressed = True
         log.info("SMS suppressed for this session (STOP received)")
 
+    # --- user toggle (dashboard) ---------------------------------------------
+
+    def set_user_disabled(self, disabled: bool) -> None:
+        """
+        Enable/disable outbound SMS from the dashboard toggle. Independent of
+        the STOP-triggered suppress() and the QONCLAVE_SMS_ENABLED env var.
+        Resets on server restart.
+        """
+        self._user_disabled = bool(disabled)
+        log.info("SMS %s from dashboard", "disabled" if self._user_disabled else "enabled")
+
     # --- activity tracking ---------------------------------------------------
 
     def record_sent(self, content: str, ok: bool) -> None:
@@ -171,6 +193,24 @@ class SMSBus:
             )
             return False
 
+        if self._user_disabled:
+            log.info(
+                "SMS disabled from dashboard. Skipping message: %r to %s",
+                notification.message, notification.recipient,
+            )
+            return False
+
+        now = time.monotonic()
+        if (self._last_sent_monotonic is not None
+                and now - self._last_sent_monotonic < self._min_resend_interval):
+            log.info(
+                "SMS resend throttled (last sent %.1fs ago, min interval %.1fs). "
+                "Skipping message: %r to %s",
+                now - self._last_sent_monotonic, self._min_resend_interval,
+                notification.message, notification.recipient,
+            )
+            return False
+
         if not self.is_available():
             log.warning(
                 "Skipping SMS (unavailable: %s). Intended message: %r to %s",
@@ -188,6 +228,7 @@ class SMSBus:
                 "SMS sent (SID=%s): %r to %s",
                 msg.sid, notification.message, notification.recipient,
             )
+            self._last_sent_monotonic = now
             self.record_sent(notification.message, ok=True)
             return True
         except Exception as e:
