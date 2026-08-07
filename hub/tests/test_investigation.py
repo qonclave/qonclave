@@ -195,7 +195,7 @@ def test_cooldown_reinvestigates_while_still_abnormal(tmp_path, monkeypatch):
     assert manager.snapshot()["state"] == "COOLDOWN"
 
     # Still DANGER during cooldown: no new event yet.
-    clock.now += 5.0
+    clock.now += manager.cooldown_seconds / 2
     manager.observe(4, b"jpeg", analysis())
     assert len(mqtt.published) == 1
 
@@ -312,23 +312,20 @@ def test_name_is_not_duplicated_when_the_model_complies(tmp_path, monkeypatch):
     assert sms.sent[0].message.count("Jogendra") == 1
 
 
-def test_unidentified_person_is_never_called_unknown(tmp_path, monkeypatch):
-    # posture.py reports the literal string "Unknown" with no face match. An
-    # alert reading "Unknown may need help" is worse than saying nothing about
-    # who, so the placeholder must not leak into the prompt or the SMS.
-    vlm = FakeVLM(parsed={
-        "classification": "EMERGENCY_LIKELY", "confidence": 0.9,
-        "observations": ["An unidentified person is on the floor.", "Lights on."],
-        "recommended_action": "Check now.",
-    })
-    manager, _, _, sms, _ = make_manager(tmp_path, monkeypatch, vlm=vlm)
+def test_unidentified_person_never_triggers_the_vlm(tmp_path, monkeypatch):
+    # An automatic investigation names someone in the alert, and this hub
+    # only knows how to name enrolled people -- a track with no resolvable
+    # identity at all (never enrolled, no prior known sighting on this
+    # track_id) must never open one or call the VLM. Contrast with
+    # test_name_is_recovered_from_the_track_when_the_sample_has_none, where
+    # the track WAS known earlier and still gets investigated.
+    manager, _, vlm, sms, mqtt = make_manager(tmp_path, monkeypatch)
     manager.observe(4, b"jpeg", analysis(identity="Unknown"))
-    manager.on_capture("event_001", b"frame")
 
-    prompt = vlm.calls[0]["prompt"]
-    assert "could not identify" in prompt
-    assert "flagged Unknown" not in prompt
-    assert "Unknown" not in sms.sent[0].message
+    assert manager.snapshot()["state"] == "MONITORING"
+    assert vlm.calls == []
+    assert mqtt.published == []
+    assert sms.sent == []
 
 
 def test_name_is_recovered_from_the_track_when_the_sample_has_none(tmp_path,

@@ -42,7 +42,7 @@ MEDIAPIPE_MODEL_URL  = (
 )
 MEDIAPIPE_MODEL_PATH = MODELS_DIR / "blaze_face_full_range.tflite"
 
-THRESHOLD = 0.3   # cosine similarity threshold for same/different person
+THRESHOLD = 0.35   # cosine similarity threshold for same/different person
 
 # Several photos may be enrolled for one person -- a frontal shot matches
 # poorly once someone turns away or slumps, which is exactly when a fall

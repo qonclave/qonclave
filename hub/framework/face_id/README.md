@@ -315,10 +315,10 @@ hub/framework/face_id/
 
 ## Tuning
 
-**Similarity threshold** (default 0.3 = 30%):
+**Similarity threshold** (default 0.35 = 35%):
 ```python
-# face_pipeline.py line ~50
-THRESHOLD = 0.3
+# face_pipeline.py line ~45
+THRESHOLD = 0.35
 ```
 - Lower → fewer "Unknown" results (more permissive)
 - Higher → fewer false positives (more strict)
