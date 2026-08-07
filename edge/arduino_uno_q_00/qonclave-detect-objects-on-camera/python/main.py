@@ -29,14 +29,29 @@ from led_display import person_display_bitmap
 from mqtt_client import EdgeMQTTClient
 from analysis_client import AnalysisClient
 from person_centering import PersonCenteringController, horizontal_bearing_degrees
+from person_distance import PersonDistanceController, size_ratio_of
 from person_tracker import PersonTracker
 from priority_sync import PriorityMapClient
 from track_crop import crop_persons, remove_crop_locally, save_crop_locally
+from mcu_link import McuLink
 from track_overlay import draw_track_overlay_bgr, encode_jpeg
 
 load_dotenv()
 
 log = Logger("qonclave.edge")
+
+# Circuit breaker around every Bridge.call() to the MCU: a desynced
+# router<->MCU serial link (e.g. after a reflash mid-connection) makes each
+# raw Bridge.call() block for its full 10s RPC timeout, so a bare Bridge.call
+# in a per-frame path turns into a ~10s freeze roughly every frame, forever,
+# with one duplicate "timed out" log line per attempt. mcu.call() never
+# blocks once the link is known-down and logs the outage once, not per call.
+mcu = McuLink(Bridge, logger=log)
+
+# Sentinel default for mcu.call(): distinguishes "the call never reached the
+# MCU" from a legitimate MCU response of None/False (e.g. move_robot(...) can
+# genuinely return False for "orientation sensor is not ready").
+_MCU_UNAVAILABLE = object()
 
 DEVICE_ID = os.environ.get("DEVICE_ID", "unoq-01")
 HUB_DISCOVERY_ENABLED = os.environ.get("HUB_DISCOVERY_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
@@ -159,7 +174,7 @@ def _generate_icon_thread(label: str):
         log.info(f"Successfully received and cached Level 1 icon from Hub for '{label}'")
         try:
           bitstring = "".join("1" if val else "0" for r in grid for val in r[:12])
-          Bridge.call("set_custom_led_array", bitstring)
+          mcu.call("set_custom_led_array", bitstring)
           ui.send_message("sync_icons", message=icon_cache)
           ui.send_message("led_status", message={"state": "active", "trigger": label, "bitmap": grid, "ai_generated": True})
         except Exception as e:
@@ -427,34 +442,42 @@ def _execute_robot_command(message):
 
   direction = str(message.get("direction", "")).strip().upper()
   if direction == "STOP":
-    Bridge.call("stop_robot")
+    if mcu.call("stop_robot", default=_MCU_UNAVAILABLE) is _MCU_UNAVAILABLE:
+      raise RuntimeError("MCU unavailable")
     person_centering.note_motion()
+    person_distance.note_motion()
     return {"ok": True, "direction": "STOP"}
 
   if direction not in ROBOT_DIRECTIONS:
     raise ValueError(f"Unsupported direction: {direction or '(empty)'}")
 
   magnitude = int(message.get("magnitude", 1))
-  if not 1 <= magnitude <= 360:
-    raise ValueError("Magnitude must be between 1 and 360")
+  is_turn = direction in {"LEFT", "RIGHT"}
+  magnitude_min, magnitude_max = (1, 360) if is_turn else (1, 5000)
+  if not magnitude_min <= magnitude <= magnitude_max:
+    raise ValueError(f"Magnitude must be between {magnitude_min} and {magnitude_max}")
 
-  started = Bridge.call("move_robot", direction, magnitude)
+  started = mcu.call("move_robot", direction, magnitude, default=_MCU_UNAVAILABLE)
+  if started is _MCU_UNAVAILABLE:
+    raise RuntimeError("MCU unavailable")
   if started is False:
     raise RuntimeError("Orientation sensor is not ready")
-  # Blank centering for this move's estimated duration plus the pipeline
-  # latency window, whatever the source (auto-centering, web UI, hub MQTT).
-  # Small turns finish between detection callbacks, so waiting to *observe*
+  # Blank BOTH followers for this move's estimated duration plus the pipeline
+  # latency window, whatever the source (auto-centering, distance keeping,
+  # web UI, hub MQTT): motion stales bearings and box sizes alike. Small
+  # turns finish between detection callbacks, so waiting to *observe*
   # robot_motion_active would miss exactly the moves that cause ping-pong.
-  if direction in {"LEFT", "RIGHT"}:
+  if is_turn:
     est_duration = magnitude * person_centering.estimated_ms_per_degree / 1000.0
   else:
-    est_duration = float(magnitude)  # FORWARD/BACKWARD magnitude is seconds
+    est_duration = magnitude / 1000.0  # FORWARD/BACKWARD magnitude is ms
   person_centering.note_motion(est_duration)
+  person_distance.note_motion(est_duration)
   return {
     "ok": True,
     "direction": direction,
     "magnitude": magnitude,
-    "unit": "degrees" if direction in {"LEFT", "RIGHT"} else "seconds",
+    "unit": "degrees" if is_turn else "milliseconds",
   }
 
 def handle_robot_move(sid, message):
@@ -479,16 +502,20 @@ def _execute_buzzer_command(message):
   duration = int(message.get("duration", 0))
 
   if action in ("believer", "song"):
-    Bridge.call("play_believer")
+    if mcu.call("play_believer", default=_MCU_UNAVAILABLE) is _MCU_UNAVAILABLE:
+      raise RuntimeError("MCU unavailable")
     return {"ok": True, "action": "believer", "song": "Believer - Imagine Dragons"}
   elif action in ("start", "tone"):
     if "frequency" in message:
-      Bridge.call("trigger_buzzer", frequency, duration)
+      result = mcu.call("trigger_buzzer", frequency, duration, default=_MCU_UNAVAILABLE)
     else:
-      Bridge.call("play_believer")
+      result = mcu.call("play_believer", default=_MCU_UNAVAILABLE)
+    if result is _MCU_UNAVAILABLE:
+      raise RuntimeError("MCU unavailable")
     return {"ok": True, "action": action, "frequency": frequency, "duration": duration}
   elif action in ("stop", "notone"):
-    Bridge.call("stop_buzzer")
+    if mcu.call("stop_buzzer", default=_MCU_UNAVAILABLE) is _MCU_UNAVAILABLE:
+      raise RuntimeError("MCU unavailable")
     return {"ok": True, "action": action}
   else:
     raise ValueError(f"Unsupported buzzer action: {action or '(empty)'}")
@@ -518,12 +545,10 @@ def handle_knob_change(percentage_str):
 Bridge.provide("on_knob_change", handle_knob_change)
 green_bmp = _get_bitmap_entry("green")
 if green_bmp:
-  try:
-    Bridge.call("set_custom_led_array", "".join("1" if val else "0" for r in green_bmp for val in r[:12]))
-  except Exception as e:
-    # The MCU bridge can still be coming online after a container restart.
-    # LED initialization is cosmetic and must not take down video analysis.
-    log.warning(f"Initial LED update unavailable; continuing without it: {e}")
+  # LED initialization is cosmetic and must not take down video analysis;
+  # mcu.call() degrades to a no-op instead of raising if the MCU bridge is
+  # still coming online after a container restart.
+  mcu.call("set_custom_led_array", "".join("1" if val else "0" for r in green_bmp for val in r[:12]))
 
 # --- Hub event forwarding: notify the Qonclave hub when a person is detected ---
 
@@ -580,6 +605,22 @@ person_centering = PersonCenteringController(
   turn_gain=float(os.environ.get("PERSON_CENTER_TURN_GAIN", "0.7")),
 )
 
+# --- Distance keeping: centering only ROTATES toward the followed person;
+# this drives FORWARD when they are too small in frame to see clearly and
+# BACKWARD when they are uncomfortably close, holding inside the deadband.
+# Size comes from the larger box dimension, so a FALLEN person (wide, short
+# box) is not misread as "far away" and driven into. One paced, confirmed
+# nudge per decision -- see python/person_distance.py for the safety order.
+person_distance = PersonDistanceController(
+  enabled=os.environ.get("FOLLOW_DISTANCE_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on"),
+  approach_below=float(os.environ.get("FOLLOW_DISTANCE_APPROACH_BELOW", "0.35")),
+  retreat_above=float(os.environ.get("FOLLOW_DISTANCE_RETREAT_ABOVE", "0.65")),
+  step_ms=int(os.environ.get("FOLLOW_DISTANCE_STEP_MS", "500")),
+  minimum_interval_seconds=float(os.environ.get("FOLLOW_DISTANCE_MIN_INTERVAL_SEC", "2.5")),
+  confirm_frames=int(os.environ.get("FOLLOW_DISTANCE_CONFIRM_FRAMES", "3")),
+  post_motion_blank_seconds=float(os.environ.get("FOLLOW_DISTANCE_POST_MOTION_BLANK_SEC", "1.5")),
+)
+
 # --- Investigation approach: when the hub opens an investigation (posture
 # SUSPICIOUS/DANGER) it asks this device for one frame. Before capturing, the
 # robot turns to face the target and drives forward briefly so the VLM gets a
@@ -591,14 +632,21 @@ person_centering = PersonCenteringController(
 # The budget is deliberately well under it to leave room for the upload.
 INVESTIGATION_APPROACH_ENABLED = os.environ.get(
   "INVESTIGATION_APPROACH_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
-INVESTIGATION_APPROACH_FORWARD_SEC = int(
-  os.environ.get("INVESTIGATION_APPROACH_FORWARD_SEC", "1"))
+INVESTIGATION_APPROACH_FORWARD_MS = int(
+  os.environ.get("INVESTIGATION_APPROACH_FORWARD_MS", "1000"))
 INVESTIGATION_APPROACH_TOLERANCE_DEGREES = float(
   os.environ.get("INVESTIGATION_APPROACH_TOLERANCE_DEGREES", "8"))
 INVESTIGATION_APPROACH_MAX_TURN_DEGREES = float(
   os.environ.get("INVESTIGATION_APPROACH_MAX_TURN_DEGREES", "45"))
 INVESTIGATION_APPROACH_SETTLE_SEC = float(
   os.environ.get("INVESTIGATION_APPROACH_SETTLE_SEC", "0.6"))
+# The capture may get a LITTLE closer than the everyday safe-follow band
+# (FOLLOW_DISTANCE_RETREAT_ABOVE, 0.65) -- a close-up is what the VLM needs --
+# but never past this: a person already filling this much of the frame gains
+# nothing from another step, and the box size is the only thing standing
+# between "close-up" and "contact" on a robot with no proximity sensing.
+INVESTIGATION_APPROACH_MAX_SIZE_RATIO = float(
+  os.environ.get("INVESTIGATION_APPROACH_MAX_SIZE_RATIO", "0.75"))
 INVESTIGATION_APPROACH_BUDGET_SEC = float(
   os.environ.get("INVESTIGATION_APPROACH_BUDGET_SEC", "6"))
 # A bearing older than this is not trusted to aim a turn. Detection runs at
@@ -776,29 +824,31 @@ def _log_follow_state_if_changed(selection: dict):
 _hub_event_lock = threading.Lock()
 _last_hub_event_at = 0.0
 
-# Newest bearing to the follow target, published by the detection callback and
-# read by the investigation-capture thread (which has no frame of its own to
-# measure from). (track_id, angle_degrees, monotonic timestamp) or None.
+# Newest bearing AND box-size measurement of the follow target, published by
+# the detection callback and read by the investigation-capture thread (which
+# has no frame of its own to measure from).
+# (track_id, angle_degrees, size_ratio|None, monotonic timestamp) or None.
 _follow_bearing_lock = threading.Lock()
-_follow_bearing: tuple[int, float, float] | None = None
+_follow_bearing: tuple[int, float, "float | None", float] | None = None
 
 
-def _note_follow_bearing(track_id: int, angle_degrees: float):
+def _note_follow_bearing(track_id: int, angle_degrees: float,
+                         size_ratio: "float | None" = None):
   global _follow_bearing
   with _follow_bearing_lock:
-    _follow_bearing = (track_id, angle_degrees, time.monotonic())
+    _follow_bearing = (track_id, angle_degrees, size_ratio, time.monotonic())
 
 
-def _recent_follow_bearing(max_age_seconds: float) -> tuple[int, float] | None:
-  """(track_id, bearing) if fresh enough to aim a turn at, else None."""
+def _recent_follow_bearing(max_age_seconds: float) -> "tuple[int, float, float | None] | None":
+  """(track_id, bearing, size_ratio) if fresh enough to act on, else None."""
   with _follow_bearing_lock:
     snapshot = _follow_bearing
   if snapshot is None:
     return None
-  track_id, angle, measured_at = snapshot
+  track_id, angle, size_ratio, measured_at = snapshot
   if time.monotonic() - measured_at > max_age_seconds:
     return None
-  return track_id, angle
+  return track_id, angle, size_ratio
 
 
 def _prune_escalation_frames():
@@ -972,27 +1022,43 @@ def send_detections_to_ui(detections: dict, frame: bytes | None = None):
       dual_lens_fov_degrees=CAMERA_DUAL_LENS_FOV_DEGREES,
     )
     target_track["angle_to_center_degrees"] = angle_to_center
+    x1, y1, x2, y2 = target_track["bounding_box_xyxy"]
+    # A stacked dual-lens frame is two views one above the other, so a person
+    # occupies at most half its pixel height; measure against one view's
+    # height or every ratio reads as "far away" and the robot keeps advancing.
+    size_frame_h = frame_h / 2 if CAMERA_DUAL_LENS_STACKED else frame_h
+    size_ratio = size_ratio_of(x2 - x1, y2 - y1, frame_w, size_frame_h)
     # Publish for the investigation-capture thread, which needs to know which
-    # way to turn before its close-up but never sees a frame itself.
-    _note_follow_bearing(target_track["track_id"], angle_to_center)
+    # way to turn before its close-up -- and how close it already is -- but
+    # never sees a frame itself.
+    _note_follow_bearing(target_track["track_id"], angle_to_center, size_ratio)
     log.debug(
       f"Tracking person {target_track['track_id']}: angle_to_center={angle_to_center:.2f}°, "
-      f"motion={target_track['direction']}"
+      f"size_ratio={size_ratio}, motion={target_track['direction']}"
     )
     ui.send_message("person_tracking_status", message={
       "track_id": target_track["track_id"],
       "angle_to_center_degrees": angle_to_center,
       "centered": abs(angle_to_center) <= person_centering.tolerance_degrees,
       "centroid": [cx, cy],
+      "size_ratio": size_ratio,
+      "distance_zone": person_distance.zone_for(size_ratio),
     })
 
     try:
-      motion_active = Bridge.call("robot_motion_active")
-      if motion_active:
+      # None means the MCU link is down (breaker open or this attempt
+      # failed) -- mcu.call() has already logged the outage (throttled, not
+      # once per frame). Skip commanding motion entirely rather than issue a
+      # turn we already know will fail.
+      motion_active = mcu.call("robot_motion_active", default=None)
+      if motion_active is None:
+        turn = None
+      elif motion_active:
         # Backup for moves note_motion() didn't see start (e.g. a long manual
         # move still running): keep extending the blank window while the MCU
         # reports motion, so bearings from these frames are also discarded.
         person_centering.note_motion()
+        person_distance.note_motion()
         turn = None
       else:
         turn = person_centering.command_for(angle_to_center, target_track["track_id"])
@@ -1011,8 +1077,35 @@ def send_detections_to_ui(detections: dict, frame: bytes | None = None):
           f"Auto-centering person {turn.track_id}: {turn.direction} "
           f"{turn.magnitude}° (measured error {turn.angle_error_degrees:.2f}°)"
         )
+      elif (motion_active is False
+            and abs(angle_to_center) <= person_centering.tolerance_degrees):
+        # Distance keeping runs only once the person is CENTERED and no turn
+        # was issued this frame: turning has priority (driving forward while
+        # misaligned closes distance toward the wrong point, and on a stacked
+        # dual-lens rig the person may even be BEHIND the robot), and the
+        # centered gate also means FORWARD always moves toward the person the
+        # bearing was measured on.
+        move = person_distance.command_for(
+          x2 - x1, y2 - y1, frame_w, size_frame_h,
+          target_track["track_id"])
+        if move:
+          status = _execute_robot_command({
+            "direction": move.direction,
+            "magnitude": move.magnitude,
+          })
+          status.update({
+            "automatic": True,
+            "track_id": move.track_id,
+            "size_ratio": move.size_ratio,
+            "reason": move.reason,
+          })
+          ui.send_message("robot_move_status", message=status)
+          log.info(
+            f"Distance-keeping person {move.track_id}: {move.direction} "
+            f"{move.magnitude}s ({move.reason}, size_ratio={move.size_ratio})"
+          )
     except Exception as e:
-      log.error(f"Person auto-centering command failed: {e}")
+      log.error(f"Person follow command failed: {e}")
 
   if person_tracks:
     # A person is visible: show a position on the LED matrix instead of the
@@ -1027,18 +1120,18 @@ def send_detections_to_ui(detections: dict, frame: bytes | None = None):
       cy = frame_h - cy  # rear (top half) -> bottom rows, front (bottom half) -> top rows
     bitmap = person_display_bitmap((cx, cy), frame_w, frame_h)
     bitstring = "".join("1" if val else "0" for r in bitmap for val in r[:12])
-    Bridge.call("set_custom_led_array", bitstring)
+    mcu.call("set_custom_led_array", bitstring)
     ui.send_message("led_status", message={"state": "active", "trigger": "person", "bitmap": bitmap, "ai_generated": False})
   elif detections:
     first_obj = list(detections.keys())[0]
     bitmap, is_generating = get_or_trigger_icon(first_obj)
     bitstring = "".join("1" if val else "0" for r in bitmap for val in r[:12]) if bitmap else "0" * 96
-    Bridge.call("set_custom_led_array", bitstring)
+    mcu.call("set_custom_led_array", bitstring)
     ui.send_message("led_status", message={"state": "active", "trigger": first_obj, "bitmap": bitmap, "ai_generated": (first_obj not in ["clear", "green"])})
   else:
     clear_bmp = _get_bitmap_entry("clear") or [[0]*12 for _ in range(8)]
     bitstring = "".join("1" if val else "0" for r in clear_bmp for val in r[:12])
-    Bridge.call("set_custom_led_array", bitstring)
+    mcu.call("set_custom_led_array", bitstring)
     ui.send_message("led_status", message={"state": "clear", "trigger": "clear", "bitmap": clear_bmp})
 
   for key, values in detections.items():
@@ -1065,14 +1158,13 @@ def _wait_for_motion_idle(deadline: float) -> bool:
   estimate, not a promise -- polling is what makes the following capture
   reliably sharp instead of hopefully sharp."""
   while time.monotonic() < deadline:
-    try:
-      if not Bridge.call("robot_motion_active"):
-        return True
-    except Exception as e:
+    motion_active = mcu.call("robot_motion_active", default=None)
+    if motion_active is None:
       # No motion feedback available: fall back to the commanded timing
       # rather than spinning here until the deadline.
-      log.warning(f"robot_motion_active unavailable while approaching: {e}")
       return False
+    if not motion_active:
+      return True
     time.sleep(0.05)
   return False
 
@@ -1093,9 +1185,12 @@ def _approach_target_before_capture(event_id: str, requested: bool):
 
   recent = _recent_follow_bearing(INVESTIGATION_APPROACH_BEARING_MAX_AGE_SEC)
   bearing = recent[1] if recent else None
+  size_ratio = recent[2] if recent else None
   steps = plan_approach(
     bearing,
-    forward_seconds=INVESTIGATION_APPROACH_FORWARD_SEC,
+    size_ratio=size_ratio,
+    max_size_ratio=INVESTIGATION_APPROACH_MAX_SIZE_RATIO,
+    forward_ms=INVESTIGATION_APPROACH_FORWARD_MS,
     tolerance_degrees=INVESTIGATION_APPROACH_TOLERANCE_DEGREES,
     max_turn_degrees=INVESTIGATION_APPROACH_MAX_TURN_DEGREES,
     ms_per_degree=person_centering.estimated_ms_per_degree,
@@ -1104,8 +1199,11 @@ def _approach_target_before_capture(event_id: str, requested: bool):
   )
   log.info(
     f"Investigation {event_id}: approaching "
-    f"{'track ' + str(recent[0]) if recent else 'target (no recent bearing)'} "
-    f"-> {describe_approach(steps)}"
+    f"{'track ' + str(recent[0]) if recent else 'target (no recent bearing)'}"
+    + (f" (size_ratio={size_ratio:.2f}, cap "
+       f"{INVESTIGATION_APPROACH_MAX_SIZE_RATIO:.2f})"
+       if size_ratio is not None else "")
+    + f" -> {describe_approach(steps)}"
   )
 
   budget_ends = time.monotonic() + INVESTIGATION_APPROACH_BUDGET_SEC
@@ -1132,11 +1230,9 @@ def _approach_target_before_capture(event_id: str, requested: bool):
     # Guarantee the wheels are stopped (a step may have overrun its estimate),
     # THEN let the chassis stop rocking and the camera pipeline emit a frame
     # from the new position -- only after that is _camera_frame worth reading.
-    try:
-      Bridge.call("stop_robot")
-    except Exception as e:
-      log.warning(f"Investigation {event_id}: stop_robot after approach "
-                  f"failed: {e}")
+    # A failed stop_robot here is already logged (throttled) by mcu.call();
+    # nothing more useful to do than proceed to the settle sleep either way.
+    mcu.call("stop_robot")
     time.sleep(INVESTIGATION_APPROACH_SETTLE_SEC)
 
 
@@ -1223,10 +1319,19 @@ else:
            "(posture investigation, dashboard button, CAPTURE SMS)")
 log.info(
   f"Investigation approach: "
-  + (f"forward {INVESTIGATION_APPROACH_FORWARD_SEC}s after facing the target "
+  + (f"forward {INVESTIGATION_APPROACH_FORWARD_MS}ms after facing the target "
      f"(within {INVESTIGATION_APPROACH_MAX_TURN_DEGREES:.0f} deg), "
      f"{INVESTIGATION_APPROACH_BUDGET_SEC}s budget"
      if INVESTIGATION_APPROACH_ENABLED else "disabled (capture in place)")
+)
+log.info(
+  "Distance keeping: "
+  + (f"hold person at size {person_distance.approach_below:.2f}-"
+     f"{person_distance.retreat_above:.2f} of frame, "
+     f"{person_distance.step_ms}ms nudges every "
+     f">={person_distance.minimum_interval_seconds}s after "
+     f"{person_distance.confirm_frames} confirming frames"
+     if person_distance.enabled else "disabled (rotate only)")
 )
 
 mqtt_client = EdgeMQTTClient(

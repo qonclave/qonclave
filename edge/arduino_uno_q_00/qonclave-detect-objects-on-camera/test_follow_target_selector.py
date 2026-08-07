@@ -14,9 +14,9 @@ from follow_target_selector import (  # noqa: E402
 )
 
 
-def _track(tid, frames=1):
+def _track(tid, frames=1, box=(50, 50, 150, 150)):
     return {"track_id": tid, "frames_tracked": frames,
-            "centroid": (100, 100), "bounding_box_xyxy": (50, 50, 150, 150)}
+            "centroid": (100, 100), "bounding_box_xyxy": box}
 
 
 def _known(name):
@@ -85,6 +85,31 @@ def test_equal_priority_no_current_prefers_more_frames_then_lower_id():
     assert sel2["track_id"] == 2  # equal frames: lower track_id wins
 
 
+# --- larger bounding box wins ties (closest/most prominent person) ----------
+
+def test_larger_box_wins_among_equal_priority_knowns():
+    s = FollowTargetSelector()
+    sel = s.select(
+        [_track(1, frames=50, box=(50, 50, 150, 150)),   # smaller box, more frames
+         _track(2, frames=2, box=(0, 0, 200, 200))],      # larger box, fewer frames
+        {1: _known("alice"), 2: _known("bob")},
+        {"alice": 5, "bob": 5})
+    assert sel["track_id"] == 2  # box size outranks frames_tracked
+
+
+def test_stickiness_beats_larger_box_among_equal_priority_knowns():
+    s = FollowTargetSelector()
+    s.select([_track(1, box=(50, 50, 150, 150))], {1: _known("alice")}, {"alice": 5})
+    # bob appears with the same priority and a much larger box: alice stays
+    # current -- box size is not allowed to cause flicker off an active target.
+    sel = s.select(
+        [_track(1, box=(50, 50, 150, 150)), _track(2, box=(0, 0, 300, 300))],
+        {1: _known("alice"), 2: _known("bob")},
+        {"alice": 5, "bob": 5})
+    assert sel["track_id"] == 1
+    assert sel["reason"] == "kept_current_equal_priority"
+
+
 # --- spec case 4: no knowns -> longest-established unknown ------------------
 
 def test_unknown_fallback_by_frames_then_id():
@@ -101,6 +126,16 @@ def test_unknown_fallback_by_frames_then_id():
     sel2 = s2.select([_track(7, frames=5), _track(2, frames=5)],
                      {7: _unknown(), 2: _unknown()}, {})
     assert sel2["track_id"] == 2  # tie on frames: lower id
+
+
+def test_larger_box_wins_among_unknowns():
+    s = FollowTargetSelector()
+    sel = s.select(
+        [_track(7, frames=50, box=(50, 50, 150, 150)),   # smaller box, more frames
+         _track(9, frames=2, box=(0, 0, 200, 200))],      # larger box, fewer frames
+        {7: _unknown(), 9: _unknown()}, {})
+    assert sel["state"] == FALLBACK_UNKNOWN
+    assert sel["track_id"] == 9  # box size outranks frames_tracked
 
 
 # --- spec cases 5 + 12: grace holds; no stale track for motor commands ------

@@ -28,7 +28,10 @@ void MotorController::update() {
 bool MotorController::move(String direction, int magnitude) {
   direction.trim();
   direction.toUpperCase();
-  magnitude = constrain(magnitude, 1, 360);
+
+  const bool isTurn = direction == "LEFT" || direction == "RIGHT";
+  magnitude = isTurn ? constrain(magnitude, MIN_TURN_DEGREES, MAX_TURN_DEGREES)
+                     : constrain(magnitude, MIN_LINEAR_MS, MAX_LINEAR_MS);
 
   stop();
 
@@ -40,7 +43,7 @@ bool MotorController::move(String direction, int magnitude) {
     return false;
   }
 
-  if (direction == "LEFT" || direction == "RIGHT") {
+  if (isTurn) {
     turnCommandDirection_ = direction == "LEFT" ? TURN_LEFT : TURN_RIGHT;
     if (!orientation_.available()) {
       startTimedTurnFallback(turnCommandDirection_,
@@ -63,8 +66,7 @@ bool MotorController::move(String direction, int magnitude) {
     turnSettledSamples_ = 0;
     turnOutputOn_ = false;
   } else {
-    movementStopAt_ =
-        millis() + (static_cast<unsigned long>(magnitude) * 1000UL);
+    movementStopAt_ = millis() + static_cast<unsigned long>(magnitude);
   }
 
   movementActive_ = true;

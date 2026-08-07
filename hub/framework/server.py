@@ -750,8 +750,16 @@ def create_app(policy: Policy, vlm: VLMBackend, mqtt: MQTTBus, sms: SMSBus,
             magnitude = int(body.get("magnitude", 1))
         except (TypeError, ValueError):
             return jsonify({"ok": False, "error": "magnitude must be an integer"}), 400
-        if not 1 <= magnitude <= 360:
-            return jsonify({"ok": False, "error": "magnitude must be between 1 and 360"}), 400
+        # LEFT/RIGHT magnitude is degrees; FORWARD/BACKWARD magnitude is
+        # milliseconds (MotorController::move on the edge) -- two units
+        # sharing one field, so two different valid ranges.
+        is_turn = direction in {"LEFT", "RIGHT"}
+        magnitude_min, magnitude_max = (1, 360) if is_turn else (1, 5000)
+        if not magnitude_min <= magnitude <= magnitude_max:
+            return jsonify({
+                "ok": False,
+                "error": f"magnitude must be between {magnitude_min} and {magnitude_max}",
+            }), 400
 
         command = {
             "type": "robot_move",

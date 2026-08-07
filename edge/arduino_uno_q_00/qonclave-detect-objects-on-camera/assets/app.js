@@ -144,7 +144,7 @@ ui.on_message('robot_move_status', async status => {
     const isTurn = status.unit === 'degrees' || status.direction === 'LEFT' || status.direction === 'RIGHT';
     statusElement.textContent = isTurn
       ? `${status.direction} ${status.magnitude}°`
-      : `${status.direction} for ${status.magnitude} second${status.magnitude === 1 ? '' : 's'}`;
+      : `${status.direction} for ${status.magnitude} ms`;
     statusElement.className = 'robot-status active';
   }
 });
@@ -379,9 +379,11 @@ function initializeRobotConsole() {
 
   document.querySelectorAll('.robot-move').forEach(button => {
     button.addEventListener('click', () => {
+      const isTurn = button.dataset.direction === 'LEFT' || button.dataset.direction === 'RIGHT';
+      const maxMagnitude = isTurn ? 360 : 5000;
       let magnitude = Number.parseInt(magnitudeInput.value, 10);
       if (!Number.isFinite(magnitude)) magnitude = 1;
-      magnitude = Math.min(360, Math.max(1, magnitude));
+      magnitude = Math.min(maxMagnitude, Math.max(1, magnitude));
       magnitudeInput.value = magnitude;
 
       ui.send_message('robot_move', {

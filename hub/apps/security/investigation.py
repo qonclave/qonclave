@@ -233,7 +233,7 @@ class InvestigationManager:
         self.capture_timeout_seconds = _env_float(
             "QONCLAVE_INVESTIGATION_CAPTURE_TIMEOUT_SEC", 10.0)
         self.cooldown_seconds = _env_float(
-            "QONCLAVE_INVESTIGATION_COOLDOWN_SEC", 25.0)
+            "QONCLAVE_INVESTIGATION_COOLDOWN_SEC", 5.0)
         self.buffer_size = int(_env_float("QONCLAVE_INVESTIGATION_BUFFER_SIZE", 10))
         self.buffer_spacing_seconds = _env_float(
             "QONCLAVE_INVESTIGATION_BUFFER_SPACING_SEC", 1.0)
@@ -248,8 +248,8 @@ class InvestigationManager:
         self._capture_timer: threading.Timer | None = None
         self.last_result: dict | None = None
         self.vlm_calls = 0
-        # Rolling evidence: per posture state key, deque of (ts, jpeg) kept at
-        # ~1 fps regardless of the ~4 Hz pose sampling rate.
+        # Rolling evidence: per track_id, deque of (ts, jpeg) kept at ~1 fps
+        # regardless of the ~4 Hz pose sampling rate.
         self._buffers: dict = {}
 
     # --- posture feed -------------------------------------------------------
@@ -257,27 +257,32 @@ class InvestigationManager:
     def observe(self, track_id: int, image_bytes: bytes, analysis: dict | None):
         """Called for every posture sample of a known person. Buffers the
         crop, opens an investigation when the posture machine's own abnormal
-        timer confirms a persistent SUSPICIOUS/DANGER state, and resolves
-        COOLDOWN once the person is NORMAL again. Returns a small status dict
-        for the /track/analyze response, or None when idle."""
+        timer confirms a persistent SUSPICIOUS/DANGER state for a person the
+        hub can actually name, and resolves COOLDOWN once the person is
+        NORMAL again. Returns a small status dict for the /track/analyze
+        response, or None when idle."""
         if not analysis:
             return None
         now = self._clock()
-        # Posture runs for unidentified tracks too, and a collapsing person is
-        # exactly who stops being face-recognizable -- so when the sample that
-        # triggered this carries no name, recover the one this track_id was
-        # established under. Without it the alert says "Unknown" about someone
-        # the hub identified thirty seconds earlier.
+        # A collapsing person is exactly who stops being face-recognizable --
+        # so when the sample that triggered this carries no name, recover the
+        # one this track_id was established under, rather than requiring the
+        # triggering frame itself to carry a face match. Only a track that
+        # was never identified at all resolves to None here, and that VLM
+        # call is skipped: an automatic investigation names someone in the
+        # alert, and this hub only knows how to name enrolled people.
         identity = (_display_name(analysis.get("identity"))
-                    or track_store.known_identity(track_id)
-                    or "Unknown")
-        key = identity.casefold()
+                    or track_store.known_identity(track_id))
         state = analysis.get("state")
 
         run_vlm_args = None
         with self._lock:
+            # Evidence crops are buffered per TRACK, not per resolved
+            # identity: several different unidentified tracks used to share
+            # one "Unknown" deque, so an investigation's history strip could
+            # show a completely different person than the one it is about.
             buf = self._buffers.setdefault(
-                key, collections.deque(maxlen=self.buffer_size))
+                track_id, collections.deque(maxlen=self.buffer_size))
             if not buf or (now - buf[-1][0]) >= self.buffer_spacing_seconds:
                 buf.append((now, image_bytes))
 
@@ -292,7 +297,7 @@ class InvestigationManager:
                 # still down. A duplicate check is recoverable; a missed
                 # collapse is not.
                 log.info("Investigation cooldown over (%s is %s) -> MONITORING",
-                         identity, state)
+                         identity or "Unknown", state)
                 self.state = MONITORING
                 self.active_event = None
 
@@ -304,10 +309,11 @@ class InvestigationManager:
                 if run_vlm_args is None:
                     return self._status_locked()
 
-            elif (state in ("SUSPICIOUS", "DANGER")
+            elif (identity is not None
+                    and state in ("SUSPICIOUS", "DANGER")
                     and (analysis.get("abnormal_duration_seconds") or 0.0)
                     >= self.trigger_persistence_seconds):
-                self._open_event_locked(track_id, identity, key, state,
+                self._open_event_locked(track_id, identity, state,
                                         analysis, image_bytes, now)
                 return self._status_locked()
             else:
@@ -322,7 +328,7 @@ class InvestigationManager:
 
     # --- event lifecycle ----------------------------------------------------
 
-    def _open_event_locked(self, track_id, identity, key, state, analysis,
+    def _open_event_locked(self, track_id, identity, state, analysis,
                            danger_frame, now):
         self._event_counter += 1
         event_id = f"event_{self._event_counter:03d}"
@@ -330,7 +336,7 @@ class InvestigationManager:
                   else "suspicious_posture")
         # Freeze the rolling buffer for this event; later samples keep
         # appending to the live buffer without touching the evidence.
-        history = list(self._buffers.get(key, ()))
+        history = list(self._buffers.get(track_id, ()))
         event = {
             "event_id": event_id,
             "identity": identity,
