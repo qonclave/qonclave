@@ -17,6 +17,7 @@ from flask import Flask
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from qonclave.core.models import Command  # noqa: E402
 from framework.events import default_store  # noqa: E402
 from framework.policy import Policy, Verdict  # noqa: E402
 from apps.security.sms_routes import create_sms_blueprint  # noqa: E402
@@ -35,7 +36,12 @@ class _StubPolicy(Policy):
         self.replies.append((sender, body))
         keyword = body.strip().upper()
         if keyword == "DISPATCH":
-            return {"type": "dispatch", "source": "sms_reply"}
+            return Command(
+                command_id="test-cmd",
+                issuer_id="hub-sms",
+                action="dispatch",
+                parameters={"source": "sms_reply"},
+            )
         return None
 
     def reply_for(self, sender, body):
@@ -96,7 +102,11 @@ def test_dispatch_reply_publishes_to_the_latest_known_device(app_client):
     resp = client.post("/sms", data={"From": "+15551234567", "Body": "dispatch"})
 
     assert resp.status_code == 200
-    assert mqtt.published == [("unoq-01", {"type": "dispatch", "source": "sms_reply"})]
+    assert len(mqtt.published) == 1
+    device_id, command_wire = mqtt.published[0]
+    assert device_id == "unoq-01"
+    assert command_wire["action"] == "dispatch"
+    assert command_wire["parameters"]["source"] == "sms_reply"
     assert sms.replies == [("+15551234567", "dispatch", "mqtt_published")]
     assert policy.replies == [("+15551234567", "dispatch")]
 

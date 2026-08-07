@@ -22,7 +22,7 @@ import logging
 
 from flask import Blueprint, jsonify, request
 
-from framework import events
+from framework import adapter, events
 from framework.mqtt_bus import MQTTBus
 from framework.policy import Notification, Policy
 
@@ -50,11 +50,12 @@ def create_sms_blueprint(policy: Policy, mqtt: MQTTBus, sms: SMSBus) -> Blueprin
         if command is not None:
             device_id = events.latest_device_id()
             if device_id:
-                mqtt.publish_command(device_id, command)
-                log.info("SMS reply MQTT command %s -> device %s", command, device_id)
+                command_wire = adapter.command_to_wire(command)
+                mqtt.publish_command(device_id, command_wire)
+                log.info("SMS reply MQTT command %s -> device %s", command.action, device_id)
                 action = "mqtt_published"
             else:
-                log.warning("SMS reply returned command %s but no device_id known yet", command)
+                log.warning("SMS reply returned command %s but no device_id known yet", command.action)
                 action = "ignored"
         elif body.strip().upper() == "STOP":
             action = "suppressed"

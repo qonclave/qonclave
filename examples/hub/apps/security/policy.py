@@ -13,8 +13,9 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import uuid
 
-from qonclave.core.models import EdgeEvent
+from qonclave.core.models import EdgeEvent, Command
 
 from framework.policy import Policy, Verdict, Notification
 from framework.vlm import VLMBackend
@@ -62,7 +63,7 @@ _SMS_SYSTEM_PROMPT = (
     "  - Never repeat or paraphrase the operator's message\n\n"
     "Respond with ONLY a JSON object in exactly this form:\n"
     '{"intent": "<dispatch|acknowledge|query|unknown>", '
-    '"mqtt_command": null or {"type": "dispatch", "source": "sms_reply"}, '
+    '"mqtt_command": null or {"action": "dispatch", "parameters": {"source": "sms_reply"}}, '
     '"reply": "<hub response under 160 chars>"}'
 )
 
@@ -310,6 +311,15 @@ class SecurityPolicy(Policy):
             )
         return None
 
+    def command_for(self, verdict: Verdict, event: EdgeEvent) -> Command | None:
+        """Optional command to send back to the originating device.
+
+        SecurityPolicy does not currently publish commands on verification verdicts.
+        Commands are published in response to SMS replies (via on_reply) and manual
+        dashboard triggers (investigation flow). Return None here.
+        """
+        return None
+
     # --- SMS reply handling -------------------------------------------------
 
     def _llm_interpret_reply(self, sender: str, body: str) -> dict:
@@ -384,7 +394,7 @@ class SecurityPolicy(Policy):
             self._llm_cache = (sender, body, parsed)
         return parsed
 
-    def on_reply(self, sender: str, body: str) -> dict | None:
+    def on_reply(self, sender: str, body: str) -> Command | None:
         keyword = body.strip().upper()
 
         if keyword == "STOP":
@@ -395,7 +405,12 @@ class SecurityPolicy(Policy):
 
         if keyword == "DISPATCH":
             log.info("SMS reply DISPATCH from %s — publishing dispatch command", sender)
-            return {"type": "dispatch", "source": "sms_reply", "requested_by": sender}
+            return Command(
+                command_id=f"sms-{uuid.uuid4().hex[:8]}",
+                issuer_id="hub-sms",
+                action="dispatch",
+                parameters={"source": "sms_reply", "requested_by": sender},
+            )
 
         if keyword == "CAPTURE":
             # Operator-requested VLM check: the capture command is published
@@ -409,10 +424,18 @@ class SecurityPolicy(Policy):
 
         # Unrecognised keyword — ask the LLM.
         parsed = self._llm_interpret_reply(sender, body)
-        command = parsed.get("mqtt_command")
-        if command:
-            log.info("LLM SMS intent=%s -> MQTT command %s", parsed.get("intent"), command)
-            return command
+        command_dict = parsed.get("mqtt_command")
+        if command_dict:
+            # LLM returns {"action": "...", "parameters": {...}} or similar
+            action = command_dict.get("action")
+            if action:
+                log.info("LLM SMS intent=%s -> MQTT command %s", parsed.get("intent"), command_dict)
+                return Command(
+                    command_id=f"sms-{uuid.uuid4().hex[:8]}",
+                    issuer_id="hub-sms",
+                    action=action,
+                    parameters=command_dict.get("parameters", {}),
+                )
 
         log.info("LLM SMS intent=%s, no command for reply %r from %s",
                  parsed.get("intent"), body, sender)
