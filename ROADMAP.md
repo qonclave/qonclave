@@ -81,8 +81,9 @@ hub-owned (see `CONVENTIONS.md`'s postmortem on this). `transport/{grpc,coap,ser
   Strict SemVer after that — apps subclass `framework.policy.Policy` directly, so a breaking
   change breaks every downstream app.
 - [ ] Publish the Python SDK to PyPI with a repeatable release workflow.
-- [ ] Decide C SDK distribution: ESP-IDF component registry, PlatformIO library, Zephyr module,
-  or vendoring — unresolved.
+- [x] C SDK distribution: **vendoring for now** (decided) — copy `sdk/c/` or add it as a git
+  submodule. A PlatformIO/ESP-IDF/Zephyr registry listing is a real future option once there's
+  external demand for one, but isn't blocking anything today.
 
 ## Questions or ideas?
 

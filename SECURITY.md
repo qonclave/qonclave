@@ -29,14 +29,7 @@ Instead, report privately using one of:
    vulnerability" button under this repository's Security tab. This keeps
    the discussion private between you and the maintainers until a fix is
    ready.
-2. **Email**:
-
-<!-- TODO(2026-08-07): decide the contact address before this goes public --
-     see steps_to_open_source.md §4. Same decision as CODE_OF_CONDUCT.md's
-     contact address -- likely the same address for both. -->
-
-   **security@qonclave.org** (placeholder — not yet live; use
-   bnr.robotics@gmail.com until then)
+2. **Email**: **qonclave@gmail.com**
 
 Please include:
 

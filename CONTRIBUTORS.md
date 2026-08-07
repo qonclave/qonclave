@@ -10,7 +10,7 @@ from `git shortlog -sne --all` (deduplicated via `.mailmap`).
 | Deepak Dinesh | 95 |
 | Vamsi Krishna Adsumilli ([@vamsi765](https://github.com/vamsi765)) | 56 |
 | Vinay Kumar Chapala | 17 |
-| qonclave-debug | 9 |
+| qonclave | 9 |
 | poojithach | 5 |
 | Ansh Sarkar | 1 |
 
@@ -19,9 +19,11 @@ or hardware/testing work that never touched git.
 
 ## Notes
 
-- **qonclave-debug** appears in history as a shared/automated identity —
-  flagged here pending confirmation of who it represents, so credit lands
-  correctly rather than being silently dropped.
+- **qonclave** (`qonclave@gmail.com`, committed historically as "qonclave-debug") — the same
+  address is now the project's own contact address (see `CODE_OF_CONDUCT.md`/`SECURITY.md`),
+  confirming this is a project-owned account rather than an unrelated third party. Still likely
+  a shared/automated identity behind those 9 commits rather than one person; credited here as
+  such.
 - Full names above come from the project's internal team roster where known;
   contributors are listed by GitHub handle alone where a full name wasn't on
   record. If you're in this list and want your name, handle, or link changed,

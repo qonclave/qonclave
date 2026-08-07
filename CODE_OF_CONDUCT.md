@@ -62,12 +62,7 @@ an appointed representative at an online or offline event.
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported to the project maintainers at:
 
-<!-- TODO(2026-08-07): decide the contact address before this goes public --
-     see steps_to_open_source.md §4. bnr.robotics@gmail.com is a placeholder
-     until a dedicated project address exists (e.g. once qonclave.org is
-     registered per §3). -->
-
-**conduct@qonclave.org** (placeholder — not yet live; use bnr.robotics@gmail.com until then)
+**qonclave@gmail.com**
 
 All complaints will be reviewed and investigated promptly and fairly.
 

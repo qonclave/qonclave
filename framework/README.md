@@ -97,6 +97,12 @@ cmake -S sdk/c -B build-dev -DQONCLAVE_PROFILE=minimal \
       -DQONCLAVE_PORT_SOURCE=/path/to/your_port.c
 ```
 
+**Distribution**: no package-registry listing yet (ESP-IDF component registry, PlatformIO, and
+Zephyr module are all real future options — see [`ROADMAP.md`](../ROADMAP.md)). For now,
+**vendor it**: either a git submodule pointing at this repo's `framework/sdk/c/` directory, or a
+plain copy into your firmware project. Either way you own the CMake integration on your side
+(supplying `QONCLAVE_PORT_SOURCE` for your target), same as the host build above.
+
 ## Test
 
 ```bash
