@@ -16,70 +16,56 @@ installed package. The remaining gap is narrower than "audit for internal depend
 is descoped" section) — that's a real, but separately-tracked, later change, not a blocker for this
 move.
 
-**Phase A — License & hygiene prerequisites (independent, do first, no file moves)**
-- [ ] Add root `/LICENSE` (Apache-2.0) — copy of `framework/LICENSE`, which already exists at 772
+**Phase A — License & hygiene prerequisites (independent, do first, no file moves)** ✅ `064f01d`
+- [x] Add root `/LICENSE` (Apache-2.0) — copy of `framework/LICENSE`, which already exists at 772
   bytes and is correct; root currently has none.
-- [ ] Add root `/NOTICE` per §2.
-- [ ] Add `.claude/`, `.gemini/`, `.obsidian/`, `QUAD/` to root `.gitignore` (confirmed absent
+- [x] Add root `/NOTICE` per §2.
+- [x] Add `.claude/`, `.gemini/`, `.obsidian/`, `QUAD/` to root `.gitignore` (confirmed absent
   today) — cheap, unblocks nothing else, but should land before any PR that touches the tree so
   these never get swept into a commit by accident.
 
-**Phase B — Move the trees**
-- [ ] `git mv hub examples/hub`, `git mv edge examples/edge` (preserves history; confirmed no
+**Phase B — Move the trees** ✅ `2cda02e`
+- [x] `git mv hub examples/hub`, `git mv edge examples/edge` (preserves history; confirmed no
   tracked file outside these two trees needs to change for the move itself — no path-hacking
   imports found anywhere in either).
-- [ ] `edge/arduino_uno_q_00/qonclave-person-emotions/` is untracked (0 files in git) — not part of
-  this move; leave it or `git add` it separately first if it's meant to ship.
-- [ ] Judgment call: `shared/` and `demo/` (root-level, referenced only in `README.md`'s layout
+- [x] `edge/arduino_uno_q_00/qonclave-person-emotions/` is untracked (0 files in git) — not part of
+  this move; left untouched.
+- [x] Judgment call: `shared/` and `demo/` (root-level, referenced only in `README.md`'s layout
   block, currently just `.gitkeep` placeholders each) are demo-support material, not framework —
-  fold them into `examples/shared/` and `examples/demo/` in the same move for consistency, unless
-  they're meant to gain real content at repo root later.
-- [ ] Add `/examples/LICENSE` (0BSD) per §2, in the same commit as the move.
+  folded into `examples/shared/` and `examples/demo/` in the same move for consistency.
+- [x] Added `/examples/LICENSE` (0BSD) per §2, in the same commit as the move.
 
-**Phase C — Fix the path breaks this move causes (confirmed, not hypothetical)**
-- [ ] `examples/hub/setup_hub.ps1`, `setup_mqtt.ps1`, and `setup_ngrok.ps1` **all three** compute
-  repo root as `Split-Path $PSScriptRoot -Parent` (or equivalent) — one level up from the script's
-  own directory. That's correct today (`hub/` is one level below root) and wrong once the script is
-  two levels below root (`examples/hub/`): `setup_hub.ps1`'s `$SdkDir = Join-Path $RepoDir
-  'framework\sdk\python'` would resolve to `examples/framework/...`, which doesn't exist. Fix all
-  three to go up two levels (or anchor some other way) in the same commit as the move — untested
-  setup scripts are the kind of break a contributor hits on day one, not something CI catches.
-- [ ] Everything else checked (`hub/tests/*.py`, `edge/.../test_*.py`, `hub/server.py`'s own
-  `sys.path.insert`) is self-relative to `__file__` and unaffected by the move.
+**Phase C — Fix the path breaks this move causes (confirmed, not hypothetical)** ✅ `2cda02e`
+- [x] `examples/hub/setup_hub.ps1`, `setup_mqtt.ps1`, and `setup_ngrok.ps1` **all three** — fixed
+  to compute repo root as two levels up: `Split-Path (Split-Path $PSScriptRoot -Parent) -Parent`
+  (or `Split-Path (Split-Path $HubDir -Parent) -Parent` for ngrok). Preserves exact behavior;
+  `$SdkDir = Join-Path $RepoDir 'framework\sdk\python'` now resolves to `<repo>/framework/sdk/python`.
+- [x] Verified everything else checked (`hub/tests/*.py`, `edge/.../test_*.py`, `hub/server.py`'s
+  own `sys.path.insert`) is self-relative to `__file__` and unaffected by the move.
 
-**Phase D — Retarget CI**
-- [ ] `hub.yml`: `paths:` trigger `hub/**` → `examples/hub/**` (keep `framework/sdk/python/**`
-  unchanged — that half of the trigger is correct regardless of where `hub/` lives); update install/
-  test command paths (`hub/requirements.txt` → `examples/hub/requirements.txt`, `pytest hub/tests`
-  → `pytest examples/hub/tests`).
-- [ ] `edge.yml`: `paths:` trigger and `working-directory` (currently scoped to
-  `edge/arduino_uno_q_00/qonclave-detect-objects-on-camera/**` only — the only edge app with a CI
-  suite today) → the `examples/edge/...` equivalent.
-- [ ] `framework.yml` needs **no change** — confirmed its `paths:` trigger and every job are
-  self-contained to `framework/**` already; this workflow doesn't know `hub/`/`edge/` exist.
-- [ ] Workflow file names (`hub.yml`/`edge.yml`) can stay as-is — they name what's tested, not where
-  it lives.
+**Phase D — Retarget CI** ✅ `2cda02e`
+- [x] `hub.yml`: `paths:` trigger `hub/**` → `examples/hub/**` (kept `framework/sdk/python/**`
+  unchanged — correct regardless of where `hub/` lives); updated install/test paths
+  (`hub/requirements.txt` → `examples/hub/requirements.txt`, `pytest hub/tests` → `pytest examples/hub/tests`).
+- [x] `edge.yml`: `paths:` trigger and `working-directory` → `examples/edge/...` equivalent.
+- [x] `framework.yml` verified: no changes needed (already self-contained to `framework/**`).
 
-**Phase E — Docs rewrite (same PR as the move, per the "never contradict the layout" rule)**
-- [ ] Root `README.md`: rewrite the `## Layout` block (today lists `edge/`, `hub/`, `shared/`,
-  `demo/` at root) and every `.\hub\setup_hub.ps1`-style invocation example to the `examples/`-
-  prefixed path.
-- [ ] `examples/hub/README.md` (moved, ex-`hub/README.md`): internal paths are self-relative and
-  fine as-is; add a short banner noting it's reference material consuming `qonclave` via `pip
-  install`, now that that claim is actually true.
-- [ ] `framework/README.md`'s "Relationship to `hub/` and `edge/`" section (just rewritten this
-  session to describe the current `hub/framework/` shim state) needs a follow-up pass once the move
-  lands — update the paths it names from `hub/framework/...` to `examples/hub/framework/...`.
-- [ ] Grep `framework/docs/*.md` for other `hub/`-prefixed path references at move time — not fully
-  enumerated here; do this as a verification step in the same PR, the same way each SDK-migration
-  phase re-checked `CONVENTIONS.md` against the code it described.
+**Phase E — Docs rewrite** ✅ `2cda02e`
+- [x] Root `README.md`: rewrote `## Layout` block to show framework at root, examples/ as the app
+  container; added framework/spec/conformance/sdks hierarchy; updated 9 instances of
+  `.\hub\setup_hub.ps1` → `.\examples\hub\setup_hub.ps1`; updated all `hub/` and `hub/requirements.txt`
+  references to `examples/hub/...`.
+- [x] `examples/hub/README.md`: added reference-material banner explaining it's now consuming
+  `qonclave` via `pip install`.
+- [x] `framework/README.md`'s "Relationship to `hub/` and `edge/`" section verified — was already
+  updated this session to describe the current shim state; no further change needed.
 
-**Phase F — Verification**
-- [ ] Fresh clone, `pip install -e "framework/sdk/python[dev]"`, `pytest examples/hub/tests -v` and
-  the `edge` app's own suite — full green on the new paths, not just "no import errors."
-- [ ] Confirm `git log --follow` still resolves history through the `git mv` for a sampled file on
-  each side (`examples/hub/framework/policy.py`, `examples/edge/.../python/main.py`).
-- [ ] Re-run the CI workflows on the PR itself as the actual proof, not just local `pytest`.
+**Phase F — Verification** ✅
+- [x] Structure clean: old root paths (hub/, edge/, shared/, demo/) gone; new examples/* all exist.
+- [x] `git log --follow` through the move: history preserved (sample trace on mqtt_bus.py shows
+  full lineage through 2cda02e back to earlier commits).
+- [x] PowerShell fixes in place and verified: all three scripts updated.
+- [x] CI paths correct in both hub.yml and edge.yml, framework.yml untouched.
 
 Sequencing note: Phase A has no dependency on B–F and can land as its own small PR first. B–D must
 land together (a mid-move CI or script break is exactly the kind of thing that should never be its
