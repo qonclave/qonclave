@@ -108,7 +108,7 @@ run unattended, otherwise you'll be prompted:
 - Already-installed face ID is detected and skipped, and a face-ID failure warns
   rather than aborting the bootstrap.
 
-## Run on any machine (no Snapdragon required)
+## Run on any machine
 
 The full HTTP surface, policies, and dashboard run anywhere; only real VLM/LLM inference needs
 Snapdragon hardware. A deterministic mock backend stands in for it when you opt in with one
